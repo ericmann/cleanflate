@@ -8,7 +8,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P0-03 design-check enforces the [perf] decision format
 - [x] P0-04 Decode-path switch and a uniform invalid-code rule
 - [x] P0-05 Fast-vs-reference differential test
-- [ ] P0-06 Regression fixture store and repro tooling
+- [x] P0-06 Regression fixture store and repro tooling
 - [ ] P0-07 `stats` feature counters
 - [ ] P0-08 Bench harness: medians, framings, levels, modes, JSON
 - [ ] P0-09 bench-compare, bench-noise, bench-md and `bench --stats`
@@ -54,3 +54,6 @@ DecodePath (decode_path.rs), test_hooks.rs (feature test-hooks), plumbed via Inf
 
 ### P0-05 — c4b6e31
 tests/common/mod.rs (Trace/CallOutcome/trace/oneshot/dump_candidate/describe_diff + shared strategies), tests/fastslow.rs (4 tests), chunking.rs uses shared strategies. Makefile: proptest-3k/10k set both case env vars and run both tests; fastslow-full added to heavy. fastslow-full passed, 248s test time (4m10 wall). Quick tier ~37s release. No Fast/Reference differences found.
+
+### P0-06 — e4b0694
+oracle::regress (Row/manifest parse+render, add_to, seed_into, run_add/run_seed), CLI regress-add/regress-seed, Makefile regress-seed, testdata/regressions/ (README, MANIFEST.tsv, 4 seed .bin), tests/regressions.rs (2 tests), chunking.rs dumps candidates to target/regress-candidates/ on failure (tags chunking, chunking-corrupt). Second regress-seed run is a no-op. Interpretation: row with only one chunk list uses 1021/997 for the other.
