@@ -110,6 +110,52 @@ for corpus_name, info in data.items():
     done || FAIL=1
 fi
 
+# R1-08: a corpus fetched by a human (fetched_by set to anything other
+# than the automated default) must have a matching row in
+# provenance/human-interventions.md naming its archive_sha256, so the
+# manual step is recorded, not just the file on disk.
+if [ -f "$ROOT/testdata/corpora/SOURCES.json" ]; then
+    interventions_file="$ROOT/provenance/human-interventions.md"
+    if [ -f "$interventions_file" ]; then
+        interventions_content="$(cat "$interventions_file")"
+    else
+        interventions_content=""
+    fi
+    manual_check_output="$(INTERVENTIONS_CONTENT="$interventions_content" python3 -c "
+import json
+import os
+
+with open('$ROOT/testdata/corpora/SOURCES.json') as f:
+    data = json.load(f)
+interventions = os.environ.get('INTERVENTIONS_CONTENT', '')
+
+missing = []
+for corpus_name, info in data.items():
+    fetched_by = info.get('fetched_by')
+    if not fetched_by or fetched_by in ('automated', 'cached'):
+        continue
+    sha = info.get('archive_sha256', '')
+    if not sha or sha not in interventions:
+        missing.append((corpus_name, fetched_by, sha))
+
+for corpus_name, fetched_by, sha in missing:
+    print(
+        f'FAIL manual-fetch-missing-intervention-row: {corpus_name} '
+        f'fetched_by={fetched_by!r} archive_sha256={sha} has no matching '
+        'row in provenance/human-interventions.md'
+    )
+import sys
+sys.exit(1 if missing else 0)
+")"
+    manual_check_status=$?
+    if [ -n "$manual_check_output" ]; then
+        echo "$manual_check_output"
+    fi
+    if [ "$manual_check_status" -ne 0 ]; then
+        FAIL=1
+    fi
+fi
+
 if [ "$FAIL" -ne 0 ]; then
     exit 1
 fi

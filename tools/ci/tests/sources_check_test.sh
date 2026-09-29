@@ -100,6 +100,49 @@ else
     echo "SKIP case_corpus_tamper_fails: testdata/corpora/SOURCES.json not present yet (P0-08)"
 fi
 
+# case_manual_fetch_requires_intervention_row: a SOURCES.json entry
+# fetched_by a human with no matching provenance/human-interventions.md
+# row fails; adding the row makes it pass (R1-08).
+d="$(mktemp -d)"
+mkdir -p "$d/docs/rfc" "$d/testdata/corpora" "$d/provenance"
+cp "$REAL_ROOT/docs/rfc/SOURCES.json" "$d/docs/rfc/SOURCES.json"
+cp "$REAL_ROOT/docs/rfc/rfc1950.txt" "$d/docs/rfc/rfc1950.txt"
+cp "$REAL_ROOT/docs/rfc/rfc1951.txt" "$d/docs/rfc/rfc1951.txt"
+cp "$REAL_ROOT/docs/rfc/rfc1952.txt" "$d/docs/rfc/rfc1952.txt"
+manual_sha="deadbeef00000000000000000000000000000000000000000000000000000000"
+cat > "$d/testdata/corpora/SOURCES.json" <<JSON
+{
+  "canterbury": {
+    "url": "https://corpus.canterbury.ac.nz/resources/cantrbry.tar.gz",
+    "archive_sha256": "$manual_sha",
+    "archive_bytes": 1,
+    "status": "ok",
+    "fetched_by": "human-operator-browser",
+    "files": []
+  }
+}
+JSON
+echo "| when | who | stage/task | what | why |" > "$d/provenance/human-interventions.md"
+echo "|---|---|---|---|---|" >> "$d/provenance/human-interventions.md"
+
+out_before="$(SOURCES_CHECK_ROOT="$d" bash "$SOURCES_CHECK" 2>&1)"
+code_before=$?
+
+echo "| now | operator | test | downloaded archive sha256 $manual_sha | testing |" \
+    >> "$d/provenance/human-interventions.md"
+out_after="$(SOURCES_CHECK_ROOT="$d" bash "$SOURCES_CHECK" 2>&1)"
+code_after=$?
+
+if [ "$code_before" -ne 0 ] \
+    && echo "$out_before" | grep -q "manual-fetch-missing-intervention-row" \
+    && [ "$code_after" -eq 0 ]; then
+    report case_manual_fetch_requires_intervention_row 0
+else
+    report case_manual_fetch_requires_intervention_row 1 \
+        "before: exit $code_before: $out_before / after: exit $code_after: $out_after"
+fi
+rm -rf "$d"
+
 if [ "$TOTAL_FAIL" -ne 0 ]; then
     exit 1
 fi

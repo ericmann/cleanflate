@@ -60,6 +60,37 @@ the tool executes:
 See `docs/SPEC.md` §2.2–§2.3 and `CLAUDE.md`'s clean-room rules (CR1–CR6)
 for the normative versions; this is a summary for readers of the log.
 
+## Denied calls during build
+
+CR6: "If the guard denies a call, do not work around it. Note the
+denial in the progress log and continue another way." Every entry
+`provenance/tool-log.jsonl` has ever recorded with `"decision":"denied"`,
+as of this writing (all from the guard's own `PreToolUse` hook, never
+worked around):
+
+| ts | task | reason |
+|----|------|--------|
+| 2026-09-29T14:43:07.953Z | P0-05 | unparseable command |
+| 2026-09-29T14:43:23.189Z | P0-05 | unparseable command |
+| 2026-09-29T14:43:46.542Z | P0-05 | forbidden word in command outside repo/target (`grep -rn "zlib\|gzip\|deflate\|inflate" ...`) |
+| 2026-09-29T14:43:52.987Z | P0-05 | forbidden word in command outside repo/target (same `grep`, retried) |
+| 2026-09-29T14:44:43.248Z | P0-05 | forbidden word in command outside repo/target (same `grep`, retried again) |
+| 2026-09-29T14:50:42.835Z | P0-08 | curl with no recognizable URL (`which tar unzip curl`, a false-positive match on the literal word "curl") |
+| 2026-09-29T14:52:57.057Z | P0-08 | curl url not allowlisted: `https://corpus.canterbury.ac.nz/` (missing the `/resources/cantrbry.tar.gz` path the allowlist actually names) |
+| 2026-09-29T14:54:47.458Z | P1-01 | forbidden word in path argument: `*/libz-sys-*/src/lib.rs` |
+
+The P0-05 denials happened while building `tools/cleanroom/`'s own
+guard-fixture test suite (P0-05's log entry: "exercising it live during
+fixture-writing") -- probing the guard's own behavior, not an attempt to
+read anything. The P0-08 denials were the implementer discovering the
+allowlist's exact required form by trial. The P1-01 denial is the one
+CR1-relevant case: an attempt to `find / -path '*/libz-sys-*/src/lib.rs'`
+(to read a compiler error against the actual source instead of the
+message alone) was blocked outright. **No libz-sys source was ever
+read** by any tool call in this build; every libz-sys-related fix in
+this repo's history was made from compiler error messages alone (P1-01's
+own log entry says as much), as CR5 requires.
+
 ## Known gaps
 
 - The plan stage ran before this harness existed, so no plan-stage tool
@@ -79,6 +110,19 @@ for the normative versions; this is a summary for readers of the log.
   that tags commits with `[stage:...] [task:...]`.
 - `model` can be `null` when none of `derive_model()`'s sources have a
   value (e.g. a hook payload without `model` and no readable transcript).
+- Commits `c1bbaa9`, `4015214`, `8edc633`, `956d6d7`, `44f624e` and
+  `f776879` predate `tools/git-hooks/commit-msg` (installed by P0-06)
+  and so carry no `[stage:...] [task:...]` tags.
+- `tools/cleanroom/LOCKDOWN` (SPEC S2.3: "After M0 completes, WebFetch
+  is denied entirely") was not written before Phases 1-4 ran, because
+  P0-10 (the task that writes it) was initially blocked behind P0-08 and
+  only unblocked and completed in review-fix round 1, well after those
+  phases had already run with WebFetch still allowlist-gated rather than
+  fully locked down.
+- The P0-08 Canterbury retries that hit Cloudflare's bot protection were
+  also tried with a browser-like `User-Agent` header specifically (not
+  just a bare `curl`), and still blocked -- see the row this file's
+  table already has for the human-operator download that resolved it.
 
 ## Harness status during build
 
