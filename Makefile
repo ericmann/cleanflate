@@ -23,13 +23,39 @@ conformance-full:
 	@echo "STUB: conformance-full arrives in P1-03"
 
 crate-checks:
-	@echo "STUB: crate-checks arrives in P0-02"
+	bash tools/ci/crate-checks.sh
 
 cleanroom-selftest:
 	@echo "STUB: cleanroom-selftest arrives in P0-05"
 
 tools-check:
-	@echo "STUB: tools-check arrives in P0-02"
+	@set -e; \
+	if find tools -name '*.sh' -print -quit | grep -q .; then \
+		find tools -name '*.sh' -print0 | xargs -0 shellcheck; \
+	fi; \
+	if [ -d tools/git-hooks ]; then \
+		for f in tools/git-hooks/*; do \
+			[ -f "$$f" ] && case "$$f" in *.sh) : ;; *) head -1 "$$f" | grep -qE '^#!.*(sh|bash)' && shellcheck "$$f" || true ;; esac; \
+		done; \
+	fi; \
+	if find tools -name '*.py' -print -quit | grep -q .; then \
+		find tools -name '*.py' -print0 | xargs -0 python3 -m py_compile; \
+	fi; \
+	if [ -d tools/cleanroom/tests ]; then \
+		python3 -m unittest discover -s tools/cleanroom/tests -p 'test_*.py'; \
+	fi; \
+	if ls tools/ci/tests/*_test.sh >/dev/null 2>&1; then \
+		for t in tools/ci/tests/*_test.sh; do \
+			echo "== $$t =="; \
+			bash "$$t"; \
+		done; \
+	fi; \
+	if ls tools/git-hooks/tests/*_test.sh >/dev/null 2>&1; then \
+		for t in tools/git-hooks/tests/*_test.sh; do \
+			echo "== $$t =="; \
+			bash "$$t"; \
+		done; \
+	fi
 
 design-check:
 	@echo "STUB: design-check arrives in P1-05"
@@ -76,4 +102,4 @@ build-report:
 hooks-install:
 	@echo "STUB: hooks-install arrives in P0-06"
 
-ci: fmt-check lint corpus test crate-checks cleanroom-selftest
+ci: fmt-check lint corpus test crate-checks cleanroom-selftest tools-check
