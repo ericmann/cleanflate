@@ -5,3 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Clean-room DEFLATE/zlib/gzip decompressor built from RFC 1950/1951/1952 alone."
 license = "MIT OR Apache-2.0"
+
+[features]
+stats = []
+test-hooks = []

@@ -1,5 +1,5 @@
 .PHONY: fmt-check lint test corpus corpus-full crate-checks cleanroom-selftest \
-        tools-check design-check ci proptest-10k bomb heavy \
+        tools-check design-check ci proptest-10k proptest-3k bomb heavy \
         fuzz-check fuzz-smoke fuzz-long fuzz-divergences bench \
         provenance-snapshot provenance-summary build-report hooks-install \
         sources-check conformance-full malformed
@@ -9,9 +9,14 @@ fmt-check:
 
 lint:
 	cargo clippy --workspace --all-targets -- -D warnings
+	cargo clippy -p cleanflate --lib -- -D warnings
+	cargo clippy -p cleanflate --all-targets --features stats -- -D warnings
+	cargo clippy -p cleanflate --all-targets --features stats,test-hooks -- -D warnings
 
 test:
 	cargo test --workspace
+	cargo test -p cleanflate
+	cargo test -p cleanflate --features stats
 
 corpus:
 	cargo run --release -q -p oracle -- generate --tier quick
@@ -121,3 +126,6 @@ hooks-install:
 	git config core.hooksPath tools/git-hooks
 
 ci: fmt-check lint corpus test crate-checks cleanroom-selftest tools-check design-check
+
+proptest-3k:
+	CLEANFLATE_CHUNKING_CASES=3000 cargo test --release -p oracle --test chunking
