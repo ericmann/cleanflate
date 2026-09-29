@@ -18,6 +18,8 @@ mod bitreader;
 pub mod checksum;
 mod config;
 pub mod error;
+#[allow(dead_code)] // GzipHeaderParser is driven by the gzip backend, arriving in P3-03
+pub mod gzip;
 mod huffman;
 mod inflate;
 mod options;

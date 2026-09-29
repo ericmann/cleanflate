@@ -381,3 +381,30 @@ keeps the output-limit and trailing-data logic (D-02/D-03 updates,
 D-13) correct for zlib for free: neither depends on which backend
 produced the bytes, only on the produced-byte count and the leftover
 input after `Done`.
+
+### D-18: Gzip member header parser
+
+RFC: RFC 1952 S2.1, S2.3.1
+Decision: `GzipHeaderParser` is a byte-at-a-time resumable state machine
+(`Id1` -> `Id2` -> `Cm` -> `Flg` -> `Mtime` -> `Xfl` -> `Os` ->
+optionally `ExtraLen`/`ExtraData` -> optionally `Name` -> optionally
+`Comment` -> optionally `Hcrc` -> `Done`), independent of any particular
+alignment (gzip header fields are always byte-, never bit-, oriented per
+RFC 1952 S2.1). Every header byte except the FHCRC field's own two bytes
+feeds a running CRC-32 (`crate::checksum::Crc32`), matching "the two
+least significant bytes of the CRC32 for all bytes of the gzip header up
+to and not including the CRC16" (S2.3.1) literally, including bytes that
+end up discarded because a field exceeded `max_gzip_field` -- the CRC
+covers what was transmitted, not what was retained. FNAME/FCOMMENT are
+read byte-by-byte until a zero terminator (itself CRC'd but never
+stored); FEXTRA reads a 2-byte little-endian XLEN then exactly that many
+opaque bytes. All multi-byte fields (MTIME, XLEN, the FHCRC's CRC16) are
+little-endian per RFC 1952 S2.1 ("stored with the least-significant byte
+first"), the opposite convention from RFC 1950's big-endian Adler-32.
+Rationale: RFC 1952's own decode algorithm is exactly this sequence of
+fixed and length-prefixed/terminated fields; modelling each field
+transition as its own atomic state (rather than, say, buffering the
+whole header before parsing) keeps this parser resumable under
+arbitrary chunking with no separate code path for the "enough bytes
+arrived in one call" case, consistent with every other resumable state
+machine in this crate (D-07, D-11, D-15, D-17).
