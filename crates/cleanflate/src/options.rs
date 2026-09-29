@@ -9,6 +9,8 @@ use crate::config::{DEFAULT_MAX_GZIP_FIELD, DEFAULT_MAX_OUTPUT};
 pub enum Format {
     /// Raw RFC 1951 DEFLATE, no wrapper.
     Raw,
+    /// RFC 1950 zlib wrapper.
+    Zlib,
 }
 
 /// What to do with bytes remaining after the logical end of a stream

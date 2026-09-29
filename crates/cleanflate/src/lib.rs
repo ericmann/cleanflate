@@ -24,11 +24,14 @@ mod options;
 mod stream;
 mod tables;
 mod window;
+mod zlib;
 
 pub use config::{DEFAULT_MAX_GZIP_FIELD, DEFAULT_MAX_OUTPUT};
 pub use error::{ChecksumKind, Error, ErrorKind, HeaderError, HuffmanError};
 pub use options::{Format, Options, TrailingData};
-pub use stream::{decompress_with, inflate, Decoded, Decompressor, Progress, Status};
+pub use stream::{
+    decompress_with, inflate, zlib_decompress, Decoded, Decompressor, Progress, Status,
+};
 
 #[cfg(test)]
 mod tests;

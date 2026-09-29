@@ -21,6 +21,7 @@ mod invariants;
 mod stream_raw;
 mod tables;
 mod window;
+mod zlib;
 
 #[test]
 fn crate_builds() {

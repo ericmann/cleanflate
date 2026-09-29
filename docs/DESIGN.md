@@ -353,3 +353,31 @@ states are safe to trust, at the cost of an early fallback to the slower
 path only in the (performance-irrelevant, correctness-first) regime near
 a chunk boundary -- P4-08/P4-09 may revisit this once performance is
 being tuned deliberately.
+
+### D-17: zlib wrapper (header, preset dictionary, trailer)
+
+RFC: RFC 1950 S2.2, S2.3
+Decision: `ZlibDecoder` is a small resumable state machine (`Cmf` ->
+`Flg` -> optionally `DictId` -> `Body` -> `Trailer` -> `Done`) around a
+plain `Inflater`, sharing the same `step(input, output) ->
+(consumed, produced, InflateStatus)` shape so `Decompressor` can drive it
+through a `Backend` enum without any format-specific logic in its own
+limit/trailing/stickiness code. Header fields are checked in the order
+FCHECK, CM, CINFO, exactly as RFC 1950 S2.2 lists them. CINFO is
+validated (`<= 7`) but never used to bound match distances -- the window
+is always the full 32 KiB regardless, since RFC 1950 defines CINFO as an
+encoder hint ("the base-2 logarithm of the LZ77 window size... used by
+the compressor") with no decoder-side enforcement duty stated. FDICT
+clear makes any supplied `Options::dictionary` a no-op (RFC 1950 gives no
+mechanism to apply a dictionary without FDICT/DICTID). The Adler-32
+trailer is accumulated incrementally over exactly the bytes `Inflater`
+produces during `Body` (never the dictionary, matching "excluding any
+dictionary data"). `Inflater::with_dictionary` reuses `Window::prefill`
+(now exercised for the first time) for both the zlib-with-FDICT path and
+a bare `Format::Raw` decompression given `Options::dictionary` directly.
+Rationale: Treating the wrapper as "one more backend behind the same
+`step` shape" rather than special-casing zlib throughout `Decompressor`
+keeps the output-limit and trailing-data logic (D-02/D-03 updates,
+D-13) correct for zlib for free: neither depends on which backend
+produced the bytes, only on the produced-byte count and the leftover
+input after `Done`.

@@ -131,6 +131,16 @@ impl Inflater {
         }
     }
 
+    /// A fresh decoder whose window is preloaded with `dict` (keeping
+    /// only the last 32 KiB), so early back-references can copy from it
+    /// (RFC 1950 S2.2's preset dictionary, or a raw-format caller that
+    /// supplies one directly).
+    pub(crate) fn with_dictionary(dict: &[u8]) -> Self {
+        let mut inflater = Self::new();
+        inflater.window.prefill(dict);
+        inflater
+    }
+
     /// Total bytes produced so far across all calls to `step`.
     pub(crate) fn total_out(&self) -> u64 {
         self.total_out

@@ -4,6 +4,44 @@
 use crate::error::Error;
 use crate::inflate::{InflateStatus, Inflater};
 use crate::options::{Format, Options, TrailingData};
+use crate::zlib::ZlibDecoder;
+
+/// The format-specific decoder a [`Decompressor`] drives. Both variants
+/// expose the same `step`/`is_done`/`total_out` shape as [`Inflater`]
+/// itself, so `Decompressor`'s own logic (limits, trailing data,
+/// stickiness) stays format-agnostic.
+#[derive(Debug, Clone)]
+enum Backend {
+    Raw(Inflater),
+    Zlib(ZlibDecoder),
+}
+
+impl Backend {
+    fn step(
+        &mut self,
+        input: &[u8],
+        output: &mut [u8],
+    ) -> Result<(usize, usize, InflateStatus), Error> {
+        match self {
+            Backend::Raw(i) => i.step(input, output),
+            Backend::Zlib(z) => z.step(input, output),
+        }
+    }
+
+    fn is_done(&self) -> bool {
+        match self {
+            Backend::Raw(i) => i.is_done(),
+            Backend::Zlib(z) => z.is_done(),
+        }
+    }
+
+    fn total_out(&self) -> u64 {
+        match self {
+            Backend::Raw(i) => i.total_out(),
+            Backend::Zlib(z) => z.total_out(),
+        }
+    }
+}
 
 /// What happened during one [`Decompressor::decompress`] call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +79,7 @@ pub struct Decoded {
 /// output regardless of chunking (SPEC S3.3).
 #[derive(Debug, Clone)]
 pub struct Decompressor {
-    inflater: Inflater,
+    backend: Backend,
     options: Options,
     total_in: u64,
     trailing_start: Option<u64>,
@@ -49,12 +87,18 @@ pub struct Decompressor {
 }
 
 impl Decompressor {
-    /// Create a decompressor for `format` with `options`. Only
-    /// [`Format::Raw`] exists so far; zlib and gzip arrive in Phase 3.
+    /// Create a decompressor for `format` with `options`. Gzip arrives
+    /// in Phase 3.
     pub fn new(format: Format, options: Options) -> Self {
-        let Format::Raw = format;
+        let backend = match format {
+            Format::Raw => match &options.dictionary {
+                Some(dict) => Backend::Raw(Inflater::with_dictionary(dict)),
+                None => Backend::Raw(Inflater::new()),
+            },
+            Format::Zlib => Backend::Zlib(ZlibDecoder::new(options.dictionary.clone())),
+        };
         Decompressor {
-            inflater: Inflater::new(),
+            backend,
             options,
             total_in: 0,
             trailing_start: None,
@@ -73,17 +117,17 @@ impl Decompressor {
             return Err(e.clone());
         }
 
-        if self.inflater.is_done() {
+        if self.backend.is_done() {
             return self.handle_post_done_input(input);
         }
 
-        let already_out = self.inflater.total_out();
+        let already_out = self.backend.total_out();
         let remaining_allowance = self.options.max_output.saturating_sub(already_out);
         let allowance = remaining_allowance.min(output.len() as u64) as usize;
         let allowance_bound_output = allowance < output.len();
         let output_slice = output.get_mut(..allowance).unwrap_or(&mut []);
 
-        let step_result = self.inflater.step(input, output_slice);
+        let step_result = self.backend.step(input, output_slice);
         let (consumed, produced, inflate_status) = match step_result {
             Ok(v) => v,
             Err(e) => {
@@ -173,7 +217,7 @@ impl Decompressor {
         if let Some(e) = &self.error {
             return Err(e.clone());
         }
-        if self.inflater.is_done() {
+        if self.backend.is_done() {
             Ok(())
         } else {
             let e = Error::Truncated;
@@ -189,7 +233,7 @@ impl Decompressor {
 
     /// Total output bytes produced so far.
     pub fn total_out(&self) -> u64 {
-        self.inflater.total_out()
+        self.backend.total_out()
     }
 
     /// The input offset where trailing data was first observed, if any
@@ -252,4 +296,12 @@ pub fn decompress_with(format: Format, input: &[u8], options: &Options) -> Resul
 /// Decompress a raw RFC 1951 DEFLATE stream with default options.
 pub fn inflate(input: &[u8]) -> Result<Vec<u8>, Error> {
     decompress_with(Format::Raw, input, &Options::default()).map(|d| d.data)
+}
+
+/// Decompress an RFC 1950 zlib stream with default options. A stream
+/// requiring a preset dictionary fails with
+/// [`Error::PresetDictionaryRequired`]; use [`decompress_with`] with
+/// [`Options::dictionary`] set to supply one.
+pub fn zlib_decompress(input: &[u8]) -> Result<Vec<u8>, Error> {
+    decompress_with(Format::Zlib, input, &Options::default()).map(|d| d.data)
 }
