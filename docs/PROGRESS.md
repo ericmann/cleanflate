@@ -35,7 +35,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P3-01 Preset dictionary support and the zlib wrapper
 - [x] P3-02 Gzip member header parser
 - [x] P3-03 Gzip members, trailer, multi-member streams and gzip API
-- [ ] P3-04 Zlib and gzip conformance, dictionary and multi-member tests
+- [x] P3-04 Zlib and gzip conformance, dictionary and multi-member tests
 - [x] P3-05 Malformed zlib and gzip cases
 - [ ] P3-06 M3 acceptance and push
 - [x] P4-01 Finalise the streaming contract for all formats
@@ -335,3 +335,9 @@ M2 acceptance: make ci exit 0 (incl. design-check green). make conformance-full:
 Manual check: NOT VERIFIED (human):
 1. Review DESIGN.md D-13/D-14 against RFC 1951 S3.2.7.
 2. Confirm GitHub CI is green.
+
+### P3-04 — 95a9a21
+check_entries() decode_fn now takes &ManifestEntry alongside bytes (needed for per-entry dictionary/format). Added conformance::dictionary_bytes(&DictionaryRecord) (reads first dictionary.len bytes of dictionary.input relative to repo_root(), now pub). Fixed a real bug in decode_streaming() (from P2-05): it treated "all input fed, call made no progress" as an error unconditionally, but gzip's post-trailer state correctly reports NeedsInput (not Done, since another member could follow) -- now it just stops feeding and calls finish() unconditionally, trusting it to resolve the terminal state. This was a test-helper bug, not a decoder bug; no crates/cleanflate change was needed.
+New tests: conformance.rs::{conformance_zlib_all,conformance_zlib_dictionary,conformance_gzip_all,conformance_wrappers_streaming_odd_chunks}; wrappers.rs (new file)::{gzip_multi_member_oracle (200 cases, 2-5 members, random inputs incl. empty, checks decoded data + gzip_headers().len()), zlib_dictionary_required_on_oracle_stream (dict_id == oracle::ffi::adler32(dict)), zlib_wrong_dictionary_mismatch (expected/actual both checked)}.
+Quick tier (make test): 654/9/290/944 entries across the four conformance_* wrapper tests, 3/3 wrappers.rs. Full tier: 702/9/338/1040, all pass, 37.75s release.
+make fmt-check/lint/corpus/test/crate-checks/cleanroom-selftest all green.
