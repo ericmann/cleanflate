@@ -13,7 +13,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P0-08 Download Canterbury and Silesia corpora
 - [x] P0-09 CI entry point and GitHub Actions workflow
 - [x] P0-10 Lockdown flag, provenance docs and log snapshot
-- [ ] P0-11 M0 acceptance and push
+- [x] P0-11 M0 acceptance and push
 - [x] P1-01 Oracle FFI wrappers over libz-sys
 - [x] P1-02 Deterministic synthetic inputs and generation matrix
 - [ ] P1-03 Corpus generator CLI and MANIFEST
@@ -298,3 +298,12 @@ Added .github/workflows/ci.yml (checkout, rustup 1.89.0 install, shellcheck/jq i
 
 ### P0-10 — 289efa5
 Wrote tools/cleanroom/LOCKDOWN (locked_at + head=542b098, HEAD before this commit) -- WebFetch and fetch scripts now deny post-lockdown for real, not just via CLEANROOM_LOCKDOWN_FILE override. Added tools/cleanroom/snapshot-log.sh + make provenance-snapshot target (wired, was a stub); ran it, committed provenance/tool-log.snapshot.jsonl. Wrote provenance/README.md (entry schema table, live/snapshot arrangement, guard rules summary, all 6 known gaps, Harness status = LIVE) and provenance/human-interventions.md (table template; added the P0-08 Canterbury from-file row as the first real entry, since it's exactly what S5 M6 wants captured). New tests: selftest.sh::deny_webfetch_real_lockdown (unsets CLEANROOM_LOCKDOWN_FILE, uses the real repo LOCKDOWN, logs to a scratch file so it doesn't skew denials_logged); test_guard.py::TestRealLockdownFile (own env, REAL_ROOT = actual repo root, asserts the shipped LOCKDOWN file denies a fetch-corpora.sh Bash command). make cleanroom-selftest, make provenance-snapshot, make ci all green (44 guard unit tests, 22 selftest cases).
+
+### P0-11 — d4a0213
+M0 acceptance: make ci exit 0, make cleanroom-selftest exit 0 (22/22 PASS incl. deny_webfetch_real_lockdown). make provenance-snapshot ran (1075 lines snapshotted, committed). No code fix needed -- both commands were already green from P0-01..P0-10. Pushed build/2026-09-29 to origin (b992fec..d4a0213).
+Manual check: NOT VERIFIED (human):
+1. Restart Claude Code, approve hooks in /hooks, confirm provenance/tool-log.jsonl grows per tool call.
+2. Fresh session: WebSearch/WebFetch refused with "cleanroom guard:" and logged denied.
+3. GitHub Actions ci run for the pushed branch is green.
+4. Spot-check docs/rfc/*.txt against rfc-editor.org.
+5. Record any intervention in provenance/human-interventions.md.
