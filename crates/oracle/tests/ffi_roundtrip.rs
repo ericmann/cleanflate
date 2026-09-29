@@ -1,6 +1,6 @@
 use oracle::ffi::{
-    adler32, crc32, deflate_bytes, deflate_zeros, inflate_bytes, zlib_version, DeflateParams,
-    Framing, OracleStatus, Strategy,
+    adler32, crc32, deflate_bytes, deflate_zeros, inflate_bytes, inflate_gzip_members,
+    zlib_version, DeflateParams, Framing, OracleStatus, Strategy,
 };
 
 // Small local xorshift generator for pseudo-random test fixtures. Not the
@@ -164,6 +164,45 @@ fn gzip_inflate_reports_first_member_consumed() {
 
     let outcome = inflate_bytes(&both, Framing::Gzip, None, 1 << 20);
     assert_eq!(outcome.status, OracleStatus::StreamEnd);
+    assert_eq!(outcome.output, b"hello");
+    assert_eq!(outcome.consumed, member1.len());
+}
+
+#[test]
+fn gzip_multi_member_matches_concatenation() {
+    let params = default_params(6, Framing::Gzip);
+    let member1 = deflate_bytes(b"hello", &params, None).expect("deflate should succeed");
+    let member2 = deflate_bytes(b"world", &params, None).expect("deflate should succeed");
+
+    let mut both = member1.clone();
+    both.extend_from_slice(&member2);
+
+    let outcome = inflate_gzip_members(&both, 1 << 20);
+    assert_eq!(outcome.status, OracleStatus::StreamEnd);
+    assert_eq!(outcome.output, b"helloworld");
+    assert_eq!(outcome.consumed, both.len());
+
+    // Trailing bytes that don't start a new member: stop cleanly with
+    // consumed covering only the two real members.
+    let mut with_trailing = both.clone();
+    with_trailing.extend_from_slice(b"XYZ");
+    let outcome = inflate_gzip_members(&with_trailing, 1 << 20);
+    assert_eq!(outcome.status, OracleStatus::StreamEnd);
+    assert_eq!(outcome.output, b"helloworld");
+    assert_eq!(outcome.consumed, both.len());
+
+    // A second member with a corrupted CRC32 (RFC 1952 S2.3.1's trailer,
+    // the first 4 of the 8 trailer bytes) reports that member's error
+    // status; the first member's output is still returned.
+    let mut corrupt = member1.clone();
+    let mut bad_member2 = member2.clone();
+    let crc_byte = bad_member2.len() - 8;
+    if let Some(byte) = bad_member2.get_mut(crc_byte) {
+        *byte ^= 0xFF;
+    }
+    corrupt.extend_from_slice(&bad_member2);
+    let outcome = inflate_gzip_members(&corrupt, 1 << 20);
+    assert_ne!(outcome.status, OracleStatus::StreamEnd);
     assert_eq!(outcome.output, b"hello");
     assert_eq!(outcome.consumed, member1.len());
 }

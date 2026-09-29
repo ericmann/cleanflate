@@ -14,7 +14,7 @@ use std::io::Write;
 use libfuzzer_sys::fuzz_target;
 
 use cleanflate::{decompress_with, Error, Format, Options, TrailingData};
-use oracle::ffi::{inflate_bytes, Framing, OracleStatus};
+use oracle::ffi::{inflate_bytes, inflate_gzip_members, Framing, OracleStatus};
 
 const FUZZ_MAX_OUTPUT: u64 = 1 << 24;
 const MAX_LOGGED_INPUT_BYTES: usize = 4096;
@@ -96,7 +96,19 @@ fuzz_target!(|data: &[u8]| {
             ..Options::default()
         };
         let clean_result = decompress_with(format, data, &options);
-        let oracle_outcome = inflate_bytes(data, framing, None, FUZZ_MAX_OUTPUT as usize);
+        // RFC 1952 S2.2: a gzip stream is one or more concatenated
+        // members. C zlib's own single-member `inflate` (windowBits =
+        // 31) has no concept of that, so a plain `inflate_bytes` call
+        // would report a spurious divergence on every multi-member
+        // input cleanflate correctly decodes in full -- R1-07's
+        // multi-member-aware `inflate_gzip_members` closes that gap;
+        // raw and zlib have no such wrinkle and are unchanged.
+        let oracle_outcome = match framing {
+            Framing::Gzip => inflate_gzip_members(data, FUZZ_MAX_OUTPUT as usize),
+            Framing::Raw | Framing::Zlib => {
+                inflate_bytes(data, framing, None, FUZZ_MAX_OUTPUT as usize)
+            }
+        };
 
         let clean_ok = clean_result.is_ok();
         let oracle_ok = matches!(oracle_outcome.status, OracleStatus::StreamEnd);

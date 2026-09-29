@@ -482,6 +482,55 @@ pub fn adler32(data: &[u8]) -> u32 {
     (unsafe { sys::adler32(1, data.as_ptr(), data.len() as libz_sys::uInt) }) as u32
 }
 
+/// Decompress a concatenated multi-member gzip stream with C zlib (RFC
+/// 1952 S2.2): calls [`inflate_bytes`] repeatedly, once per member,
+/// concatenating each member's output, for as long as the remaining
+/// input starts with a gzip member's magic bytes (`1f 8b`) *and* the
+/// previous member reached [`OracleStatus::StreamEnd`]. Stops (without
+/// error) at the first remainder that doesn't start a new member --
+/// C zlib's own single-member `inflate` (`windowBits = 31`) has no
+/// concept of "trailing data", so this is what makes the oracle
+/// RFC-1952-S2.2-aware for R1-07's differential fuzz target. If any
+/// member's own decode fails, that member's status is returned as the
+/// whole call's status, with `output`/`consumed` covering only the
+/// members that succeeded before it.
+pub fn inflate_gzip_members(input: &[u8], max_output: usize) -> InflateOutcome {
+    let mut output: Vec<u8> = Vec::new();
+    let mut consumed = 0usize;
+
+    let status = loop {
+        let remaining = input.get(consumed..).unwrap_or(&[]);
+        let budget = max_output.saturating_sub(output.len());
+        let outcome = inflate_bytes(remaining, Framing::Gzip, None, budget);
+
+        if outcome.status != OracleStatus::StreamEnd {
+            // A failing member's own partial output (e.g. C zlib had
+            // already inflated the body before its trailer's CRC/ISIZE
+            // check failed) is not folded in: `output`/`consumed` stay
+            // exactly at the last successfully completed member.
+            break outcome.status;
+        }
+        output.extend_from_slice(&outcome.output);
+        consumed += outcome.consumed;
+
+        if output.len() >= max_output {
+            break OracleStatus::OutputLimit;
+        }
+
+        let next = input.get(consumed..).unwrap_or(&[]);
+        let starts_new_member = next.first() == Some(&0x1f) && next.get(1) == Some(&0x8b);
+        if !starts_new_member {
+            break OracleStatus::StreamEnd;
+        }
+    };
+
+    InflateOutcome {
+        output,
+        consumed,
+        status,
+    }
+}
+
 /// The C zlib version string linked into this build.
 pub fn zlib_version() -> String {
     let ptr = version_ptr();

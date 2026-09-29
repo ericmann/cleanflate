@@ -47,13 +47,18 @@ never the raw C bindings directly):
   This target never panics on a divergence -- two independently-written
   decoders disagreeing at the ragged edge of malformed input is
   expected background noise, not automatically a bug; `make
-  fuzz-divergences` summarizes counts per class for manual triage.
-  A 60-second smoke run reliably surfaces `gzip/clean_err_oracle_ok`
-  and `gzip/both_ok_differ`: these are the *expected* consequence of
-  `cleanflate` decoding every concatenated gzip member (RFC 1952 S2.2)
-  while the oracle's `inflateInit2_` with `windowBits=31` stops after
-  the first member (documented in `crates/oracle/src/ffi.rs` and its
-  P1-01 log entry) -- not a `cleanflate` bug.
+  fuzz-divergences` summarizes counts per class for manual triage. For
+  `Framing::Gzip` the oracle side uses `oracle::ffi::inflate_gzip_members`
+  (R1-07), not a single `inflate_bytes` call: plain C zlib's
+  `inflateInit2_` with `windowBits=31` only ever decodes one member and
+  has no notion of RFC 1952 S2.2's "members are simply concatenated", so
+  comparing against it directly used to make every multi-member gzip
+  input `cleanflate` correctly decodes in full look like a divergence
+  (`gzip/clean_err_oracle_ok`/`gzip/both_ok_differ`) that meant nothing.
+  `inflate_gzip_members` calls `inflate_bytes` once per member for as
+  long as the remainder starts with `1f 8b` and the previous member
+  reached `StreamEnd`, so what's left in the divergence log now reflects
+  real disagreements, not multi-member background noise.
 
 ## Seeds
 
