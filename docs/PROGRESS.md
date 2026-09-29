@@ -10,7 +10,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P0-05 Cleanroom self-test and hook wiring
 - [x] P0-06 commit-msg hook adding stage and task tags
 - [x] P0-07 Vendor RFC 1950/1951/1952 texts
-- [ ] P0-08 Download Canterbury and Silesia corpora
+- [!] P0-08 Download Canterbury and Silesia corpora
 - [ ] P0-09 CI entry point and GitHub Actions workflow
 - [ ] P0-10 Lockdown flag, provenance docs and log snapshot
 - [ ] P0-11 M0 acceptance and push
@@ -75,3 +75,6 @@ tools/git-hooks/commit-msg: POSIX-ish bash, always exits 0. Skips if message alr
 
 ### P0-07 — 460c711
 fetch-rfcs.sh fetched the three RFC texts via curl -fsSL from the rfc-editor.org allowlist URLs (only, retries 3x) and wrote docs/rfc/SOURCES.json ([{file,url,sha256,bytes,fetched_at}]); refuses if tools/cleanroom/LOCKDOWN exists. sources-check.sh verifies every docs/rfc/SOURCES.json entry exists with matching sha256 and each RFC text contains "Request for Comments: 195N"; also verifies testdata/corpora/SOURCES.json the same way (best-effort, only for files present locally) when that file exists. make sources-check wired, added to tools-check as a prerequisite. All 3 required test cases pass; a 4th case_corpus_tamper_fails is present per P0-08's acceptance note but self-skips (prints why) until P0-08 creates testdata/corpora/SOURCES.json. Real docs/rfc/*.txt fetched and committed; make ci green.
+
+### P0-08 — blocked
+BLOCKED: Tried: bash tools/cleanroom/fetch-corpora.sh all --record, which downloads Canterbury from the sole allowlisted URL (https://corpus.canterbury.ac.nz/resources/cantrbry.tar.gz) with 3 retries. Also tried the exact same URL directly with curl multiple times, including with full browser-like User-Agent/Accept/Accept-Language headers, both inside and outside the script. Fails: every attempt returns HTTP 403 from Cloudflare (server: cloudflare, sets a __cf_bm bot-management cookie), i.e. the corpus host is blocking this sandbox's requests at the edge, not a transient or script-level failure. Silesia, the other corpus, downloads fine (HTTP 200 on both allowlisted mirrors), and the fetch-corpora.sh script itself (usage, lockdown check, curl retry/fallback logic, tar/unzip extraction, SOURCES.json read/write, verify mode) is otherwise complete and was exercised successfully for the Silesia path. Think the fix is: this is an environment/network-policy problem (Cloudflare bot protection on corpus.canterbury.ac.nz), not something a different implementation can work around within the allowlisted URL; a human or a differently-provisioned CI runner needs to fetch Canterbury (or the SPEC/PLAN needs an approved alternate mirror URL added to the allowlist) before this task and its corpus-dependent downstream tasks (P1-02 onward) can complete for real. The fetch-corpora.sh script, its retry/verify logic and Makefile wiring are implemented and ready to rerun once Canterbury is reachable.
