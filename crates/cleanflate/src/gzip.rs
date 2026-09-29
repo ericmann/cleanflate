@@ -426,9 +426,20 @@ pub(crate) struct GzipDecoder {
     /// used as the trailing-data offset if it turns out not to be a new
     /// member.
     boundary_start: u64,
+    /// Counters of the members already finished (feature `stats` only).
+    #[cfg(feature = "stats")]
+    stats_done: Box<crate::stats::Stats>,
 }
 
 impl GzipDecoder {
+    /// Counters accumulated across every member so far.
+    #[cfg(feature = "stats")]
+    pub(crate) fn stats(&self) -> crate::stats::Stats {
+        let mut s = (*self.stats_done).clone();
+        s.merge(&self.inflater.stats());
+        s
+    }
+
     /// The decode path of the current member's inflater.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn inflater_path(&self) -> DecodePath {
@@ -457,6 +468,8 @@ impl GzipDecoder {
             trailing_start: None,
             boundary_pending: Vec::new(),
             boundary_start: 0,
+            #[cfg(feature = "stats")]
+            stats_done: Box::default(),
         }
     }
 
@@ -523,6 +536,8 @@ impl GzipDecoder {
                                     if self.headers.len() < self.max_gzip_headers {
                                         self.headers.push(header);
                                     }
+                                    #[cfg(feature = "stats")]
+                                    self.stats_done.merge(&self.inflater.stats());
                                     self.inflater = Inflater::new_with_path(self.path);
                                     self.member_crc = Crc32::new();
                                     self.member_len = 0;

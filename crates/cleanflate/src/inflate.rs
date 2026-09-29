@@ -6,6 +6,8 @@ use crate::bitreader::BitReader;
 use crate::decode_path::DecodePath;
 use crate::error::{Error, HuffmanError};
 use crate::huffman::{Decoded, Huffman, TableKind};
+#[cfg(feature = "stats")]
+use crate::stats::Stats;
 use crate::tables::{
     fixed_dist_lengths, fixed_litlen_lengths, CODE_LENGTH_ORDER, DIST_BASE, DIST_EXTRA,
     END_OF_BLOCK, LENGTH_BASE, LENGTH_EXTRA,
@@ -61,7 +63,14 @@ enum State {
 /// The result of decoding one Huffman symbol, with `NeedMoreBits`
 /// resolved away (the caller loops on that internally).
 enum SymbolOutcome {
-    Symbol { symbol: u16, len: u32 },
+    Symbol {
+        symbol: u16,
+        len: u32,
+        /// Whether a lookup-table entry (not the bit-serial walk)
+        /// resolved the symbol.
+        #[cfg(feature = "stats")]
+        via_table: bool,
+    },
     Invalid,
 }
 
@@ -104,6 +113,9 @@ pub(crate) struct Inflater {
     /// The last length value decoded (or expanded by a repeat), used by
     /// repeat code 16.
     dyn_prev_len: u8,
+    /// Counters (feature `stats` only).
+    #[cfg(feature = "stats")]
+    stats: Stats,
 }
 
 impl Inflater {
@@ -138,6 +150,8 @@ impl Inflater {
             dyn_cl_table: Huffman::empty(),
             dyn_lengths: Vec::new(),
             dyn_prev_len: 0,
+            #[cfg(feature = "stats")]
+            stats: Stats::default(),
         }
     }
 
@@ -155,6 +169,32 @@ impl Inflater {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn path(&self) -> DecodePath {
         self.path
+    }
+
+    /// A snapshot of this decoder's counters.
+    #[cfg(feature = "stats")]
+    pub(crate) fn stats(&self) -> Stats {
+        let mut s = self.stats.clone();
+        s.output_bytes = self.total_out;
+        s.refills = self.br.refills;
+        s.refill_bytes = self.br.refill_bytes;
+        s.window_bytes_written = self.window.written;
+        s
+    }
+
+    /// Count one symbol resolved from a table of `kind`.
+    #[cfg(feature = "stats")]
+    fn count_decode(&mut self, kind: TableKind, via_table: bool) {
+        let s = &mut self.stats;
+        let slot = match (kind, via_table) {
+            (TableKind::LitLen, true) => &mut s.litlen_table_decodes,
+            (TableKind::LitLen, false) => &mut s.litlen_serial_decodes,
+            (TableKind::Distance, true) => &mut s.dist_table_decodes,
+            (TableKind::Distance, false) => &mut s.dist_serial_decodes,
+            (TableKind::CodeLength, true) => &mut s.codelen_table_decodes,
+            (TableKind::CodeLength, false) => &mut s.codelen_serial_decodes,
+        };
+        stat!(*slot, 1);
     }
 
     /// Total bytes produced so far across all calls to `step`.
@@ -181,13 +221,24 @@ impl Inflater {
         pos: &mut usize,
     ) -> Option<SymbolOutcome> {
         loop {
+            #[cfg(feature = "stats")]
+            let (decoded, via_table) = match path {
+                DecodePath::Fast => table.decode_table_method(br),
+                DecodePath::Reference => (table.decode(br), false),
+            };
+            #[cfg(not(feature = "stats"))]
             let decoded = match path {
                 DecodePath::Fast => table.decode_table(br),
                 DecodePath::Reference => table.decode(br),
             };
             match decoded {
                 Decoded::Symbol { symbol, len } => {
-                    return Some(SymbolOutcome::Symbol { symbol, len })
+                    return Some(SymbolOutcome::Symbol {
+                        symbol,
+                        len,
+                        #[cfg(feature = "stats")]
+                        via_table,
+                    })
                 }
                 Decoded::Invalid => return Some(SymbolOutcome::Invalid),
                 Decoded::NeedMoreBits => {
@@ -211,6 +262,7 @@ impl Inflater {
         if let State::Failed(e) = &self.state {
             return Err(e.clone());
         }
+        stat!(self.stats.step_calls, 1);
 
         let mut pos = 0usize;
         let mut out_pos = 0usize;
@@ -221,6 +273,7 @@ impl Inflater {
                 State::Failed(e) => return Err(e.clone()),
                 _ => {}
             }
+            stat!(self.stats.state_dispatches, 1);
 
             match self.state.clone() {
                 State::BlockHeader => match self.br.take(input, &mut pos, 3) {
@@ -230,14 +283,18 @@ impl Inflater {
                         let btype = (bits >> 1) & 0b11;
                         match btype {
                             0 => {
+                                stat!(self.stats.blocks_stored, 1);
                                 self.state = State::StoredLen;
                             }
                             1 => {
+                                stat!(self.stats.blocks_fixed, 1);
+                                stat!(self.stats.fixed_table_clones, 2);
                                 self.litlen_table = self.fixed_litlen.clone();
                                 self.dist_table = self.fixed_dist.clone();
                                 self.state = State::LitLen;
                             }
                             2 => {
+                                stat!(self.stats.blocks_dynamic, 1);
                                 self.dyn_hlit = 0;
                                 self.dyn_hdist = 0;
                                 self.dyn_hclen = 0;
@@ -297,6 +354,7 @@ impl Inflater {
                         self.window.push(byte);
                     }
 
+                    stat!(self.stats.stored_bytes, n);
                     pos += n;
                     out_pos += n;
                     self.total_out += n as u64;
@@ -328,6 +386,8 @@ impl Inflater {
                     if i >= self.dyn_hclen {
                         match Huffman::from_lengths(&self.dyn_cl_lengths, TableKind::CodeLength) {
                             Ok(t) => {
+                                stat!(self.stats.table_builds, 1);
+                                stat!(self.stats.table_entries_built, t.table_entries());
                                 self.dyn_cl_table = t;
                                 self.state = State::CodeLens;
                             }
@@ -391,6 +451,11 @@ impl Inflater {
                                     return Err(e);
                                 }
                             };
+                        stat!(self.stats.table_builds, 2);
+                        stat!(
+                            self.stats.table_entries_built,
+                            litlen_table.table_entries() + dist_table.table_entries()
+                        );
                         self.litlen_table = litlen_table;
                         self.dist_table = dist_table;
                         self.dyn_lengths.clear();
@@ -414,7 +479,16 @@ impl Inflater {
                             self.state = State::Failed(e.clone());
                             return Err(e);
                         }
-                        SymbolOutcome::Symbol { symbol, len } => {
+                        SymbolOutcome::Symbol {
+                            symbol,
+                            len,
+                            #[cfg(feature = "stats")]
+                            via_table,
+                        } => {
+                            #[cfg(feature = "stats")]
+                            if symbol <= 18 && !(symbol == 16 && self.dyn_lengths.is_empty()) {
+                                self.count_decode(TableKind::CodeLength, via_table);
+                            }
                             if symbol <= 15 {
                                 self.br.consume(len);
                                 self.dyn_lengths.push(symbol as u8);
@@ -494,7 +568,12 @@ impl Inflater {
                             self.state = State::Failed(e.clone());
                             return Err(e);
                         }
-                        SymbolOutcome::Symbol { symbol, len } => {
+                        SymbolOutcome::Symbol {
+                            symbol,
+                            len,
+                            #[cfg(feature = "stats")]
+                            via_table,
+                        } => {
                             if symbol < 256 {
                                 // A literal: only commit (consume bits,
                                 // write the byte) once we know there is
@@ -504,6 +583,9 @@ impl Inflater {
                                     return Ok((pos, out_pos, InflateStatus::OutputFull));
                                 }
                                 self.br.consume(len);
+                                #[cfg(feature = "stats")]
+                                self.count_decode(TableKind::LitLen, via_table);
+                                stat!(self.stats.literals, 1);
                                 let byte = symbol as u8;
                                 if let Some(slot) = output.get_mut(out_pos) {
                                     *slot = byte;
@@ -513,9 +595,13 @@ impl Inflater {
                                 self.total_out += 1;
                             } else if symbol == END_OF_BLOCK {
                                 self.br.consume(len);
+                                #[cfg(feature = "stats")]
+                                self.count_decode(TableKind::LitLen, via_table);
                                 self.state = self.next_block_state();
                             } else if (257..=285).contains(&symbol) {
                                 self.br.consume(len);
+                                #[cfg(feature = "stats")]
+                                self.count_decode(TableKind::LitLen, via_table);
                                 self.state = State::LenExtra { sym: symbol };
                             } else {
                                 // 286/287: valid codes in the fixed table
@@ -562,6 +648,8 @@ impl Inflater {
                         SymbolOutcome::Symbol {
                             symbol: dsym,
                             len: bit_len,
+                            #[cfg(feature = "stats")]
+                            via_table,
                         } => {
                             if dsym >= 30 {
                                 // Distance codes 30/31 never occur in real
@@ -571,6 +659,8 @@ impl Inflater {
                                 return Err(e);
                             }
                             self.br.consume(bit_len);
+                            #[cfg(feature = "stats")]
+                            self.count_decode(TableKind::Distance, via_table);
                             self.state = State::DistExtra { len, dsym };
                         }
                     }
@@ -591,6 +681,28 @@ impl Inflater {
                                 };
                                 self.state = State::Failed(e.clone());
                                 return Err(e);
+                            }
+                            #[cfg(feature = "stats")]
+                            {
+                                stat!(self.stats.matches, 1);
+                                stat!(self.stats.match_bytes, len);
+                                if u32::from(len) > distance {
+                                    stat!(self.stats.overlap_matches, 1);
+                                }
+                                if let Some(b) = self
+                                    .stats
+                                    .match_len_hist
+                                    .get_mut(crate::stats::len_bucket(u32::from(len)))
+                                {
+                                    stat!(*b, 1);
+                                }
+                                if let Some(b) = self
+                                    .stats
+                                    .match_dist_hist
+                                    .get_mut(crate::stats::dist_bucket(distance))
+                                {
+                                    stat!(*b, 1);
+                                }
                             }
                             self.state = State::Copy {
                                 remaining: len,

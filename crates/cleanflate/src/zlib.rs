@@ -53,6 +53,12 @@ impl ZlibDecoder {
         }
     }
 
+    /// A snapshot of the counters.
+    #[cfg(feature = "stats")]
+    pub(crate) fn stats(&self) -> crate::stats::Stats {
+        self.inflater.stats()
+    }
+
     pub(crate) fn total_out(&self) -> u64 {
         self.inflater.total_out()
     }

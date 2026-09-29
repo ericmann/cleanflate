@@ -79,6 +79,15 @@ impl Backend {
         }
     }
 
+    #[cfg(feature = "stats")]
+    fn stats(&self) -> crate::stats::Stats {
+        match self {
+            Backend::Raw(i) => i.stats(),
+            Backend::Zlib(z) => z.stats(),
+            Backend::Gzip(g) => g.stats(),
+        }
+    }
+
     fn trailing_start(&self) -> Option<u64> {
         match self {
             Backend::Gzip(g) => g.trailing_start(),
@@ -325,6 +334,13 @@ impl Decompressor {
         self.backend.gzip_member_count()
     }
 
+    /// A snapshot of this decoder's counters (feature `stats`). Gzip
+    /// accumulates across members.
+    #[cfg(feature = "stats")]
+    pub fn stats(&self) -> crate::stats::Stats {
+        self.backend.stats()
+    }
+
     /// Total input bytes consumed so far.
     pub fn total_in(&self) -> u64 {
         self.total_in
@@ -364,9 +380,41 @@ pub(crate) fn decompress_with_path(
     options: &Options,
     path: DecodePath,
 ) -> Result<Decoded, Error> {
+    decompress_core(format, input, options, path).map(|core| core.decoded)
+}
+
+/// [`decompress_with`], also returning the decoder's counters plus the
+/// output-buffer growth this one-shot call performed (feature `stats`).
+#[cfg(feature = "stats")]
+pub fn decompress_with_stats(
+    format: Format,
+    input: &[u8],
+    options: &Options,
+) -> Result<(Decoded, crate::stats::Stats), Error> {
+    decompress_core(format, input, options, DecodePath::Fast).map(|core| (core.decoded, core.stats))
+}
+
+/// What the shared one-shot implementation produces.
+struct Core {
+    decoded: Decoded,
+    #[cfg(feature = "stats")]
+    stats: crate::stats::Stats,
+}
+
+/// The one implementation behind every one-shot entry point.
+fn decompress_core(
+    format: Format,
+    input: &[u8],
+    options: &Options,
+    path: DecodePath,
+) -> Result<Core, Error> {
     if input.is_empty() {
         return Err(Error::Truncated);
     }
+    #[cfg(feature = "stats")]
+    let mut resizes = 0u64;
+    #[cfg(feature = "stats")]
+    let mut allocated = 0u64;
 
     let mut decompressor = Decompressor::new_with_path(format, options.clone(), path);
     let mut buf: Vec<u8> = Vec::new();
@@ -377,6 +425,8 @@ pub(crate) fn decompress_with_path(
         let target_len = next_len(cur_len, options.max_output);
         if target_len > cur_len {
             buf.resize(target_len, 0);
+            stat!(resizes, 1);
+            stat!(allocated, target_len - cur_len);
         }
         let remaining_input = input.get(in_pos..).unwrap_or(&[]);
         let write_region = buf.get_mut(cur_len..).unwrap_or(&mut []);
@@ -423,10 +473,21 @@ pub(crate) fn decompress_with_path(
         .trailing_start()
         .map(|offset| offset as usize)
         .unwrap_or(in_pos);
-    Ok(Decoded {
-        data: buf,
-        consumed,
-        gzip_members: decompressor.gzip_headers().to_vec(),
+    #[cfg(feature = "stats")]
+    let stats = {
+        let mut s = decompressor.stats();
+        s.oneshot_resizes = resizes;
+        s.oneshot_bytes_allocated = allocated;
+        s
+    };
+    Ok(Core {
+        decoded: Decoded {
+            data: buf,
+            consumed,
+            gzip_members: decompressor.gzip_headers().to_vec(),
+        },
+        #[cfg(feature = "stats")]
+        stats,
     })
 }
 

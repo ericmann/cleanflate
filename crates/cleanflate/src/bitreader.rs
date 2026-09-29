@@ -16,15 +16,18 @@
 pub(crate) struct BitReader {
     buffer: u64,
     count: u32,
+    /// Fills that loaded at least one byte.
+    #[cfg(feature = "stats")]
+    pub(crate) refills: u64,
+    /// Bytes loaded by those fills.
+    #[cfg(feature = "stats")]
+    pub(crate) refill_bytes: u64,
 }
 
 impl BitReader {
     /// A reader with no buffered bits.
     pub(crate) fn new() -> Self {
-        BitReader {
-            buffer: 0,
-            count: 0,
-        }
+        BitReader::default()
     }
 
     /// Number of bits currently buffered.
@@ -37,6 +40,8 @@ impl BitReader {
     /// exhausted. Never loads a byte once `need` is already satisfied.
     /// Returns whether `need` bits are now available.
     pub(crate) fn fill(&mut self, input: &[u8], pos: &mut usize, need: u32) -> bool {
+        #[cfg(feature = "stats")]
+        let start = *pos;
         while self.count < need {
             let Some(&byte) = input.get(*pos) else {
                 break;
@@ -46,6 +51,14 @@ impl BitReader {
             self.buffer |= (byte as u64) << self.count;
             self.count += 8;
             *pos += 1;
+        }
+        #[cfg(feature = "stats")]
+        {
+            let loaded = pos.saturating_sub(start);
+            if loaded > 0 {
+                stat!(self.refills, 1);
+                stat!(self.refill_bytes, loaded);
+            }
         }
         self.count >= need
     }

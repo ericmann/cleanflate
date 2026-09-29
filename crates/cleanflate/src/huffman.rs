@@ -224,19 +224,35 @@ impl Huffman {
     /// share the uniform invalid-code rule: an `Invalid` table entry is
     /// `Invalid`, and the bit-serial fallback for a short buffer reports
     /// `Invalid` after one bit whenever no longer code exists.
+    #[cfg_attr(feature = "stats", allow(dead_code))]
     pub(crate) fn decode_table(&self, br: &BitReader) -> Decoded {
+        self.decode_table_method(br).0
+    }
+
+    /// [`Self::decode_table`], also reporting whether a table entry
+    /// resolved the symbol (`true`) or the bit-serial walk did (`false`).
+    pub(crate) fn decode_table_method(&self, br: &BitReader) -> (Decoded, bool) {
         if self.table_bits == 0 || br.available() < self.table_bits {
-            return self.decode(br);
+            return (self.decode(br), false);
         }
         let idx = br.peek(self.table_bits) as usize;
         match self.table.get(idx) {
-            Some(TableEntry::Symbol { symbol, len }) => Decoded::Symbol {
-                symbol: *symbol,
-                len: *len,
-            },
-            Some(TableEntry::Long) => self.decode(br),
-            Some(TableEntry::Invalid) | None => Decoded::Invalid,
+            Some(TableEntry::Symbol { symbol, len }) => (
+                Decoded::Symbol {
+                    symbol: *symbol,
+                    len: *len,
+                },
+                true,
+            ),
+            Some(TableEntry::Long) => (self.decode(br), false),
+            Some(TableEntry::Invalid) | None => (Decoded::Invalid, true),
         }
+    }
+
+    /// Number of lookup-table entries this table allocated.
+    #[cfg(feature = "stats")]
+    pub(crate) fn table_entries(&self) -> usize {
+        self.table.len()
     }
 }
 

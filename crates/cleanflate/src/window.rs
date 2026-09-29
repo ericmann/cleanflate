@@ -13,6 +13,9 @@ pub(crate) struct Window {
     /// ring), so distance/availability arithmetic is correct even past
     /// the first `WINDOW_SIZE` bytes.
     total: u64,
+    /// Bytes written into the ring, not counting dictionary prefill.
+    #[cfg(feature = "stats")]
+    pub(crate) written: u64,
 }
 
 impl Window {
@@ -21,6 +24,8 @@ impl Window {
         Window {
             buf: [0u8; WINDOW_SIZE],
             total: 0,
+            #[cfg(feature = "stats")]
+            written: 0,
         }
     }
 
@@ -31,6 +36,7 @@ impl Window {
             *slot = byte;
         }
         self.total += 1;
+        stat!(self.written, 1);
     }
 
     /// Bytes currently available to copy from: `min(total, WINDOW_SIZE)`.
@@ -54,6 +60,10 @@ impl Window {
     pub(crate) fn prefill(&mut self, data: &[u8]) {
         for &byte in data {
             self.push(byte);
+        }
+        #[cfg(feature = "stats")]
+        {
+            self.written = 0;
         }
     }
 
@@ -165,6 +175,7 @@ impl Window {
             written += chunk;
         }
         self.total += n as u64;
+        stat!(self.written, n);
         n
     }
 }
