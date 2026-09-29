@@ -19,7 +19,37 @@ class SummarizeTestBase(unittest.TestCase):
         self.root = Path(self.tmp.name)
         (self.root / "provenance").mkdir(parents=True)
         (self.root / "crates" / "cleanflate" / "src").mkdir(parents=True)
-        (self.root / "docs").mkdir(parents=True)
+        (self.root / "docs" / "rfc").mkdir(parents=True)
+        (self.root / "testdata" / "corpora").mkdir(parents=True)
+
+        (self.root / "docs" / "rfc" / "SOURCES.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "file": "rfc1950.txt",
+                        "url": "https://www.rfc-editor.org/rfc/rfc1950.txt",
+                    },
+                    {
+                        "file": "rfc1951.txt",
+                        "url": "https://www.rfc-editor.org/rfc/rfc1951.txt",
+                    },
+                    {
+                        "file": "rfc1952.txt",
+                        "url": "https://www.rfc-editor.org/rfc/rfc1952.txt",
+                    },
+                ]
+            )
+        )
+        (self.root / "testdata" / "corpora" / "SOURCES.json").write_text(
+            json.dumps(
+                {
+                    "canterbury": {
+                        "url": "https://corpus.canterbury.ac.nz/resources/cantrbry.tar.gz",
+                        "fetched_by": "human-operator-browser",
+                    }
+                }
+            )
+        )
 
         (self.root / "provenance" / "human-interventions.md").write_text(
             "| when (UTC) | who | stage/task | what | why |\n"
@@ -51,10 +81,10 @@ class TestTotals(SummarizeTestBase):
         text = self.summary()
         self.assertIn("## Totals by tool", text)
         self.assertIn("## Totals by stage", text)
-        # 9 implement-stage lines + 2 review-stage lines = 11 parsed entries
+        # 12 implement-stage lines + 2 review-stage lines = 14 parsed entries
         # (one line in the fixture is deliberately invalid JSON).
-        self.assertIn("| **total** | **11** |", text)
-        self.assertIn("| implement | 9 |", text)
+        self.assertIn("| **total** | **14** |", text)
+        self.assertIn("| implement | 12 |", text)
         self.assertIn("| review | 2 |", text)
 
 
@@ -98,6 +128,47 @@ class TestUrlsListed(SummarizeTestBase):
         # Grouped by tool.
         self.assertIn("### WebFetch", section)
         self.assertIn("### Bash", section)
+
+    def test_urls_from_fetch_scripts(self):
+        text = self.summary()
+        section = text.split("### Fetch scripts")[1].split("## Per-stage wall clock")[0]
+        # (a) an allowed Bash line invoking the RFC fetch script -> its
+        # manifest's URLs are listed, with the manifest path.
+        self.assertIn("https://www.rfc-editor.org/rfc/rfc1950.txt", section)
+        self.assertIn("https://www.rfc-editor.org/rfc/rfc1951.txt", section)
+        self.assertIn("https://www.rfc-editor.org/rfc/rfc1952.txt", section)
+        self.assertIn("docs/rfc/SOURCES.json", section)
+        # (b) an allowed Bash line that only greps the corpus fetch
+        # script's filename, and (c) a denied Bash line invoking it: the
+        # corpus manifest's URL must not appear.
+        self.assertNotIn(
+            "https://corpus.canterbury.ac.nz/resources/cantrbry.tar.gz", section
+        )
+
+    def test_urls_and_fetched_by_from_allowed_corpus_fetch_script(self):
+        # A second, separately-built log: an allowed invocation of the
+        # corpus fetch script lists its manifest's URL and fetched_by.
+        entries = [
+            {
+                "ts": "2026-01-01T00:00:00.000Z",
+                "foundry_stage": "implement",
+                "task_id": "P0-01",
+                "model": "model-a",
+                "tool": "Bash",
+                "target": "bash tools/cleanroom/fetch-corpora.sh canterbury --record",
+                "decision": "allowed",
+                "reason": None,
+            }
+        ]
+        log_path = self.root / "provenance" / "tool-log-2.jsonl"
+        log_path.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+        text = summarize.build_summary(log_path, self.root)
+        section = text.split("### Fetch scripts")[1].split("## Per-stage wall clock")[0]
+        self.assertIn(
+            "https://corpus.canterbury.ac.nz/resources/cantrbry.tar.gz", section
+        )
+        self.assertIn("human-operator-browser", section)
+        self.assertIn("testdata/corpora/SOURCES.json", section)
 
 
 class TestStageWallClockActiveTime(unittest.TestCase):
@@ -148,7 +219,7 @@ class TestModelsUnknownForNull(SummarizeTestBase):
     def test_models_unknown_for_null(self):
         text = self.summary()
         section = text.split("## Models per stage")[1].split("## Human interventions")[0]
-        self.assertIn("| implement | model-a | 8 |", section)
+        self.assertIn("| implement | model-a | 11 |", section)
         self.assertIn("| implement | unknown | 1 |", section)
         self.assertIn("| review | model-b | 1 |", section)
         self.assertIn("| review | unknown | 1 |", section)

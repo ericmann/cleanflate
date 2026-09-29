@@ -32,6 +32,141 @@ URL_RE = re.compile(r"https?://[^\s'\"()<>]+")
 # command ran, etc.) and excluded from the active-time sum.
 ACTIVE_GAP_MINUTES = 15
 
+# Fetch scripts under tools/cleanroom/ and the tracked manifest each one
+# writes (SPEC S5 M6: "every file and URL read"). Manifest paths are
+# relative to the repo root passed to build_summary, so tests can point
+# them at fixture manifests.
+FETCH_SCRIPT_MANIFESTS = {
+    "fetch-rfcs.sh": "docs/rfc/SOURCES.json",
+    "fetch-corpora.sh": "testdata/corpora/SOURCES.json",
+}
+
+# Bash command words that only *mention* a fetch script (search it, print
+# it, lint it, mark it executable, stage it) rather than run it. A line
+# whose first word is one of these never counts as an invocation, even if
+# a fetch-script filename appears later in the same command.
+MENTION_ONLY_VERBS = {
+    "grep",
+    "egrep",
+    "fgrep",
+    "sed",
+    "cat",
+    "head",
+    "tail",
+    "less",
+    "more",
+    "shellcheck",
+    "chmod",
+    "git",
+    "find",
+    "ls",
+    "wc",
+    "diff",
+    "stat",
+    "echo",
+    "printf",
+    "file",
+    "awk",
+}
+
+
+def _invoked_fetch_scripts(command: str) -> set[str]:
+    """Which fetch-script basenames (keys of FETCH_SCRIPT_MANIFESTS) a Bash
+    command *invokes* -- e.g. `bash tools/cleanroom/fetch-rfcs.sh`,
+    `./tools/cleanroom/fetch-corpora.sh all --record` -- as opposed to
+    merely mentioning the filename (grep/sed/cat/shellcheck/chmod/git add
+    on it). The command is split on shell separators (`;`, `&&`, `||`,
+    `|`, newlines) and each piece is judged independently."""
+    invoked: set[str] = set()
+    pieces = re.split(r"&&|\|\||[;|\n]", command)
+    for piece in pieces:
+        words = piece.split()
+        if not words:
+            continue
+        first = words[0]
+        first_base = first.rsplit("/", 1)[-1]
+        for script_name in FETCH_SCRIPT_MANIFESTS:
+            if script_name not in piece:
+                continue
+            if first_base in ("bash", "sh") and len(words) > 1:
+                second_base = words[1].rsplit("/", 1)[-1]
+                if second_base == script_name:
+                    invoked.add(script_name)
+                    continue
+            if first_base == script_name:
+                invoked.add(script_name)
+                continue
+            if first_base in MENTION_ONLY_VERBS:
+                continue
+    return invoked
+
+
+def _urls_from_rfc_manifest(path: Path) -> list[str]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    urls: list[str] = []
+    if isinstance(data, list):
+        for entry in data:
+            if isinstance(entry, dict) and entry.get("url"):
+                urls.append(str(entry["url"]))
+    return urls
+
+
+def _urls_from_corpus_manifest(path: Path) -> list[tuple[str, str | None]]:
+    """Returns (url, fetched_by) pairs, one per corpus in the manifest."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    pairs: list[tuple[str, str | None]] = []
+    if isinstance(data, dict):
+        for _corpus, info in data.items():
+            if not isinstance(info, dict):
+                continue
+            url = info.get("url")
+            if not url:
+                continue
+            fetched_by = info.get("fetched_by")
+            pairs.append((str(url), str(fetched_by) if fetched_by else None))
+    return pairs
+
+
+def render_fetch_scripts(entries: list[dict], root: Path) -> str:
+    """Fetch scripts *invoked* by an allowed Bash call, and every URL
+    recorded in the tracked manifest each one writes. A denied invocation,
+    or a line that merely mentions the script, contributes nothing here."""
+    invoked: set[str] = set()
+    for e in entries:
+        if e.get("decision") != "allowed":
+            continue
+        if e.get("tool") != "Bash":
+            continue
+        target = str(e.get("target", ""))
+        if not target:
+            continue
+        invoked |= _invoked_fetch_scripts(target)
+
+    if not invoked:
+        return "None recorded."
+
+    lines = []
+    for script_name in sorted(invoked):
+        manifest_rel = FETCH_SCRIPT_MANIFESTS[script_name]
+        manifest_path = root / manifest_rel
+        lines.append(f"### `tools/cleanroom/{script_name}` (manifest: `{manifest_rel}`)")
+        lines.append("")
+        if not manifest_path.is_file():
+            lines.append(f"MISSING: `{manifest_rel}` not found.")
+            lines.append("")
+            continue
+        if script_name == "fetch-rfcs.sh":
+            for u in _urls_from_rfc_manifest(manifest_path):
+                lines.append(f"- {u}")
+        else:
+            for u, fetched_by in _urls_from_corpus_manifest(manifest_path):
+                if fetched_by:
+                    lines.append(f"- {u} (fetched_by: {fetched_by})")
+                else:
+                    lines.append(f"- {u}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
 
 def default_log_path(root: Path) -> Path:
     live = root / "provenance" / "tool-log.jsonl"
@@ -346,6 +481,10 @@ def build_summary(log_path: Path, root: Path) -> str:
         "## URLs fetched",
         "",
         render_urls(entries),
+        "",
+        "### Fetch scripts",
+        "",
+        render_fetch_scripts(entries, root),
         "",
         "## Per-stage wall clock",
         "",
