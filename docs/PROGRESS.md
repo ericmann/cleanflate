@@ -49,7 +49,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P4-09 Performance pass 2 — measured hotspot and table-bits tuning
 - [x] P4-10 M4 acceptance and push
 - [x] P6-01 Provenance summary generator
-- [ ] P6-02 Build report generator and DESIGN.md audit
+- [x] P6-02 Build report generator and DESIGN.md audit
 - [ ] P6-03 Freeze and hand-off push
 - [ ] R1-01 Independent checksums in cleanflate unit-test fixtures (C16) plus a mechanical rule
 - [ ] R1-02 Output limit: empty output slice must be OutputFull, and cover the streaming limit arithmetic
@@ -378,3 +378,9 @@ Manual check: NOT VERIFIED (human):
 tools/cleanroom/summarize.py: build_summary(log_path, root) -> markdown string, main() CLI (--log/--out, defaults tool-log.jsonl else snapshot, provenance/SUMMARY.md). Sections: totals by tool/stage, denied calls table, files read (grouped by top-level repo dir, allowed only, Outside repository heading for non-repo paths), URLs fetched (allowed WebFetch only), per-stage wall clock (first/last ts, span, active time = sum of inter-call gaps <15min), models per stage (null -> "unknown"), human-interventions.md embedded verbatim, README.md's Known gaps section extracted verbatim, parse-error count (lines that fail json.loads are counted, never dropped silently).
 Tests: tools/cleanroom/tests/test_summarize.py (8 required names) + tools/cleanroom/tests/fixtures/tool-log.sample.jsonl (9 valid + 1 malformed line, exercises allowed/denied, multiple stages/models incl. null, in-repo/outside-repo reads, a WebFetch URL, and an explicit >15min idle gap case for the active-time exclusion). make provenance-summary ran for real against the actual live log (1400 entries) -- output inspected, all sections render correctly.
 make tools-check (52 python tests, up from 44), make fmt-check/lint/corpus/test/crate-checks/cleanroom-selftest all green.
+
+### P6-02 — 7ab2101
+tools/cleanroom/build_report.py: build_report(root) -> markdown, git_log() shells `git log --reverse --format` with field/record separators, commit_task()/commit_stage() parse [task:P<n>-...]/[stage:...]. Sections: Milestones (per-phase distinct task ids + commit count), Defects caught (Defects-caught: lines, "none" skipped, classify_defect() -- [stage:fix] always "review", else fuzz/conformance/proptest/test keyword match, else "other"), Review rounds (subject.startswith("review:"), "Pending: regenerate with make build-report..." when none), Known limitations (M5-deferred note, PERF.md's whole **Result:** paragraph gathered across its wrapped physical lines, provenance/README.md's Known gaps section verbatim, fuzz/artifacts/divergences.jsonl's distinct framing/class pairs if present).
+Tests: tools/cleanroom/tests/test_build_report.py (4 required names + 1 bonus, using a real temp git repo fixture via subprocess). make build-report ran for real: P0..P6 milestones (11/12/6/6/10/1 tasks), 7 real defects classified (4 tests, 3 other), 1 review round found, known limitations section fully populated including the P4-09 NOT MET result and both known-gaps and divergence-class lists.
+DESIGN.md audit: make design-check already green, every ### D- block already has an RFC: line, no fills needed.
+make tools-check (57 python tests, up from 52), make fmt-check/lint/corpus/test/crate-checks/cleanroom-selftest all green.
