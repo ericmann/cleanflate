@@ -9,7 +9,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P0-04 Decode-path switch and a uniform invalid-code rule
 - [x] P0-05 Fast-vs-reference differential test
 - [x] P0-06 Regression fixture store and repro tooling
-- [ ] P0-07 `stats` feature counters
+- [x] P0-07 `stats` feature counters
 - [ ] P0-08 Bench harness: medians, framings, levels, modes, JSON
 - [ ] P0-09 bench-compare, bench-noise, bench-md and `bench --stats`
 - [ ] P0-10 Cleanflate-only profiling entry point and `make profile`
@@ -57,3 +57,6 @@ tests/common/mod.rs (Trace/CallOutcome/trace/oneshot/dump_candidate/describe_dif
 
 ### P0-06 — e4b0694
 oracle::regress (Row/manifest parse+render, add_to, seed_into, run_add/run_seed), CLI regress-add/regress-seed, Makefile regress-seed, testdata/regressions/ (README, MANIFEST.tsv, 4 seed .bin), tests/regressions.rs (2 tests), chunking.rs dumps candidates to target/regress-candidates/ on failure (tags chunking, chunking-corrupt). Second regress-seed run is a no-op. Interpretation: row with only one chunk list uses 1021/997 for the other.
+
+### P0-07 — 21e4a39
+stats.rs (stat! macro on/off + Stats + len_bucket/dist_bucket), counters in Inflater (stats field), BitReader (refills, refill_bytes), Window (written), Huffman::decode_table_method/table_entries, gzip accumulates via Box<Stats> stats_done, Decompressor::stats(), decompress_with_stats via shared decompress_core. 6 tests in tests/stats.rs. Interpretations: table_builds excludes constructor's 2 fixed tables; fixed_table_clones = 2 per fixed block; window_bytes_written excludes dictionary prefill; given_back_bytes/fast_loop_* stay 0 until their tasks. Default build has no counter code (cfg + macro).
