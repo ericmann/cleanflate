@@ -28,7 +28,7 @@ crate-checks:
 cleanroom-selftest:
 	bash tools/cleanroom/selftest.sh
 
-tools-check:
+tools-check: sources-check
 	@set -e; \
 	if find tools -name '*.sh' -print -quit | grep -q .; then \
 		find tools -name '*.sh' -print0 | xargs -0 shellcheck; \
@@ -88,7 +88,7 @@ bench:
 	@echo "STUB: bench arrives in P4-09"
 
 sources-check:
-	@echo "STUB: sources-check arrives in P0-07"
+	bash tools/ci/sources-check.sh
 
 provenance-snapshot:
 	@echo "STUB: provenance-snapshot arrives in P0-10"
