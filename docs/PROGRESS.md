@@ -7,7 +7,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P0-02 Guard denies profiling of anything but cleanflate-only binaries
 - [x] P0-03 design-check enforces the [perf] decision format
 - [x] P0-04 Decode-path switch and a uniform invalid-code rule
-- [ ] P0-05 Fast-vs-reference differential test
+- [x] P0-05 Fast-vs-reference differential test
 - [ ] P0-06 Regression fixture store and repro tooling
 - [ ] P0-07 `stats` feature counters
 - [ ] P0-08 Bench harness: medians, framings, levels, modes, JSON
@@ -51,3 +51,6 @@ design-check.sh enforces [perf] blocks (Measurement: line + exact phrase); 4 new
 
 ### P0-04 — 8be8580
 DecodePath (decode_path.rs), test_hooks.rs (feature test-hooks), plumbed via Inflater::new_with_path/with_dictionary(dict,path), ZlibDecoder::new(dict,path), GzipDecoder::new(..,path), Decompressor::new_with_path, stream::decompress_with_path (pub(crate)). Window::copy_match_path (Reference => copy_match_bytewise). Inflater::new()/Window::copy_match kept as Fast wrappers for existing tests (allow dead_code when not test). Uniform invalid rule in Huffman::decode (no longer code => Invalid); D-26 added. Interpretation: table path delegates to serial when available<table_bits (equivalent). Note: dead-code allow is cfg_attr(not(test)) not any(test,test-hooks) since oracle dev-dep enables test-hooks in workspace lint.
+
+### P0-05 — c4b6e31
+tests/common/mod.rs (Trace/CallOutcome/trace/oneshot/dump_candidate/describe_diff + shared strategies), tests/fastslow.rs (4 tests), chunking.rs uses shared strategies. Makefile: proptest-3k/10k set both case env vars and run both tests; fastslow-full added to heavy. fastslow-full passed, 248s test time (4m10 wall). Quick tier ~37s release. No Fast/Reference differences found.
