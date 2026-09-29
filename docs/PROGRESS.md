@@ -25,7 +25,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P1-09 Fixed-Huffman blocks, length/distance decoding and window copies
 - [x] P1-10 Public raw API, Decompressor, output limit, trailing policy and early invariants
 - [x] P1-11 Conformance harness and M1 conformance test
-- [ ] P1-12 M1 acceptance and push
+- [x] P1-12 M1 acceptance and push
 - [x] P2-01 Huffman table validation, including single-code edge cases
 - [x] P2-02 Dynamic block header and code-length alphabet decoding
 - [x] P2-03 Table-driven Huffman decode path
@@ -317,3 +317,10 @@ Tests: crates/oracle/tests/manifest.rs, 4 cases, all pass (~30s, uses an empty c
 crates/oracle/src/conformance.rs: testdata_root() (CARGO_MANIFEST_DIR-based, never cwd), load_manifest() (panics naming `make corpus` on missing/unparsable manifest), selected(filter) (tier from CLEANFLATE_TIER env, quick=synthetic+canterbury default, full=+silesia; panics on zero-entry selection), check_entries(entries, decode_fn) -> Report (verifies generated-file sha256 against manifest first -- mismatch/missing says "run make corpus" -- then decodes and compares output sha256 against input_sha256; collects every Failure{id,detail} instead of stopping at the first; on an output mismatch it re-reads/regenerates the original input via the manifest's "input" field to report the first differing byte offset). Report::assert_ok() panics listing every failure.
 Test: crates/oracle/tests/conformance.rs::conformance_raw_stored_and_fixed filters framing=raw, dictionary=None, level==0 or strategy=="fixed", decodes with cleanflate::inflate. 262 entries pass on tier quick (make test), 286 on tier full (make conformance-full, 5.00s release). Makefile: conformance-full now real (corpus-full dep + CLEANFLATE_TIER=full cargo test --release -p oracle --test conformance); heavy now also depends on conformance-full.
 make fmt-check/lint/corpus/test/crate-checks/cleanroom-selftest all green.
+
+### P1-12 — ce5f469
+M1 acceptance: make ci exit 0 (incl. make design-check: every DESIGN.md ### D- block already has an RFC: line, no fix needed). make conformance-full: 286 entries, 4.80s test time (7.00s wall incl. corpus-full up-to-date check). cargo test -p oracle --test checksums: 2/2 pass. No code fix needed -- all green from P1-01..P1-11. make provenance-snapshot: 1152 lines. Pushed build/2026-09-29 to origin (d4a0213..ce5f469).
+Manual check: NOT VERIFIED (human):
+1. Read DESIGN.md D-01..D-12 for RFC grounding.
+2. Confirm GitHub CI is green.
+3. Spot-check that provenance/tool-log.snapshot.jsonl shows no forbidden reads.
