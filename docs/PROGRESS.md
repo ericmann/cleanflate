@@ -54,7 +54,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] R1-01 Independent checksums in cleanflate unit-test fixtures (C16) plus a mechanical rule
 - [x] R1-02 Output limit: empty output slice must be OutputFull, and cover the streaming limit arithmetic
 - [x] R1-03 Gzip: exact consumed at Done under TrailingData::Allow
-- [ ] R1-04 Bound retained gzip member headers during streaming
+- [x] R1-04 Bound retained gzip member headers during streaming
 - [ ] R1-05 Make stream_contract test drivers fail instead of hang on no progress
 - [ ] R1-06 Commit fuzz/Cargo.lock instead of gitignoring it to dodge libz-only-in-oracle
 - [ ] R1-07 Multi-member-aware oracle for differential fuzz target (c)
@@ -409,3 +409,9 @@ Fixed a real bug: gzip's GState::Boundary state advanced pos/total_in for every 
 Rewrote GState::Boundary to decide by peeking (input.get(pos)/input.get(pos+1)) instead of consuming, advancing pos/total_in only once a byte is confirmed to belong to a member (0x1f immediately followed by 0x8b); a byte not starting a member is left entirely unconsumed so resolve_trailing lands exactly on boundary_start. Kept the one documented exception: a lone 0x1f that is the last byte a call offers must still be consumed (NeedsInput-consumes-everything invariant, D-07) -- documented in lib.rs's streaming-contract docs and DESIGN.md D-19 (new "Update (R1-03)" paragraph)/D-20.
 New tests: gzip.rs::gzip_trailing_allow_consumed_exact (b"XYZ" and [0x1f,b'Z'] trailers, one-shot + streaming consumed, trailing_start()); stream_contract.rs::done_consumed_exact_all_formats (renamed/extended done_consumed_exact_raw_and_zlib to include Gzip; its loop now also breaks on NeedsInput+exhausted-input before calling finish(), since gzip with zero trailing bytes only reaches Done via finish(), never via decompress() itself).
 Tests: full cleanflate suite 157 (+1 net), make lint, make design-check, CLEANFLATE_CHUNKING_CASES=3000 proptest chunking all green.
+
+### R1-04 — 7a756eb
+Added config::DEFAULT_MAX_GZIP_HEADERS=1024 (C8-only), re-exported from lib.rs. Options::max_gzip_headers (defaulted from it). GzipDecoder gained member_count:u64 (incremented for every member unconditionally) alongside headers:Vec<GzipHeader> (only pushed while headers.len()<max_gzip_headers) -- every member still fully decoded/CRC-ISIZE-checked/counted regardless of cap. Decompressor::gzip_member_count() (via Backend, 0 for non-gzip) exposes the true count; gzip_headers()/Decoded::gzip_members stay bounded.
+Extended docs/foundry.json's tunables-defined-only-in-config and option-defaults-not-literal patterns/fixtures for the new name; DESIGN.md D-24; CLAUDE.md config.rs module-map line.
+New tests: gzip.rs::{gzip_many_members_headers_bounded (10 members, cap 3: full concatenated payload, gzip_members.len()==3, gzip_member_count()==10, streaming+one-shot), gzip_default_header_cap_from_config}.
+Tests: full cleanflate suite 159 (+2), make lint, foundry_verify (both extended constraints 0 hits), make design-check all green.
