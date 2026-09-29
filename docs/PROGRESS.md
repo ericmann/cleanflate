@@ -8,7 +8,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P0-03 Provenance library and PostToolUse logger
 - [x] P0-04 PreToolUse clean-room guard
 - [x] P0-05 Cleanroom self-test and hook wiring
-- [ ] P0-06 commit-msg hook adding stage and task tags
+- [x] P0-06 commit-msg hook adding stage and task tags
 - [ ] P0-07 Vendor RFC 1950/1951/1952 texts
 - [ ] P0-08 Download Canterbury and Silesia corpora
 - [ ] P0-09 CI entry point and GitHub Actions workflow
@@ -69,3 +69,6 @@ guard.py: evaluate(hook_input)->(decision,reason) plus main() wiring stdin->eval
 
 ### P0-05 — 0593469
 .claude/settings.json created (did not exist) with PreToolUse->guard.py, PostToolUse->log.py, exactly the SPEC hooks block. tools/cleanroom/fixtures/*.json use __ROOT__/__HOME__ placeholders. selftest.sh substitutes via sed, runs 21 named PASS/FAIL cases per the task list, checks denied-log-line count matches deny-case count, checks log.py writes one allowed entry with all 8 keys in order, checks .claude/settings.json via jq, and verifies the real provenance/tool-log.jsonl is untouched. make cleanroom-selftest wired. Fixed two real guard.py bugs found by exercising it live during fixture-writing (not by a self-test case per se, caught manually first): (1) Bash segment splitting used regex split on bare "|" which broke on quoted grep alternation patterns (e.g. "zlib\|gzip") -- replaced with quote-aware split_top_level_segments(); (2) the outside-repo/target containment check required every resolved path variant (normpath AND realpath) to be inside root, which fails when the repo is reached via a symlinked working directory -- fixed by canonicalizing root with realpath and accepting a token if any variant resolves inside. Both described under Interpretation/Defects-caught in the P0-05 commit; guard.py unit tests (all 43) still pass.
+
+### P0-06 — a33862b
+tools/git-hooks/commit-msg: POSIX-ish bash, always exits 0. Skips if message already contains "[stage:". Task derivation: ^ID-N: subject -> that ID; ^plan:/^review: -> plan/review; ^progress: -> first ID-N token else "progress"; otherwise lowercase word before first colon else "unknown". Stage: plan:/review: subjects -> plan/review; subject containing "summary" -> summarize; else "fix" if .foundry/state.json round>=1 (jq if present else sed fallback) else "implement". Appends blank line + tag line at end of file. make hooks-install now runs git config core.hooksPath tools/git-hooks (was a stub); ran it for this clone. tools-check already ran tools/git-hooks/tests/*_test.sh from the P0-02 guard I added, so no Makefile test-wiring change needed here. All 8 tests pass. Verified: git log -1 --format=%B on this commit shows exactly one tag line (hook left an already-tagged message unchanged).
