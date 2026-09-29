@@ -50,7 +50,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P4-10 M4 acceptance and push
 - [x] P6-01 Provenance summary generator
 - [x] P6-02 Build report generator and DESIGN.md audit
-- [ ] P6-03 Freeze and hand-off push
+- [x] P6-03 Freeze and hand-off push
 - [ ] R1-01 Independent checksums in cleanflate unit-test fixtures (C16) plus a mechanical rule
 - [ ] R1-02 Output limit: empty output slice must be OutputFull, and cover the streaming limit arithmetic
 - [ ] R1-03 Gzip: exact consumed at Done under TrailingData::Allow
@@ -384,3 +384,10 @@ tools/cleanroom/build_report.py: build_report(root) -> markdown, git_log() shell
 Tests: tools/cleanroom/tests/test_build_report.py (4 required names + 1 bonus, using a real temp git repo fixture via subprocess). make build-report ran for real: P0..P6 milestones (11/12/6/6/10/1 tasks), 7 real defects classified (4 tests, 3 other), 1 review round found, known limitations section fully populated including the P4-09 NOT MET result and both known-gaps and divergence-class lists.
 DESIGN.md audit: make design-check already green, every ### D- block already has an RFC: line, no fills needed.
 make tools-check (57 python tests, up from 52), make fmt-check/lint/corpus/test/crate-checks/cleanroom-selftest all green.
+
+### P6-03 — 9691aff
+Final acceptance: make ci exit 0. make heavy (proptest-10k 10000 cases, bomb, conformance-full 1625 entries) all pass. make provenance-summary and make build-report both regenerated without error (1436-line log snapshotted; SUMMARY.md/BUILD_REPORT.md refreshed). make crate-checks exit 0. No code fix needed -- everything already green from P0-01..P6-02. Pushed build/2026-09-29 to origin (a8fed62..9691aff).
+Manual check: NOT VERIFIED (human):
+1. After the Foundry review converges and the branch merges, run make provenance-snapshot provenance-summary build-report, commit, then git tag v0.1.0-cleanroom && git push origin v0.1.0-cleanroom.
+2. Complete provenance/human-interventions.md.
+3. Confirm the 1-hour fuzz results from P4-10 are recorded in BUILD_REPORT.md.
