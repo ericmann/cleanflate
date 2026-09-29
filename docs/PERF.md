@@ -46,3 +46,85 @@ Corpus: silesia | zlib 1.3.2
 | silesia-xml | 5345280 | 104.3 | 450.1 | 0.23 |
 | **aggregate** | | **56.8** | **250.2** | **0.23** |
 
+## Pass 1 (P4-08)
+
+Two changes were attempted:
+
+1. **Window bulk match copy** (`crates/cleanflate/src/window.rs`, kept):
+   when a length/distance match cannot overlap itself (`distance >=
+   len`), copy it via up to two contiguous slice copies each way
+   (respecting the ring buffer's wraparound point) instead of `len`
+   individual `get_back`/`push` calls. Verified against a byte-by-byte
+   reference implementation for a spread of distances/lengths including
+   wraparound (`crates/cleanflate/src/tests/fastpath.rs`), and the full
+   test suite plus 3000 `chunking` proptest cases (`CLEANFLATE_CHUNKING_CASES=3000
+   cargo test --release -p oracle --test chunking`) pass unchanged.
+2. **Fast decode loop with proactive bulk bit-buffer refill**
+   (`crates/cleanflate/src/inflate.rs`/`bitreader.rs`, **reverted**): a
+   loop entered from `Inflater::step` while `state == LitLen` and at
+   least 16 input bytes / 258 output bytes remained, decoding
+   literal/length+distance symbols directly without returning to the
+   outer state dispatch, refilling the bit buffer to ~56 bits at a time
+   instead of reactively one byte at a time. This surfaced two real bugs:
+   first, over-reading whole bytes into the bit buffer beyond what a
+   block actually used corrupted gzip's per-member trailer boundary
+   detection (fixed by giving back unconsumed whole bytes to `consumed`
+   on a `Done` exit); second, and not tracked down to its root cause
+   within this task's budget, `CLEANFLATE_CHUNKING_CASES=3000 cargo test
+   --release -p oracle --test chunking` found a ~11 KiB Fixed-strategy
+   raw stream (heavy on length/distance matches) that decoded one byte
+   short of the original, with `Decompressor` stuck reporting
+   `NeedsInput` after consuming 100% of a self-produced, definitely-
+   complete compressed stream -- bits were being silently dropped
+   somewhere in the fast litlen/length/distance chain. Per this task's
+   own "if the change ... breaks any test, revert it and record the
+   negative result instead" clause, both files were reverted to their
+   pre-P4-08 state in full.
+
+Corpus: silesia | zlib 1.3.2 (window-bulk-copy change only; measured
+after reverting the fast decode loop)
+
+### raw
+
+| file | bytes | cleanflate MiB/s | zlib MiB/s | ratio |
+|---|---:|---:|---:|---:|
+| silesia-dickens | 10192446 | 56.2 | 271.0 | 0.21 |
+| silesia-mozilla | 51220480 | 62.7 | 248.5 | 0.25 |
+| silesia-mr | 9970564 | 64.0 | 302.5 | 0.21 |
+| silesia-nci | 33553445 | 173.0 | 493.2 | 0.35 |
+| silesia-ooffice | 6152192 | 47.6 | 200.5 | 0.24 |
+| silesia-osdb | 10085684 | 74.3 | 300.1 | 0.25 |
+| silesia-reymont | 6627202 | 75.3 | 315.9 | 0.24 |
+| silesia-samba | 21606400 | 75.5 | 299.8 | 0.25 |
+| silesia-sao | 7251944 | 40.6 | 226.0 | 0.18 |
+| silesia-webster | 41458703 | 55.2 | 243.1 | 0.23 |
+| silesia-x-ray | 8474240 | 35.5 | 200.2 | 0.18 |
+| silesia-xml | 5345280 | 168.2 | 637.4 | 0.26 |
+| **aggregate** | | **66.5** | **280.5** | **0.24** |
+
+### zlib
+
+| file | bytes | cleanflate MiB/s | zlib MiB/s | ratio |
+|---|---:|---:|---:|---:|
+| silesia-dickens | 10192446 | 49.5 | 241.8 | 0.20 |
+| silesia-mozilla | 51220480 | 52.0 | 226.7 | 0.23 |
+| silesia-mr | 9970564 | 53.0 | 259.3 | 0.20 |
+| silesia-nci | 33553445 | 114.1 | 362.3 | 0.32 |
+| silesia-ooffice | 6152192 | 34.0 | 189.0 | 0.18 |
+| silesia-osdb | 10085684 | 55.7 | 256.5 | 0.22 |
+| silesia-reymont | 6627202 | 61.3 | 266.9 | 0.23 |
+| silesia-samba | 21606400 | 71.4 | 278.6 | 0.26 |
+| silesia-sao | 7251944 | 35.6 | 216.7 | 0.16 |
+| silesia-webster | 41458703 | 59.3 | 234.6 | 0.25 |
+| silesia-x-ray | 8474240 | 32.0 | 187.6 | 0.17 |
+| silesia-xml | 5345280 | 118.8 | 522.6 | 0.23 |
+| **aggregate** | | **57.9** | **252.6** | **0.23** |
+
+Aggregate change vs Baseline: raw 67.4 -> 66.5 MiB/s (-1.3%, within
+run-to-run noise), zlib 56.8 -> 57.9 MiB/s (+1.9%). The window bulk-copy
+change alone is not a measurable win on this corpus/level; most Silesia
+matches at level 6 are short and/or short-distance (the overlap-eligible
+case the bulk path does not help), so this is an honest report of a
+change that is safe and correct but not a meaningful performance win by
+itself. The reverted fast decode loop was the change actually expected
+to move the needle; it remains future work.

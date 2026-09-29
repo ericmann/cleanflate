@@ -521,3 +521,42 @@ larger than the configured limit is the only way to exercise the limit
 check under a realistic adversarial shape, while keeping the test suite
 itself fast (the fixture's own compression is a few hundred
 milliseconds of C code, not a multi-gigabyte allocation).
+
+### D-22: Window bulk match copy; fast decode loop attempted and reverted
+
+RFC: RFC 1951 S2, S3.2.5 (n/a beyond that for the performance-pass
+mechanics themselves)
+Decision: `Window::copy_match` now special-cases the non-overlapping
+case (`distance >= len`, i.e. every source byte is already final
+history from before this match started): it copies via up to two
+contiguous slice copies each way (splitting only at the ring buffer's
+own wraparound point), through a small `[u8; 258]` stack scratch buffer
+(never a heap allocation, since RFC 1951 S3.2.5 bounds a match to 258
+bytes) rather than `len` individual `get_back`/`push` calls. The
+overlapping case (`distance < len`, RFC 1951 S2's classic
+distance-shorter-than-length repeat) is unchanged: byte-by-byte,
+pushing each copied byte into the ring before reading the next, exactly
+as D-08 describes, since a bulk copy cannot see a byte the match itself
+is still producing. A second, more ambitious change -- a fast decode
+loop in `Inflater::step`, entered only while `state == LitLen` and at
+least 16 input bytes/258 output bytes remained, decoding several
+literal/length+distance symbols directly with a proactively
+bulk-refilled bit buffer instead of returning to the outer state
+dispatch after each one -- was implemented, found to corrupt gzip's
+per-member trailer boundary detection (fixed: giving back whole
+unconsumed buffered bytes to `consumed` on a `Done` exit restores the
+resumable-reader invariant D-07 describes), then found to silently drop
+bits on a heavily-matched ~11 KiB stream (a `CLEANFLATE_CHUNKING_CASES=3000`
+proptest case), and reverted in full rather than shipped with an
+unresolved correctness bug.
+Rationale: PLAN.md P4-08 explicitly allows reverting an unsuccessful
+performance change and recording the negative result rather than
+shipping it; a decompressor silently dropping bytes is worse than a
+missed throughput target (SPEC S1: safety and correctness rank above
+performance). The window bulk-copy path is provably safe (checked
+against an independent byte-by-byte reference across distances/lengths
+including ring wraparound, plus the full existing suite and 3000
+chunking-invariance proptest cases, all unchanged) even though it is
+not, by itself, a measurable win on the Silesia corpus at level 6 (see
+docs/PERF.md's Pass 1 table): most matches there are short and/or
+short-distance, the overlap-eligible case this change does not help.

@@ -11,6 +11,7 @@ pub(crate) mod bitwriter;
 mod checksum;
 mod dynbuilder;
 mod error;
+mod fastpath;
 mod gzip;
 mod gzip_header;
 mod huffman;
