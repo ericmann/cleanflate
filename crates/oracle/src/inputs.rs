@@ -45,6 +45,22 @@ impl Input {
             }),
         }
     }
+
+    /// The manifest `input` field: `synthetic:<id>` for a synthetic input,
+    /// `testdata/corpora/<dir>/<name>` for a corpus file.
+    pub fn manifest_source(&self) -> String {
+        match self.tier {
+            Tier::Synthetic => format!("synthetic:{}", self.id),
+            Tier::Canterbury => format!(
+                "testdata/corpora/canterbury/{}",
+                self.id.strip_prefix("canterbury-").unwrap_or(&self.id)
+            ),
+            Tier::Silesia => format!(
+                "testdata/corpora/silesia/{}",
+                self.id.strip_prefix("silesia-").unwrap_or(&self.id)
+            ),
+        }
+    }
 }
 
 fn seed_for(id: &str) -> u64 {

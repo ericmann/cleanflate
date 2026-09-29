@@ -14,10 +14,10 @@ test:
 	cargo test --workspace
 
 corpus:
-	@echo "STUB: corpus arrives in P1-03"
+	cargo run --release -q -p oracle -- generate --tier quick
 
 corpus-full:
-	@echo "STUB: corpus-full arrives in P1-03"
+	cargo run --release -q -p oracle -- generate --tier full
 
 conformance-full:
 	@echo "STUB: conformance-full arrives in P1-03"

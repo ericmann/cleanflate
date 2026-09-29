@@ -39,7 +39,7 @@ pub struct EntrySpec {
     pub relative_path: String,
 }
 
-fn tier_token(tier: Tier) -> &'static str {
+pub(crate) fn tier_token(tier: Tier) -> &'static str {
     match tier {
         Tier::Synthetic => "synthetic",
         Tier::Canterbury => "canterbury",
