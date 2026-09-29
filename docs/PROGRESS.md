@@ -9,7 +9,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P0-04 PreToolUse clean-room guard
 - [x] P0-05 Cleanroom self-test and hook wiring
 - [x] P0-06 commit-msg hook adding stage and task tags
-- [ ] P0-07 Vendor RFC 1950/1951/1952 texts
+- [x] P0-07 Vendor RFC 1950/1951/1952 texts
 - [ ] P0-08 Download Canterbury and Silesia corpora
 - [ ] P0-09 CI entry point and GitHub Actions workflow
 - [ ] P0-10 Lockdown flag, provenance docs and log snapshot
@@ -72,3 +72,6 @@ guard.py: evaluate(hook_input)->(decision,reason) plus main() wiring stdin->eval
 
 ### P0-06 — a33862b
 tools/git-hooks/commit-msg: POSIX-ish bash, always exits 0. Skips if message already contains "[stage:". Task derivation: ^ID-N: subject -> that ID; ^plan:/^review: -> plan/review; ^progress: -> first ID-N token else "progress"; otherwise lowercase word before first colon else "unknown". Stage: plan:/review: subjects -> plan/review; subject containing "summary" -> summarize; else "fix" if .foundry/state.json round>=1 (jq if present else sed fallback) else "implement". Appends blank line + tag line at end of file. make hooks-install now runs git config core.hooksPath tools/git-hooks (was a stub); ran it for this clone. tools-check already ran tools/git-hooks/tests/*_test.sh from the P0-02 guard I added, so no Makefile test-wiring change needed here. All 8 tests pass. Verified: git log -1 --format=%B on this commit shows exactly one tag line (hook left an already-tagged message unchanged).
+
+### P0-07 — 460c711
+fetch-rfcs.sh fetched the three RFC texts via curl -fsSL from the rfc-editor.org allowlist URLs (only, retries 3x) and wrote docs/rfc/SOURCES.json ([{file,url,sha256,bytes,fetched_at}]); refuses if tools/cleanroom/LOCKDOWN exists. sources-check.sh verifies every docs/rfc/SOURCES.json entry exists with matching sha256 and each RFC text contains "Request for Comments: 195N"; also verifies testdata/corpora/SOURCES.json the same way (best-effort, only for files present locally) when that file exists. make sources-check wired, added to tools-check as a prerequisite. All 3 required test cases pass; a 4th case_corpus_tamper_fails is present per P0-08's acceptance note but self-skips (prints why) until P0-08 creates testdata/corpora/SOURCES.json. Real docs/rfc/*.txt fetched and committed; make ci green.
