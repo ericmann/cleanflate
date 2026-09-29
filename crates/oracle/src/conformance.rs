@@ -17,9 +17,13 @@ use crate::manifest::{sha256_hex, Manifest, ManifestEntry};
 /// into an `output_chunk`-sized buffer, looping `decompress` calls
 /// (including empty-input calls, since a chunk boundary can land inside
 /// already-buffered bits that still need a further call to flush) until
-/// [`Status::Done`], then calls `finish()`. Used to prove chunking
-/// invariance against odd chunk sizes that don't divide the corpus
-/// (SPEC S3.3, S5 M2).
+/// [`Status::Done`], or until all input has been fed and a call makes no
+/// further progress -- gzip in particular can sit in a "boundary" state
+/// after its last member's trailer, correctly reporting `NeedsInput`
+/// rather than `Done` since another member could still follow; only
+/// `finish()` (called unconditionally afterwards) resolves that. Used to
+/// prove chunking invariance against odd chunk sizes that don't divide
+/// the corpus (SPEC S3.3, S5 M2/M3).
 pub fn decode_streaming(
     decompressor: &mut Decompressor,
     bytes: &[u8],
@@ -43,7 +47,9 @@ pub fn decode_streaming(
             break;
         }
         if progress.consumed == 0 && progress.produced == 0 && pos >= bytes.len() {
-            return Err("stream did not reach Done after consuming all input (stuck)".to_string());
+            // No more input, and this call made no progress: let finish()
+            // decide whether this is a valid stopping point.
+            break;
         }
     }
 
@@ -60,7 +66,10 @@ pub fn testdata_root() -> PathBuf {
         .join("testdata")
 }
 
-fn repo_root() -> PathBuf {
+/// The repository root (`testdata/`'s parent), for resolving a manifest
+/// entry's `input`/`dictionary.input` fields, which are recorded relative
+/// to it.
+pub fn repo_root() -> PathBuf {
     testdata_root().join("..")
 }
 
@@ -157,6 +166,18 @@ fn original_bytes(entry: &ManifestEntry, root: &Path) -> Result<Vec<u8>, String>
     }
 }
 
+/// Read the first `dictionary.len` bytes of the file named by a manifest
+/// entry's `dictionary.input` field (relative to the repo root). Used to
+/// reconstruct the exact preset dictionary a zlib entry was generated
+/// with.
+pub fn dictionary_bytes(dictionary: &crate::manifest::DictionaryRecord) -> Result<Vec<u8>, String> {
+    let root = repo_root();
+    let bytes = std::fs::read(root.join(&dictionary.input))
+        .map_err(|e| format!("reading dictionary {}: {e}", dictionary.input))?;
+    let len = dictionary.len.min(bytes.len());
+    Ok(bytes.get(..len).unwrap_or(&bytes).to_vec())
+}
+
 fn first_diff_offset(a: &[u8], b: &[u8]) -> usize {
     a.iter()
         .zip(b.iter())
@@ -167,12 +188,13 @@ fn first_diff_offset(a: &[u8], b: &[u8]) -> usize {
 /// For each of `entries`: read its generated file, verify its sha256
 /// against the manifest (a mismatch or missing file fails with a message
 /// telling the operator to run `make corpus`), decode it with
-/// `decode_fn`, and compare the decoded output's sha256 against the
-/// manifest's `input_sha256`. Collects every failure instead of stopping
-/// at the first.
+/// `decode_fn` (given the entry itself, so the caller can pick a format
+/// or supply a dictionary per entry), and compare the decoded output's
+/// sha256 against the manifest's `input_sha256`. Collects every failure
+/// instead of stopping at the first.
 pub fn check_entries<F>(entries: &[ManifestEntry], decode_fn: F) -> Report
 where
-    F: Fn(&[u8]) -> Result<Vec<u8>, String>,
+    F: Fn(&ManifestEntry, &[u8]) -> Result<Vec<u8>, String>,
 {
     let testdata = testdata_root();
     let root = repo_root();
@@ -205,7 +227,7 @@ where
             continue;
         }
 
-        let decoded = match decode_fn(&bytes) {
+        let decoded = match decode_fn(entry, &bytes) {
             Ok(d) => d,
             Err(e) => {
                 report.failures.push(Failure {
