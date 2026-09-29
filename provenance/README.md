@@ -123,6 +123,12 @@ own log entry says as much), as CR5 requires.
   also tried with a browser-like `User-Agent` header specifically (not
   just a bare `curl`), and still blocked -- see the row this file's
   table already has for the human-operator download that resolved it.
+- Files read through a `Bash` command (`cat`, `sed -n`, `grep`, `head`,
+  ...) appear in the log only as that command's `Bash` entry, not under
+  `SUMMARY.md`'s "Files read" section -- that section lists `Read`/
+  `Write`/`Edit`/`NotebookEdit` targets only, so a file inspected purely
+  via a shell command is provenance-visible (it is still logged, in the
+  `Bash` target string) but not enumerated by path there.
 
 ## Harness status during build
 

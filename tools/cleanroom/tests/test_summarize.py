@@ -51,10 +51,10 @@ class TestTotals(SummarizeTestBase):
         text = self.summary()
         self.assertIn("## Totals by tool", text)
         self.assertIn("## Totals by stage", text)
-        # 7 implement-stage lines + 2 review-stage lines = 9 parsed entries
+        # 9 implement-stage lines + 2 review-stage lines = 11 parsed entries
         # (one line in the fixture is deliberately invalid JSON).
-        self.assertIn("| **total** | **9** |", text)
-        self.assertIn("| implement | 7 |", text)
+        self.assertIn("| **total** | **11** |", text)
+        self.assertIn("| implement | 9 |", text)
         self.assertIn("| review | 2 |", text)
 
 
@@ -84,6 +84,20 @@ class TestUrlsListed(SummarizeTestBase):
         text = self.summary()
         section = text.split("## URLs fetched")[1].split("## Per-stage wall clock")[0]
         self.assertIn("https://www.rfc-editor.org/rfc/rfc1951.txt", section)
+
+    def test_urls_from_bash_curl(self):
+        text = self.summary()
+        section = text.split("## URLs fetched")[1].split("## Per-stage wall clock")[0]
+        # An allowed Bash curl call's URL is extracted and listed.
+        self.assertIn(
+            "https://corpus.canterbury.ac.nz/resources/cantrbry.tar.gz", section
+        )
+        # A denied Bash curl call's URL must never appear here -- it
+        # belongs only in the Denied calls table.
+        self.assertNotIn("https://example.com/should-not-appear.tar.gz", section)
+        # Grouped by tool.
+        self.assertIn("### WebFetch", section)
+        self.assertIn("### Bash", section)
 
 
 class TestStageWallClockActiveTime(unittest.TestCase):
@@ -134,7 +148,7 @@ class TestModelsUnknownForNull(SummarizeTestBase):
     def test_models_unknown_for_null(self):
         text = self.summary()
         section = text.split("## Models per stage")[1].split("## Human interventions")[0]
-        self.assertIn("| implement | model-a | 6 |", section)
+        self.assertIn("| implement | model-a | 8 |", section)
         self.assertIn("| implement | unknown | 1 |", section)
         self.assertIn("| review | model-b | 1 |", section)
         self.assertIn("| review | unknown | 1 |", section)

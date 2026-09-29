@@ -14,11 +14,18 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+# Matches an http(s) URL embedded anywhere in a Bash command line (e.g.
+# `curl -sSfL -o x https://host/path`, a fetch-script invocation), stopping
+# at whitespace or the shell/quoting characters that commonly terminate a
+# URL in a command line.
+URL_RE = re.compile(r"https?://[^\s'\"()<>]+")
 
 # Gaps under this many minutes count as "active" time between calls; a
 # larger gap is treated as idle (the operator stepped away, a long-running
@@ -168,18 +175,36 @@ def render_files_read(entries: list[dict], root: Path) -> str:
 
 
 def render_urls(entries: list[dict]) -> str:
-    urls = sorted(
-        {
-            str(e.get("target", ""))
-            for e in entries
-            if e.get("decision") == "allowed"
-            and e.get("tool") == "WebFetch"
-            and e.get("target")
-        }
-    )
-    if not urls:
+    """Every http(s) URL in an *allowed* WebFetch or Bash call, grouped by
+    tool (SPEC S5 M6: the summary must not claim no URL was fetched when
+    the log shows a curl/wget fetch or a fetch-script invocation via
+    Bash). Denied calls never contribute a URL here -- they already show
+    up in the Denied calls table."""
+    by_tool: dict[str, set[str]] = {}
+    for e in entries:
+        if e.get("decision") != "allowed":
+            continue
+        tool = e.get("tool")
+        target = str(e.get("target", ""))
+        if not target:
+            continue
+        if tool == "WebFetch":
+            by_tool.setdefault("WebFetch", set()).add(target)
+        elif tool == "Bash":
+            found = URL_RE.findall(target)
+            if found:
+                by_tool.setdefault("Bash", set()).update(found)
+
+    if not by_tool:
         return "None recorded."
-    return "\n".join(f"- {u}" for u in urls)
+    lines = []
+    for tool in sorted(by_tool):
+        lines.append(f"### {tool}")
+        lines.append("")
+        for u in sorted(by_tool[tool]):
+            lines.append(f"- {u}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
 
 
 def stage_wall_clock(entries: list[dict]) -> dict[str, dict]:
