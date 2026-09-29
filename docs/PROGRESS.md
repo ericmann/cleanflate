@@ -57,7 +57,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] R1-04 Bound retained gzip member headers during streaming
 - [x] R1-05 Make stream_contract test drivers fail instead of hang on no progress
 - [x] R1-06 Commit fuzz/Cargo.lock instead of gitignoring it to dodge libz-only-in-oracle
-- [ ] R1-07 Multi-member-aware oracle for differential fuzz target (c)
+- [x] R1-07 Multi-member-aware oracle for differential fuzz target (c)
 - [ ] R1-08 Complete the provenance record: intervention row, denial notes, bootstrap gaps
 
 ## Log
@@ -424,3 +424,9 @@ Tests: full stream_contract suite (9, unchanged), make lint, foundry_verify all 
 ### R1-06 — 3176487
 Removed the /fuzz/Cargo.lock gitignore entry and explanatory comment; committed fuzz/Cargo.lock (pins libz-sys 1.1.29, matching the workspace Cargo.lock, verified before committing). Added "exclude": ["fuzz/Cargo.lock"] to docs/foundry.json's libz-only-in-oracle constraint and reworded its description to say lockfiles are exempt (a lockfile necessarily lists oracle's transitive libz-sys pin like every other transitive dep); every existing fixture kept unchanged.
 Tests: make crate-checks (forbidden-paths ok with the tracked file), make fuzz-check (builds clean against the committed lockfile), foundry_verify (libz-only-in-oracle: ok, 0 hits).
+
+### R1-07 — 540d41c
+Added oracle::ffi::inflate_gzip_members(input, max_output) -> InflateOutcome: calls inflate_bytes once per member for as long as the remaining input starts with 1f 8b and the previous member reached StreamEnd, concatenating output/consumed only for members that fully succeeded (a failing member's own partial output -- C zlib had already inflated the body before its trailer's CRC/ISIZE check failed -- is deliberately not folded in, so the aggregate result reflects only cleanly-verified members). diff_oracle_arbitrary now calls this for Framing::Gzip only; Raw/Zlib unchanged. Updated fuzz/README.md's target (c) description accordingly.
+New test: crates/oracle/tests/ffi_roundtrip.rs::gzip_multi_member_matches_concatenation (two members concatenate, consumed==total; b"XYZ" trailer -> StreamEnd with consumed==member bytes only; corrupted CRC32 in member 2 -> that member's error status, output/consumed covering only member 1).
+Ran make fuzz-smoke for real (all 5 targets, 60s each): zero crashes, and fuzz/artifacts/divergences.jsonl was not even created this run -- zero divergences of any class, where earlier P4-05/R1 runs always surfaced gzip/both_ok_differ + gzip/clean_err_oracle_ok noise (confirms the multi-member gap is closed).
+Tests: make test, make fuzz-check, foundry_verify all green.
