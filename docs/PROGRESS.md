@@ -20,7 +20,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P1-04 Adler-32 and CRC-32 in cleanflate
 - [x] P1-05 Error types, options, config constants, RFC tables, DESIGN.md skeleton
 - [x] P1-06 Resumable bit reader and 32 KiB window
-- [ ] P1-07 Canonical Huffman construction and bit-serial decoder
+- [x] P1-07 Canonical Huffman construction and bit-serial decoder
 - [ ] P1-08 Inflater state machine with block headers and stored blocks
 - [ ] P1-09 Fixed-Huffman blocks, length/distance decoding and window copies
 - [ ] P1-10 Public raw API, Decompressor, output limit, trailing policy and early invariants
@@ -105,3 +105,6 @@ error.rs: Error (#[non_exhaustive], 12 variants per SPEC S3.3), HeaderError, Huf
 
 ### P1-06 — 24c3a76
 bitreader.rs: BitReader{buffer:u64,count:u32}, new/available/fill(input,pos,need)/peek(n<=32, zero-padded)/consume(n)/take(input,pos,n)->Option<u32>/align_to_byte. fill loads whole bytes only while count<need (never overshoots), using input.get(*pos) (no indexing). take returns None on exhaustion but leaves whatever partial fill happened (pos advanced, buffer holds loaded bytes). window.rs: Window{buf:[u8;WINDOW_SIZE],total:u64} ring buffer; push/available/get_back(distance, 1=last)/prefill(keep last 32768 via repeated push)/copy_match(distance,len,out)->usize which pushes each copied byte before reading the next, so distance<len overlaps (e.g. distance 3, len 7 on "abc" -> "abcabca") self-repeat correctly. Both modules #[allow(dead_code)] at mod declaration until Phase 2 wires them into Inflater. DESIGN.md D-07 (bit order/buffer invariant) and D-08 (window ring/overlap) added -- D-06 was already taken by P1-05's length-code boundary decision, so this task's two decisions shifted to D-07/D-08. All 13 new tests pass (30 total in the crate); two tests initially had wrong hand-computed expected values (my arithmetic, not the implementation) for align_drops_partial_byte and wraps_after_32768, corrected after seeing the real (correct) output.
+
+### P1-07 — 0239978
+huffman.rs: Huffman{counts:[u16;16],symbols:Vec<u16>}. from_lengths builds a length histogram then runs the RFC 1951 S3.2.2 recurrence as a "codes still available" left-capacity check (left=1; left=(left<<1)-count[len]; left<0 => OverSubscribed); symbols vector built ordered by (length,symbol value) by iterating len 1..=15 x symbol ascending. decode(&self, &BitReader)->Decoded{Symbol{symbol,len}|NeedMoreBits|Invalid}: for len in 1..=15, reads one new bit via peek(len)>>(len-1)&1 (MSB-first code assembly), tracks first/index via the same recurrence, matches when code-first<count. Never consumes (peek-only). tests/bitwriter.rs: test-only BitWriter{write_bits LSB-first, write_code MSB-first, align, finish} for building fixture streams, reused by later Huffman/inflate tests (module marked #[allow(dead_code)] for the currently-unused write_code). DESIGN.md D-09 added (D-06/07/08 already taken by P1-05/06). All 5 huffman tests pass, including the RFC's own ABCDEFGH worked example (F=00,A=010,...,H=1111) and 8 fixed-code spot checks (0->00110000 ... 287->11000111), on the first implementation attempt -- no debugging needed.
