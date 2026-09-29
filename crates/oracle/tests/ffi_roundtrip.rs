@@ -208,6 +208,30 @@ fn gzip_multi_member_matches_concatenation() {
 }
 
 #[test]
+fn gzip_multi_member_1f_trailer_is_trailing() {
+    // R2-04: a lone `0x1f` not followed by `0x8b` must not be mistaken
+    // for the start of a new member -- covers `inflate_gzip_members`'s
+    // `starts_new_member` check (both bytes required, not just the
+    // first), so a regression that treats any `0x1f` as a new member
+    // (which would reintroduce spurious fuzz target (c) gzip
+    // divergences) fails this test.
+    let params = default_params(6, Framing::Gzip);
+    let member1 = deflate_bytes(b"hello", &params, None).expect("deflate should succeed");
+    let member2 = deflate_bytes(b"world", &params, None).expect("deflate should succeed");
+
+    let mut both = member1;
+    both.extend_from_slice(&member2);
+
+    let mut with_1f_trailer = both.clone();
+    with_1f_trailer.extend_from_slice(&[0x1f, b'Z']);
+
+    let outcome = inflate_gzip_members(&with_1f_trailer, 1 << 20);
+    assert_eq!(outcome.status, OracleStatus::StreamEnd);
+    assert_eq!(outcome.output, b"helloworld");
+    assert_eq!(outcome.consumed, both.len());
+}
+
+#[test]
 fn zlib_version_is_nonempty() {
     assert!(!zlib_version().is_empty());
 }
