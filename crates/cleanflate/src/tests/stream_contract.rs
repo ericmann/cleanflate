@@ -244,11 +244,28 @@ fn after_done_reject_and_allow() {
             let mut pos = 0usize;
             let mut result = Ok(());
             loop {
-                match d.decompress(bytes.get(pos..).unwrap_or(&[]), &mut out) {
+                let input = bytes.get(pos..).unwrap_or(&[]);
+                let input_was_empty = input.is_empty();
+                match d.decompress(input, &mut out) {
                     Ok(progress) => {
                         pos += progress.consumed;
                         if progress.status == Status::Done {
                             break;
+                        }
+                        // R1-05: a call on empty input that makes no
+                        // progress and isn't Done means this driver is
+                        // stuck -- fail loudly instead of looping
+                        // forever (make test hanging on a decoder
+                        // regression, rather than turning red).
+                        if input_was_empty
+                            && progress.consumed == 0
+                            && progress.produced == 0
+                            && progress.status != Status::Done
+                        {
+                            panic!(
+                                "{format:?}: no progress on empty input, status={:?} (expected Done or an error)",
+                                progress.status
+                            );
                         }
                     }
                     Err(e) => {
@@ -309,11 +326,23 @@ fn error_sticky_all_formats() {
         let mut out = [0u8; 64];
         let mut pos = 0usize;
         let first_err = loop {
-            match d.decompress(bytes.get(pos..).unwrap_or(&[]), &mut out) {
+            let input = bytes.get(pos..).unwrap_or(&[]);
+            let input_was_empty = input.is_empty();
+            match d.decompress(input, &mut out) {
                 Ok(progress) => {
                     pos += progress.consumed;
                     if progress.status == Status::Done {
                         panic!("{format:?}: expected a checksum error, got Done");
+                    }
+                    // R1-05: a call on empty input that makes no
+                    // progress and isn't Done means this driver is
+                    // stuck -- fail loudly instead of looping forever.
+                    if input_was_empty && progress.consumed == 0 && progress.produced == 0 {
+                        panic!(
+                            "{format:?}: no progress on empty input, status={:?} \
+                             (expected a checksum error)",
+                            progress.status
+                        );
                     }
                 }
                 Err(e) => break e,
