@@ -2,3 +2,6 @@
 //! benchmarking support for `cleanflate`. Never used by `cleanflate` itself.
 
 pub mod ffi;
+pub mod inputs;
+pub mod matrix;
+pub mod prng;
