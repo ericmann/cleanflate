@@ -115,7 +115,7 @@ provenance-summary:
 	python3 tools/cleanroom/summarize.py
 
 build-report:
-	@echo "STUB: build-report arrives in P6"
+	python3 tools/cleanroom/build_report.py
 
 hooks-install:
 	git config core.hooksPath tools/git-hooks
