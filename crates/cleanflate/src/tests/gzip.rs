@@ -1,3 +1,4 @@
+use crate::config::DEFAULT_MAX_GZIP_HEADERS;
 use crate::error::{ChecksumKind, Error};
 use crate::options::{Format, Options, TrailingData};
 use crate::stream::{decompress_with, gzip_decompress, Decompressor, Status};
@@ -36,6 +37,14 @@ fn known_crc32(data: &[u8]) -> u32 {
         b"hi" => 0xD893_2AAC,
         b"a" => 0xE8B7_BE43,
         b"b" => 0x71BE_EFF9,
+        b"c" => 0x06B9_DF6F,
+        b"d" => 0x98DD_4ACC,
+        b"e" => 0xEFDA_7A5A,
+        b"f" => 0x76D3_2BE0,
+        b"g" => 0x01D4_1B76,
+        b"h" => 0x916B_06E7,
+        b"i" => 0xE66C_3671,
+        b"j" => 0x7F65_67CB,
         b"ab" => 0x9E83_486D,
         b"cd" => 0x45D6_8FDA,
         other => panic!(
@@ -274,6 +283,54 @@ fn gzip_trailing_allow_consumed_exact() {
             "trailing_start: trailer={trailer:?}"
         );
     }
+}
+
+#[test]
+fn gzip_many_members_headers_bounded() {
+    // R1-04: SPEC S1 bounded memory -- retaining every member's header
+    // forever would be unbounded for a hostile stream with many tiny
+    // members. Every member is still fully decoded/checksummed/counted;
+    // only the header stops being retained past the cap.
+    let mut bytes = Vec::new();
+    let mut expected = Vec::new();
+    for i in 0u8..10 {
+        let payload = [b'a' + i];
+        bytes.extend_from_slice(&gzip_member(&stored_body(&payload), &payload));
+        expected.extend_from_slice(&payload);
+    }
+
+    let options = Options {
+        max_gzip_headers: 3,
+        ..Options::default()
+    };
+    let decoded = decompress_with(Format::Gzip, &bytes, &options).expect("no error");
+    assert_eq!(decoded.data, expected);
+    assert_eq!(decoded.gzip_members.len(), 3);
+
+    let mut d = Decompressor::new(Format::Gzip, options);
+    let mut out = [0u8; 64];
+    let mut pos = 0usize;
+    loop {
+        let progress = d.decompress(&bytes[pos..], &mut out).expect("no error");
+        pos += progress.consumed;
+        if progress.status == Status::Done {
+            break;
+        }
+        if progress.status == Status::NeedsInput && pos >= bytes.len() {
+            break;
+        }
+    }
+    d.finish().expect("finished cleanly");
+    assert_eq!(d.gzip_headers().len(), 3);
+    assert_eq!(d.gzip_member_count(), 10);
+}
+
+#[test]
+fn gzip_default_header_cap_from_config() {
+    assert_eq!(
+        Options::default().max_gzip_headers,
+        DEFAULT_MAX_GZIP_HEADERS
+    );
 }
 
 #[test]

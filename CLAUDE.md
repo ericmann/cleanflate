@@ -45,7 +45,7 @@ make provenance-snapshot provenance-summary build-report hooks-install
 - `crates/cleanflate/` is the product. It has zero dependencies and `#![forbid(unsafe_code)]`.
   - `src/lib.rs` holds the crate attributes, re-exports, and `inflate`, `zlib_decompress`, `gzip_decompress`, `decompress_with`.
   - `src/error.rs` defines `Error`, `HeaderError`, `HuffmanError`, `ChecksumKind` and `ErrorKind` (`Error::kind()`, `ErrorKind::as_str()`).
-  - `src/config.rs` holds `DEFAULT_MAX_OUTPUT`, `DEFAULT_MAX_GZIP_FIELD`, `LITLEN_TABLE_BITS` and `DIST_TABLE_BITS`, and is the only place they get values.
+  - `src/config.rs` holds `DEFAULT_MAX_OUTPUT`, `DEFAULT_MAX_GZIP_FIELD`, `DEFAULT_MAX_GZIP_HEADERS`, `LITLEN_TABLE_BITS` and `DIST_TABLE_BITS`, and is the only place they get values.
   - `src/options.rs` defines `Format { Raw, Zlib, Gzip }`, `Options`, and `TrailingData { Reject, Allow }`.
   - `src/checksum.rs` provides `Adler32`/`adler32` (RFC 1950) and `Crc32`/`crc32` (RFC 1952). It is public.
   - `src/tables.rs` holds the RFC 1951 §3.2.5–3.2.7 constant tables.

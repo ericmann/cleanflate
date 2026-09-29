@@ -101,7 +101,7 @@ mod tables;
 mod window;
 mod zlib;
 
-pub use config::{DEFAULT_MAX_GZIP_FIELD, DEFAULT_MAX_OUTPUT};
+pub use config::{DEFAULT_MAX_GZIP_FIELD, DEFAULT_MAX_GZIP_HEADERS, DEFAULT_MAX_OUTPUT};
 pub use error::{ChecksumKind, Error, ErrorKind, HeaderError, HuffmanError};
 pub use gzip::GzipHeader;
 pub use options::{Format, Options, TrailingData};

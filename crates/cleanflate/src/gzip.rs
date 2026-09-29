@@ -408,8 +408,12 @@ pub(crate) struct GzipDecoder {
     member_crc: Crc32,
     member_len: u64,
     headers: Vec<GzipHeader>,
+    /// Every member started, retained or not (SPEC S1: bounded memory
+    /// via `max_gzip_headers`, while still reporting the true count).
+    member_count: u64,
     trailing: TrailingData,
     max_gzip_field: usize,
+    max_gzip_headers: usize,
     total_in: u64,
     total_out: u64,
     trailing_start: Option<u64>,
@@ -423,15 +427,21 @@ pub(crate) struct GzipDecoder {
 }
 
 impl GzipDecoder {
-    pub(crate) fn new(trailing: TrailingData, max_gzip_field: usize) -> Self {
+    pub(crate) fn new(
+        trailing: TrailingData,
+        max_gzip_field: usize,
+        max_gzip_headers: usize,
+    ) -> Self {
         GzipDecoder {
             state: GState::MemberHeader(GzipHeaderParser::new(max_gzip_field)),
             inflater: Inflater::new(),
             member_crc: Crc32::new(),
             member_len: 0,
             headers: Vec::new(),
+            member_count: 0,
             trailing,
             max_gzip_field,
+            max_gzip_headers,
             total_in: 0,
             total_out: 0,
             trailing_start: None,
@@ -442,6 +452,11 @@ impl GzipDecoder {
 
     pub(crate) fn total_out(&self) -> u64 {
         self.total_out
+    }
+
+    /// Every member started so far, retained or not.
+    pub(crate) fn member_count(&self) -> u64 {
+        self.member_count
     }
 
     pub(crate) fn is_done(&self) -> bool {
@@ -494,7 +509,10 @@ impl GzipDecoder {
                                     return Ok((pos, out_pos, InflateStatus::NeedsInput));
                                 }
                                 Some(header) => {
-                                    self.headers.push(header);
+                                    self.member_count += 1;
+                                    if self.headers.len() < self.max_gzip_headers {
+                                        self.headers.push(header);
+                                    }
                                     self.inflater = Inflater::new();
                                     self.member_crc = Crc32::new();
                                     self.member_len = 0;

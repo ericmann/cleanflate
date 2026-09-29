@@ -13,6 +13,14 @@ pub const DEFAULT_MAX_OUTPUT: u64 = 1 << 30;
 /// memory").
 pub const DEFAULT_MAX_GZIP_FIELD: usize = 65_536;
 
+/// Default cap on how many parsed [`crate::GzipHeader`] values a
+/// streaming decode retains (RFC 1952 S2.2 puts no limit on how many
+/// members a gzip stream concatenates; SPEC S1 requires bounded memory
+/// regardless). Every member past this cap is still fully decoded,
+/// checksummed and counted -- only the header itself stops being kept
+/// around after this many.
+pub const DEFAULT_MAX_GZIP_HEADERS: usize = 1_024;
+
 /// Bits of lookahead the literal/length table-driven decode path
 /// indexes on (SPEC S5 M2: "a table-driven fast decode path"). Codes
 /// longer than this fall back to the bit-serial walk. P4-09 swept

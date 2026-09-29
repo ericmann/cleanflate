@@ -139,7 +139,7 @@
     },
     {
       "id": "tunables-defined-only-in-config",
-      "description": "Every tunable number (DEFAULT_MAX_OUTPUT, DEFAULT_MAX_GZIP_FIELD, LITLEN_TABLE_BITS, DIST_TABLE_BITS) is given a value only in crates/cleanflate/src/config.rs; everywhere else refers to the constant by name.",
+      "description": "Every tunable number (DEFAULT_MAX_OUTPUT, DEFAULT_MAX_GZIP_FIELD, DEFAULT_MAX_GZIP_HEADERS, LITLEN_TABLE_BITS, DIST_TABLE_BITS) is given a value only in crates/cleanflate/src/config.rs; everywhere else refers to the constant by name.",
       "paths": [
         "crates/",
         "fuzz/"
@@ -147,12 +147,13 @@
       "exclude": [
         "crates/cleanflate/src/config.rs"
       ],
-      "pattern": "\\b(DEFAULT_MAX_OUTPUT|DEFAULT_MAX_GZIP_FIELD|LITLEN_TABLE_BITS|DIST_TABLE_BITS)\\b\\s*(:\\s*[A-Za-z0-9_:<>]+\\s*)?=\\s*[-0-9(]",
+      "pattern": "\\b(DEFAULT_MAX_OUTPUT|DEFAULT_MAX_GZIP_FIELD|DEFAULT_MAX_GZIP_HEADERS|LITLEN_TABLE_BITS|DIST_TABLE_BITS)\\b\\s*(:\\s*[A-Za-z0-9_:<>]+\\s*)?=\\s*[-0-9(]",
       "shouldMatch": [
         "pub const DEFAULT_MAX_OUTPUT: u64 = 1 << 30;",
         "const LITLEN_TABLE_BITS: u32 = 10;",
         "let DIST_TABLE_BITS = 8;",
-        "pub(crate) const DEFAULT_MAX_GZIP_FIELD: usize = (64 * 1024);"
+        "pub(crate) const DEFAULT_MAX_GZIP_FIELD: usize = (64 * 1024);",
+        "pub const DEFAULT_MAX_GZIP_HEADERS: usize = 1024;"
       ],
       "shouldNotMatch": [
         "let bits = config::LITLEN_TABLE_BITS;",
@@ -171,18 +172,20 @@
         "crates/cleanflate/src/config.rs",
         "crates/cleanflate/src/tests/"
       ],
-      "pattern": "\\b(max_output|max_gzip_field)\\s*(:|=)\\s*[0-9(]",
+      "pattern": "\\b(max_output|max_gzip_field|max_gzip_headers)\\s*(:|=)\\s*[0-9(]",
       "shouldMatch": [
         "max_output: 1 << 30,",
         "max_gzip_field: 65536,",
         "options.max_output = 1_073_741_824;",
-        "let max_output = (1u64 << 30);"
+        "let max_output = (1u64 << 30);",
+        "max_gzip_headers: 1024,"
       ],
       "shouldNotMatch": [
         "max_output: config::DEFAULT_MAX_OUTPUT,",
         "pub max_output: u64,",
         "if self.total_out >= self.max_output {",
-        "max_gzip_field: DEFAULT_MAX_GZIP_FIELD,"
+        "max_gzip_field: DEFAULT_MAX_GZIP_FIELD,",
+        "max_gzip_headers: DEFAULT_MAX_GZIP_HEADERS,"
       ]
     },
     {

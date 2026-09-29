@@ -1,6 +1,6 @@
 //! The public `Format`/`Options`/`TrailingData` types (SPEC S3.3).
 
-use crate::config::{DEFAULT_MAX_GZIP_FIELD, DEFAULT_MAX_OUTPUT};
+use crate::config::{DEFAULT_MAX_GZIP_FIELD, DEFAULT_MAX_GZIP_HEADERS, DEFAULT_MAX_OUTPUT};
 
 /// Which framing to decode. `#[non_exhaustive]` keeps future additions
 /// non-breaking.
@@ -39,6 +39,11 @@ pub struct Options {
     pub dictionary: Option<Vec<u8>>,
     /// Maximum bytes retained per gzip FNAME/FCOMMENT/FEXTRA field.
     pub max_gzip_field: usize,
+    /// Maximum number of parsed gzip member headers retained by a
+    /// streaming decode (every member past this cap is still decoded and
+    /// counted, just not kept in [`crate::Decoded::gzip_members`] /
+    /// [`crate::Decompressor::gzip_headers`]).
+    pub max_gzip_headers: usize,
 }
 
 impl Default for Options {
@@ -48,6 +53,7 @@ impl Default for Options {
             trailing: TrailingData::default(),
             dictionary: None,
             max_gzip_field: DEFAULT_MAX_GZIP_FIELD,
+            max_gzip_headers: DEFAULT_MAX_GZIP_HEADERS,
         }
     }
 }

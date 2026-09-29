@@ -91,6 +91,15 @@ impl Backend {
             _ => &[],
         }
     }
+
+    /// Every gzip member started so far, retained or not (0 for
+    /// non-gzip formats).
+    fn gzip_member_count(&self) -> u64 {
+        match self {
+            Backend::Gzip(g) => g.member_count(),
+            _ => 0,
+        }
+    }
 }
 
 /// What happened during one [`Decompressor::decompress`] call.
@@ -123,7 +132,7 @@ pub struct Decoded {
     /// Bytes consumed from the input.
     pub consumed: usize,
     /// Parsed headers of every gzip member seen (empty for non-gzip
-    /// formats).
+    /// formats), bounded by [`Options::max_gzip_headers`].
     pub gzip_members: Vec<GzipHeader>,
 }
 
@@ -148,9 +157,11 @@ impl Decompressor {
                 None => Backend::Raw(Inflater::new()),
             },
             Format::Zlib => Backend::Zlib(ZlibDecoder::new(options.dictionary.clone())),
-            Format::Gzip => {
-                Backend::Gzip(GzipDecoder::new(options.trailing, options.max_gzip_field))
-            }
+            Format::Gzip => Backend::Gzip(GzipDecoder::new(
+                options.trailing,
+                options.max_gzip_field,
+                options.max_gzip_headers,
+            )),
         };
         Decompressor {
             backend,
@@ -292,9 +303,19 @@ impl Decompressor {
     }
 
     /// Parsed headers of every gzip member seen so far (empty for
-    /// non-gzip formats).
+    /// non-gzip formats). Bounded by [`Options::max_gzip_headers`]; use
+    /// [`Self::gzip_member_count`] for the true number of members seen,
+    /// including ones past that cap.
     pub fn gzip_headers(&self) -> &[GzipHeader] {
         self.backend.gzip_headers()
+    }
+
+    /// Every gzip member started so far, retained or not (0 for
+    /// non-gzip formats). Every member counted here was fully decoded
+    /// and checksummed; only its header may have been dropped once
+    /// [`Options::max_gzip_headers`] was reached.
+    pub fn gzip_member_count(&self) -> u64 {
+        self.backend.gzip_member_count()
     }
 
     /// Total input bytes consumed so far.

@@ -620,3 +620,29 @@ docs/PERF.md's Pass 2 for the measured effect and why slice-by-N CRC-32
 was left as future work) precisely because it changes nothing
 observable (same modulus, same per-byte contribution, just less often
 reduced) while removing the dominant per-byte cost.
+
+### D-24: Bounded retained gzip member headers
+
+RFC: RFC 1952 S2.2
+Decision: `GzipDecoder` gains `max_gzip_headers` (from the new
+`Options::max_gzip_headers`, defaulting to
+`config::DEFAULT_MAX_GZIP_HEADERS = 1024`) and a `member_count: u64`
+field. Every member header is still parsed and validated (including its
+FHCRC) exactly as before; `self.headers.push(header)` only happens while
+`self.headers.len() < self.max_gzip_headers`, while `member_count` is
+incremented unconditionally for every member. `Decompressor::gzip_headers`/
+`Decoded::gzip_members` therefore report at most `max_gzip_headers`
+entries; the new `Decompressor::gzip_member_count()` reports the true
+total regardless of the cap.
+Rationale: RFC 1952 S2.2 puts no limit on how many members a gzip stream
+concatenates ("simply concatenated, with no additional information
+before, between, or after them"), and each `GzipHeader` can itself carry
+retained FNAME/FCOMMENT/FEXTRA bytes (already bounded per-field by
+`max_gzip_field`, P3-03/D-18) plus a timestamp and flags -- a hostile
+stream of many tiny members would otherwise grow `Vec<GzipHeader>`
+without bound even though `max_gzip_field` already bounds each entry's
+own size, violating SPEC S1's "bounded memory" regardless of the
+per-field cap. Capping the count while still decoding, checksumming and
+counting every member (rather than stopping early) preserves the
+existing guarantee that every byte of every member's compressed payload
+is verified; only the header bookkeeping is bounded.
