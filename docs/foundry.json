@@ -35,7 +35,7 @@
   ],
   "baseBranch": "main",
   "branchPrefix": "build/",
-  "maxRounds": 3,
+  "maxRounds": 6,
   "maxRoundsHard": 6,
   "constraints": [
     {
