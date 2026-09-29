@@ -47,6 +47,16 @@ def word_hit(text: str, words) -> bool:
     return any(w in low for w in words)
 
 
+def canonicalize(path: str) -> str:
+    """Resolve symlinks so a repo reachable through more than one mount
+    path (e.g. a bind mount or symlinked workspace) still compares equal.
+    Falls back to normpath if realpath fails."""
+    try:
+        return os.path.normpath(os.path.realpath(path))
+    except Exception:
+        return os.path.normpath(path)
+
+
 def resolve_variants(raw: str, cwd: str):
     if not raw:
         raw = cwd or os.getcwd()
@@ -217,11 +227,17 @@ def _check_read_family_segment(segment: str, cwd: str, root: str):
         fuzz_target_dir = os.path.join(root, "fuzz", "target")
         all_inside = True
         for t in bases:
-            for v in resolve_variants(t, cwd):
-                if not is_under(v, root):
-                    all_inside = False
-                elif is_under(v, target_dir) or is_under(v, fuzz_target_dir):
-                    all_inside = False
+            variants = resolve_variants(t, cwd)
+            # A token counts as "inside root, not under target" if any of
+            # its resolutions (raw normpath or realpath) does -- a
+            # symlinked checkout can make one variant look external while
+            # the canonical one is fine.
+            token_ok = any(
+                is_under(v, root) and not (is_under(v, target_dir) or is_under(v, fuzz_target_dir))
+                for v in variants
+            )
+            if not token_ok:
+                all_inside = False
         if not all_inside:
             return f"forbidden word in command outside repo/target: {segment}"
 
@@ -247,6 +263,80 @@ def _check_read_family_segment(segment: str, cwd: str, root: str):
                         if not has_exclude:
                             return "recursive grep at repo root without --exclude-dir=target"
     return None
+
+
+def split_top_level_segments(command: str):
+    """Split a shell command into segments on unquoted ; & && | ||  and
+    newlines, so a literal '|' inside a quoted regex (e.g. grep -E "a|b")
+    is never mistaken for a shell pipe."""
+    segments = []
+    current = []
+    i = 0
+    n = len(command)
+    in_squote = False
+    in_dquote = False
+    while i < n:
+        c = command[i]
+        if in_squote:
+            current.append(c)
+            if c == "'":
+                in_squote = False
+            i += 1
+            continue
+        if in_dquote:
+            current.append(c)
+            if c == "\\" and i + 1 < n:
+                current.append(command[i + 1])
+                i += 2
+                continue
+            if c == '"':
+                in_dquote = False
+            i += 1
+            continue
+        if c == "'":
+            in_squote = True
+            current.append(c)
+            i += 1
+            continue
+        if c == '"':
+            in_dquote = True
+            current.append(c)
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:
+            current.append(c)
+            current.append(command[i + 1])
+            i += 2
+            continue
+        if c in ";\n":
+            segments.append("".join(current))
+            current = []
+            i += 1
+            continue
+        if c == "&":
+            if i + 1 < n and command[i + 1] == "&":
+                segments.append("".join(current))
+                current = []
+                i += 2
+                continue
+            segments.append("".join(current))
+            current = []
+            i += 1
+            continue
+        if c == "|":
+            if i + 1 < n and command[i + 1] == "|":
+                segments.append("".join(current))
+                current = []
+                i += 2
+                continue
+            segments.append("".join(current))
+            current = []
+            i += 1
+            continue
+        current.append(c)
+        i += 1
+    segments.append("".join(current))
+    return segments
 
 
 def check_bash(command: str, cwd: str, root: str, lockdown_exists: bool, allowlist):
@@ -285,7 +375,7 @@ def check_bash(command: str, cwd: str, root: str, lockdown_exists: bool, allowli
     ):
         return "forbidden root referenced in command"
 
-    for segment in re.split(r"\|\||&&|;|\||\n", command):
+    for segment in split_top_level_segments(command):
         segment = segment.strip()
         if not segment:
             continue
@@ -305,6 +395,7 @@ def evaluate(hook_input: dict):
         tool_input = {}
     cwd = hook_input.get("cwd") or os.getcwd() if isinstance(hook_input, dict) else os.getcwd()
     root = provenance.repo_root(hook_input if isinstance(hook_input, dict) else {})
+    root = canonicalize(root)
     home = os.environ.get("HOME", "")
     cargo_home = os.environ.get("CARGO_HOME")
     lockdown_exists = os.path.exists(lockdown_path(root))

