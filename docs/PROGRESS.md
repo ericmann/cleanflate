@@ -33,7 +33,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [-] P2-05 Full raw conformance
 - [-] P2-06 M2 acceptance and push
 - [x] P3-01 Preset dictionary support and the zlib wrapper
-- [ ] P3-02 Gzip member header parser
+- [x] P3-02 Gzip member header parser
 - [ ] P3-03 Gzip members, trailer, multi-member streams and gzip API
 - [ ] P3-04 Zlib and gzip conformance, dictionary and multi-member tests
 - [ ] P3-05 Malformed zlib and gzip cases
@@ -144,3 +144,6 @@ SKIPPED: depends on P2-05
 
 ### P3-01 — 1819a6b
 zlib.rs: ZlibDecoder{state,inflater,adler,dictionary,dict_id_buf,trailer_buf}, State{Cmf,Flg{cmf},DictId{collected},Body,Trailer{collected},Done,Failed}. Checks FCHECK((cmf*256+flg)%31==0) then CM(!=8) then CINFO(>7), matching RFC 1950 S2.2's own order. FDICT set -> read 4-byte big-endian DICTID; None dictionary->PresetDictionaryRequired{dict_id}; mismatched adler32(dict)!=dict_id->DictionaryMismatch; else Inflater::with_dictionary(dict) (new ctor, prefills window via existing Window::prefill) and ->Body. FDICT clear ignores any supplied dictionary (per RFC, no mechanism to use one without FDICT). Body delegates to self.inflater.step(), accumulating Adler32 over exactly the produced-byte slice each call. Trailer reads 4 big-endian bytes, compares to running Adler32, mismatch->ChecksumMismatch{kind:Adler32,...}. stream.rs: Decompressor now holds Backend{Raw(Inflater)|Zlib(ZlibDecoder)} (uniform step/is_done/total_out), so all limit/trailing/stickiness logic is format-agnostic -- Decompressor::new dispatches on Format, using Inflater::with_dictionary for Format::Raw+dictionary too. Format gained Zlib variant. lib.rs exports zlib_decompress. All 14 new tests + all 101 pre-existing tests (115 total) pass with zlib live in production on first attempt. DESIGN.md D-17 (D-16 already taken by P2-03).
+
+### P3-02 — c10d96a
+gzip.rs: pub struct GzipHeader{text,mtime,xfl,os,extra,name,comment,header_crc,truncated_fields} (#[non_exhaustive]). pub(crate) GzipHeaderParser::new(max_field)/feed(input)->Result<(usize,Option<GzipHeader>),Error>, byte-at-a-time resumable states Id1->Id2->Cm->Flg->Mtime{collected}->Xfl->Os->[ExtraLen{collected}->ExtraData]->[Name]->[Comment]->[Hcrc{collected}]->Done, each optional field's presence gated by decide_next(stage) consulting self.flg bits (FEXTRA/FNAME/FCOMMENT/FHCRC). Every header byte except the FHCRC field's own 2 bytes feeds a running Crc32 (crate::checksum::Crc32), including bytes discarded past max_field (truncated_fields=true) and FNAME/FCOMMENT's zero terminator (CRC'd, never stored). MTIME/XLEN/CRC16 are little-endian (RFC 1952 S2.1, opposite of RFC 1950's big-endian Adler-32). Magic/CM/reserved-flags validated before FLG is accepted. pub mod gzip in lib.rs (matches checksum/error's full-module-public pattern), one #[allow(dead_code)] at the mod declaration since nothing drives GzipHeaderParser outside tests until P3-03. All 12 new tests pass on first attempt (one clippy fix: stage<=0 on u8 -> stage==0). 127 cleanflate tests total, make ci green.
