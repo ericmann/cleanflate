@@ -73,13 +73,13 @@ fuzz-divergences:
 	@echo "STUB: fuzz-divergences arrives in P4-04"
 
 proptest-10k:
-	@echo "STUB: proptest-10k arrives in P4-01"
+	CLEANFLATE_CHUNKING_CASES=10000 cargo test --release -p oracle --test chunking
 
 bomb:
-	@echo "STUB: bomb arrives in P4-02"
+	@echo "STUB: bomb arrives in P4-03"
 
-heavy:
-	@echo "STUB: heavy arrives in P4-01"
+heavy: proptest-10k
+	@echo "STUB: further heavy targets (bomb, fuzz-long) arrive in later phases"
 
 malformed:
 	cargo run -q -p oracle -- malformed
