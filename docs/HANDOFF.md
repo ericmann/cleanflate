@@ -194,3 +194,174 @@ cleanroom-selftest) is green. `make fuzz-check` is green.
 `make fuzz-smoke` (60s x 5 targets) is green with zero crashes.
 `make bomb` and `make proptest-10k` are both green. `make
 design-check` is green.
+
+## Round 1
+
+Branch: `build/2026-09-29`. Base: `c4afeb796ddf`. Head at handoff time:
+`9f58a92`. Task counts: 56 done, 0 open, 0 blocked, 0 skipped (every
+task in `docs/PROGRESS.md` -- the 25 that were still `[ ]` at the start
+of this round plus the 8 new `R1-*` review-fix tasks -- is now `[x]`).
+
+**`P0-08` is unblocked.** The operator (not this round) reopened it
+directly in `docs/PROGRESS.md` before this round started, along with
+every task Round 0's `foundry_task_next` had auto-skipped behind it
+(`P0-09`..`P0-11`, `P1-03`, `P1-11`, `P1-12`, `P2-05`, `P2-06`, `P3-04`,
+`P3-06`, `P4-07`..`P4-10`, `P6-01`..`P6-03`). This round re-verified
+`P0-08`'s prior fix (commit `361e93c`, still correct: Canterbury and
+Silesia both on disk, hash-verified) and then ran every one of those
+17 previously-skipped tasks plus the 8 `R1-*` review-fix tasks in full,
+for a completely finished Phase 0-6 build this time: `.github/workflows/
+ci.yml` exists, `tools/cleanroom/LOCKDOWN` is written, the conformance
+corpus (`testdata/MANIFEST.json`, 2674 entries at `--tier full`) is
+generated and 100% byte-identical (raw/zlib/gzip, one-shot and
+streaming), the benchmark harness and both performance passes ran
+(see `docs/PERF.md`), and `provenance/SUMMARY.md`/`docs/BUILD_REPORT.md`
+are both generated and committed.
+
+### Round 0 -> Round 1 review findings, all fixed
+
+The round-1 review (`CHANGES REQUESTED`, recorded in `docs/PROGRESS.md`)
+queued 8 `R1-*` tasks against the code Round 0 had produced. All 8 are
+fixed, tested and committed:
+
+- **R1-01** (`cbb1928`): `crates/cleanflate/src/tests/{zlib,gzip,
+  stream_contract}.rs`'s fixture builders no longer compute trailer
+  checksums with this crate's own `crate::checksum` (C16) -- each got a
+  `known_adler32`/`known_crc32` lookup of literals computed once via a
+  throwaway `oracle::ffi` call. `gzip_header.rs`'s FHCRC is
+  structurally different (a combinatorially-varying header byte
+  sequence, not a fixed handful of strings) so its `hcrc_override`
+  became mandatory-when-`FHCRC`-set instead of "None = auto-compute".
+  New `docs/foundry.json` rule `no-cleanflate-checksums-in-fixtures`
+  (0 hits). Verified the general property with a real mutation
+  (`Adler32::new()`'s `s1` init `1 -> 0`): 7/14 `zlib.rs` tests failed,
+  confirming independent fixtures now catch a real bug that a
+  self-referential fixture would have laundered.
+- **R1-02** (`f58b82f`): fixed a real bug in
+  `Decompressor::decompress`'s output-limit check -- it compared the
+  already-clamped `allowance` against `output.len()`, so
+  `decompress(&input, &mut [])` (a zero-length output slice) always
+  raised `Err(OutputLimitExceeded)` even with the full `max_output`
+  allowance still available, instead of a resumable `Ok(OutputFull)`.
+  Fixed by comparing the unclamped `remaining_allowance` directly
+  against `output.len()`.
+- **R1-03** (`32400c7`): fixed a real bug in gzip's member-boundary
+  state (`GState::Boundary`) -- it advanced `pos`/`total_in` for every
+  byte it merely *examined* while deciding whether a new member
+  followed, so `consumed` at `Done` under `TrailingData::Allow` always
+  overshot `trailing_start()` by 1-2 bytes. Rewrote to decide by
+  peeking (`input.get(pos)`/`input.get(pos + 1)`), advancing position
+  only once a byte is confirmed to belong to a member. One narrow,
+  documented exception remains (a lone `0x1f` that is the last byte a
+  call offers must still be consumed then, per the resumable-reader
+  invariant) -- see `lib.rs`'s streaming-contract doc comment and
+  `DESIGN.md` D-19.
+- **R1-04** (`7a756eb`): `GzipDecoder` now bounds how many
+  `GzipHeader`s a streaming decode retains (new
+  `Options::max_gzip_headers`, `config::DEFAULT_MAX_GZIP_HEADERS =
+  1024`, SPEC S1). Every member is still fully decoded/checksummed/
+  counted regardless of the cap; `Decompressor::gzip_member_count()`
+  reports the true total.
+- **R1-05** (`3b811b8`): two chunk-driving loops in
+  `stream_contract.rs` (`after_done_reject_and_allow`'s Reject case,
+  `error_sticky_all_formats`) had no exit condition for "stuck: empty
+  input, no progress, not Done" -- a decoder regression there would
+  hang `make test` forever instead of failing it. Added a no-progress
+  panic guard to both; confirmed it catches a real mutation
+  (`gzip.rs`'s ISIZE comparison disabled) that previously hung
+  `error_sticky_all_formats` indefinitely.
+- **R1-06** (`3176487`): `fuzz/Cargo.lock` is now committed (was
+  gitignored specifically to dodge the `libz-only-in-oracle`
+  constraint, which meant fuzz builds were never actually pinned to a
+  reproducible dependency set). The constraint now excludes that one
+  path instead.
+- **R1-07** (`540d41c`): added `oracle::ffi::inflate_gzip_members`
+  (calls `inflate_bytes` once per member for as long as the remainder
+  starts `1f 8b` and the previous member reached `StreamEnd`), and
+  `diff_oracle_arbitrary` now uses it for `Framing::Gzip` instead of a
+  single-member `inflate_bytes` call. A real `make fuzz-smoke` run this
+  task (all 5 targets, 60s each) produced **zero** divergences of any
+  class -- `fuzz/artifacts/divergences.jsonl` wasn't even created --
+  where every prior run always surfaced dozens to over a thousand
+  `gzip/both_ok_differ`/`gzip/clean_err_oracle_ok` entries that were
+  actually just this multi-member gap, not real disagreements.
+- **R1-08** (`bc64a44`): completed the provenance record with what the
+  automated log alone doesn't explain -- the P0-08 human download's
+  archive sha256 spelled out in `human-interventions.md`, a new
+  "Denied calls during build" section in `provenance/README.md`
+  listing all 8 denied `tool-log.jsonl` entries (including the one
+  CR1/CR5-relevant case: an attempt to read libz-sys source via `find`,
+  blocked, confirmed nothing was ever read), and three new "Known
+  gaps" bullets (untagged bootstrap commits, `LOCKDOWN` not written
+  until this round, the browser-`User-Agent` retry). `sources-check.sh`
+  now fails if a manually-fetched corpus has no matching
+  `human-interventions.md` row.
+
+### Interpretation choices this round
+
+- **P4-08 (performance pass 1): implemented the full design, found a
+  real correctness bug in the aggressive half, reverted just that
+  half per the task's own explicit escape hatch.** The fast
+  litlin/length/distance decode loop (proactive bulk bit-buffer
+  refill, bypassing `step`'s outer dispatch) surfaced two bugs: one
+  fixed (gzip trailer boundary corruption from over-reading the bit
+  buffer), one found but not root-caused within budget (a ~11 KiB
+  Fixed-strategy stream decoding one byte short after a
+  `CLEANFLATE_CHUNKING_CASES=3000` proptest case). Reverted
+  `inflate.rs`/`bitreader.rs` to their pre-P4-08 state in full,
+  per "if the change ... breaks any test, revert it and record the
+  negative result instead." Kept `Window::copy_match`'s bulk
+  (non-overlapping) match-copy path, independently verified safe but
+  not a measurable win by itself. See `docs/PERF.md`'s Pass 1 section
+  and `DESIGN.md` D-22 for the full account -- closing the remaining
+  gap to the SPEC's 70% throughput target needs that fast loop redone
+  correctly, not further tuning.
+- **P4-09 table-bits sweep: measured, kept the existing defaults.**
+  Swept `LITLEN_TABLE_BITS`/`DIST_TABLE_BITS` per PLAN.md; the
+  existing `{10, 8}` came out tied-or-ahead of every alternative
+  within measurement noise, so nothing changed -- documented as a
+  measured "no change" outcome, not a skipped step.
+- **P0-08/P0-09..P6-03 re-verification: mostly "already correct,
+  reconfirmed."** Since these tasks' underlying work was already done
+  correctly before the operator reopened them, most of this round's
+  effort for the non-`R1-*` tasks was genuine re-verification (running
+  every acceptance command for real, including the 60-90s `make bench`
+  and multi-minute `oracle generate --tier full`) rather than new
+  implementation. Where a task's own commit needed a fresh subject
+  line to satisfy `foundry_task_done`'s HEAD-check (e.g. `P0-08`,
+  where the prior fix commit `361e93c` predates this round), an empty
+  or near-empty `[stage:fix]`-tagged commit was made instead of
+  amending history.
+
+### Manual-check items for a human (Round 1)
+
+Every phase-end task's own log entry already lists its
+"Manual check: NOT VERIFIED (human)" items (`P0-11`, `P1-12`, `P2-06`,
+`P3-06`, `P4-10`, `P6-03`); the standing ones, not yet superseded:
+
+1. Run `make fuzz-long` (or trigger `.github/workflows/fuzz-nightly.yml`
+   manually) for the full 1-hour-per-target signal SPEC S5 M4 actually
+   requires; this round only ever ran 60-second smoke tests.
+2. Confirm the pushed branch's GitHub Actions `ci` run is green (the
+   workflow itself was verified to parse and to pass `make ci` locally,
+   but was never observed running on GitHub by this agent).
+3. Spot-check `docs/rfc/*.txt` against rfc-editor.org.
+4. Re-run `make bench` on a quiet machine and sanity-check
+   `docs/PERF.md`'s numbers/result line (this round's machine was
+   shared with everything else this agent was doing concurrently;
+   some run-to-run noise is visible in the recorded tables).
+5. After this round's review converges and the branch merges: run
+   `make provenance-snapshot provenance-summary build-report`, commit,
+   then `git tag v0.1.0-cleanroom && git push origin v0.1.0-cleanroom`
+   (the implementer never creates this tag, per PLAN.md's Decisions).
+6. Complete `provenance/human-interventions.md` with anything from
+   this round not already captured (it now has exactly one row).
+
+### Verification (Round 1)
+
+`make ci`, `make heavy` (10000-case proptest, `make bomb`,
+`conformance-full` at 1625/1625 entries), `make fuzz-check`, and a real
+`make fuzz-smoke` (5 targets x 60s, zero crashes, zero divergences) are
+all green as of `9f58a92`. `foundry_verify` with no file filter (every
+constraint against the whole repo, plus every `verify`/`extraVerify`
+command) is green.
