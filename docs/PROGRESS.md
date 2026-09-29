@@ -41,7 +41,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P4-01 Finalise the streaming contract for all formats
 - [x] P4-02 Chunking-invariance property test (proptest)
 - [x] P4-03 Output-limit hardening and zip-bomb fixture
-- [ ] P4-04 Fuzz crate and never-panic targets
+- [x] P4-04 Fuzz crate and never-panic targets
 - [ ] P4-05 Differential fuzz targets against the oracle
 - [ ] P4-06 Nightly fuzz workflow and long-run target
 - [ ] P4-07 Benchmark harness and baseline
@@ -239,3 +239,25 @@ ratio, since PLAN.md's D-19 slot was already taken by P3-03's
 decision). Never used the DEFAULT_MAX_OUTPUT literal outside
 config.rs (C8, no-output-limit-literal constraint verified). make ci
 and foundry_verify both green.
+
+### P4-04 — e8ea337
+Created the fuzz/ cargo-fuzz workspace (excluded from the main
+workspace) with never_panic_raw/rfc1950/rfc1952 targets: each parses
+chunk sizes from the input's first two bytes, runs decompress_with
+then a chunked Decompressor loop under Options{max_output:
+FUZZ_MAX_OUTPUT=1<<24}, discarding Ok/Err -- only panics/timeouts are
+failures. Seeded <=10 fixtures per target from testdata/malformed/
+(10/7/10). make fuzz-check (cargo check --bins) passes on stable.
+Installed nightly + cargo-fuzz (had to install cargo-fuzz with
+`cargo +nightly install` since the latest release needs a newer rustc
+than the active stable) and ran make fuzz-smoke for real: 60s/target,
+225319/263143/209205 execs, zero crashes, zero artifacts. Wired
+fuzz-smoke into corpus dir fuzz/corpus/<target> (gitignored) rather
+than fuzz/seeds/<target> directly -- libFuzzer treats its first
+corpus-dir argument as writable and the plan's literal invocation
+would have mutated the checked-in seed corpus on every run (caught
+this the hard way: first run added 500+ files to fuzz/seeds/*, reset
+and fixed before committing). fuzz/Cargo.lock is gitignored rather
+than committed since it necessarily lists oracle's transitive
+libz-sys pin, which trips libz-only-in-oracle; documented why in
+.gitignore. foundry_verify and make ci both green.
