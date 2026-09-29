@@ -1,6 +1,6 @@
 .PHONY: regress-seed fmt-check lint test corpus corpus-full crate-checks cleanroom-selftest \
         tools-check design-check ci proptest-10k proptest-3k fastslow-full bomb heavy \
-        fuzz-check fuzz-smoke fuzz-long fuzz-divergences bench \
+        fuzz-check fuzz-smoke fuzz-long fuzz-divergences bench bench-quick \
         provenance-snapshot provenance-summary build-report hooks-install \
         sources-check conformance-full malformed
 
@@ -107,8 +107,20 @@ heavy: proptest-10k bomb conformance-full fastslow-full
 malformed:
 	cargo run -q -p oracle -- malformed
 
+BENCH_ID ?= adhoc
+BENCH_OUT ?= target/bench/$(BENCH_ID).json
+
 bench:
-	cargo run --release -q -p oracle -- bench --corpus silesia
+	mkdir -p $(dir $(BENCH_OUT))
+	cargo run --release -q -p oracle -- bench --kind full --corpus silesia,canterbury \
+		--framings raw,zlib,gzip --levels 1,6,9 --modes oneshot,streaming --iters 7 \
+		--task $(BENCH_ID) --json $(BENCH_OUT)
+
+bench-quick:
+	mkdir -p $(dir $(BENCH_OUT))
+	cargo run --release -q -p oracle -- bench --kind quick --subset quick --corpus silesia,canterbury \
+		--framings raw,zlib,gzip --levels 6 --modes oneshot,streaming --iters 5 \
+		--task $(BENCH_ID) --json $(BENCH_OUT)
 
 sources-check:
 	bash tools/ci/sources-check.sh
