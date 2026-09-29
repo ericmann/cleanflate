@@ -64,7 +64,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] R2-03 decompress_with: exact consumed at a lone trailing 0x1f, and fail instead of spinning when the buffer cannot grow
 - [x] R2-04 Oracle multi-member gzip: test a 0x1f-not-0x8b trailer
 - [x] R2-05 Provenance summary: list URLs fetched via Bash, and state the Bash-read gap
-- [ ] R3-01 Provenance summary: list URLs fetched by the fetch scripts (RFC and corpus manifests)
+- [x] R3-01 Provenance summary: list URLs fetched by the fetch scripts (RFC and corpus manifests)
 
 ## Log
 (one entry per task, appended by implement)
@@ -474,3 +474,30 @@ Added a provenance/README.md "Known gaps" bullet: files read via Bash commands (
 Regenerated provenance/SUMMARY.md via make provenance-summary; its "URLs fetched" section now lists the Bash-fetched corpus URLs instead of "None recorded."
 make tools-check and foundry_verify both green.
 Friction: mentioning the fetcher tool name in the commit message body (prose, not a shell command) tripped the cleanroom guard's post-lockdown denial pattern for that word; reworded to avoid it (logged via foundry_feedback_log).
+
+### R3-01 — 507e64a
+Added `render_fetch_scripts()` + `_invoked_fetch_scripts()` to
+tools/cleanroom/summarize.py: a new "### Fetch scripts" subsection
+under "## URLs fetched" lists, per fetch script actually *invoked* by
+an allowed Bash call, every URL in the tracked manifest it writes
+(docs/rfc/SOURCES.json list-of-{url}; testdata/corpora/SOURCES.json
+dict-of-{url,fetched_by}), naming the manifest path and fetched_by
+when present. Mention-only Bash lines (grep/sed/cat/shellcheck/chmod/
+git/etc naming the filename) and denied invocations contribute
+nothing. A missing manifest for an invoked script prints "MISSING:
+<path> not found" rather than being skipped.
+Tests: TestUrlsListed::test_urls_from_fetch_scripts (RFC-script
+invocation vs corpus-script mention vs corpus-script denial) and
+TestUrlsListed::test_urls_and_fetched_by_from_allowed_corpus_fetch_script
+(allowed corpus invocation -> URL + fetched_by). Extended
+SummarizeTestBase.setUp with fixture docs/rfc/SOURCES.json and
+testdata/corpora/SOURCES.json manifests; added 3 lines to
+tool-log.sample.jsonl, updating TestTotals (11->14, 9->12 implement)
+and TestModelsUnknownForNull (model-a 8->11) counts accordingly.
+Regenerated provenance/SUMMARY.md: the real tool-log's RFC-fetch-script
+invocation now surfaces rfc1950/1951/1952 URLs and the corpus
+fetch-script invocation surfaces its URL + fetched_by=human-operator-browser.
+make tools-check, make provenance-summary and full foundry_verify all
+green. Never ran a Bash command containing the fetch-script filenames
+or the corpus-fetch env var (CR6 guard denies those post-lockdown);
+fixtures/code edited only via Write/Edit.
