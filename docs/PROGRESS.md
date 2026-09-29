@@ -59,7 +59,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] R1-06 Commit fuzz/Cargo.lock instead of gitignoring it to dodge libz-only-in-oracle
 - [x] R1-07 Multi-member-aware oracle for differential fuzz target (c)
 - [x] R1-08 Complete the provenance record: intervention row, denial notes, bootstrap gaps
-- [ ] R2-01 C5: CRC-32 table without indexing, plus a rule against panic-lint suppression in cleanflate lib
+- [x] R2-01 C5: CRC-32 table without indexing, plus a rule against panic-lint suppression in cleanflate lib
 - [ ] R2-02 Gzip finish(): member-seen test must use member_count, not retained headers
 - [ ] R2-03 decompress_with: exact consumed at a lone trailing 0x1f, and fail instead of spinning when the buffer cannot grow
 - [ ] R2-04 Oracle multi-member gzip: test a 0x1f-not-0x8b trailer
@@ -441,3 +441,9 @@ human-interventions.md's P0-08 row now spells out the archive_sha256 inline (f14
 tools/ci/sources-check.sh: new check treats any testdata/corpora/SOURCES.json entry whose fetched_by is set and not "automated"/"cached" as requiring its archive_sha256 to appear somewhere in provenance/human-interventions.md; fails loudly (manual-fetch-missing-intervention-row) instead of passing silently when missing.
 New test: tools/ci/tests/sources_check_test.sh::case_manual_fetch_requires_intervention_row (fetched_by=human-operator-browser entry with no matching row fails with that exact reason; adding the row passes).
 Tests: make tools-check (57 python + all shell suites incl. this new case), make sources-check on the real repo, foundry_verify all green.
+
+### R2-01 — ae80bb4
+Rewrote crc32_table() to walk the array with split_first_mut instead of table[n]=c, removing the sole #[allow(clippy::indexing_slicing)] in cleanflate lib code. split_first_mut is const-stable on the pinned 1.89 toolchain (verified with a standalone rustc test before using it). Factored the per-index bit loop into a new const fn crc32_entry(n).
+Added crc32_table_matches_bitwise_reference in tests/checksum.rs: for n in 0..256, recovers CRC32_TABLE[n] from crc32(&[0xFF^n as u8]) ^ 0xFF00_0000 (algebraic inverse of the update/finish steps) and compares to an independent bit-at-a-time reference written in the test.
+Added foundry.json rule no-panic-lint-allow-in-cleanflate-lib (paths crates/cleanflate/src/, excludes src/tests/) matching allow(...clippy::unwrap_used|expect_used|panic|indexing_slicing...); fixtures per the task spec. Tagged CLAUDE.md C5 with [rule:no-panic-lint-allow-in-cleanflate-lib].
+make lint, make test, foundry_verify all green; new rule 0 hits.
