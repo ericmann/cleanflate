@@ -51,7 +51,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P6-01 Provenance summary generator
 - [x] P6-02 Build report generator and DESIGN.md audit
 - [x] P6-03 Freeze and hand-off push
-- [ ] R1-01 Independent checksums in cleanflate unit-test fixtures (C16) plus a mechanical rule
+- [x] R1-01 Independent checksums in cleanflate unit-test fixtures (C16) plus a mechanical rule
 - [ ] R1-02 Output limit: empty output slice must be OutputFull, and cover the streaming limit arithmetic
 - [ ] R1-03 Gzip: exact consumed at Done under TrailingData::Allow
 - [ ] R1-04 Bound retained gzip member headers during streaming
@@ -391,3 +391,9 @@ Manual check: NOT VERIFIED (human):
 1. After the Foundry review converges and the branch merges, run make provenance-snapshot provenance-summary build-report, commit, then git tag v0.1.0-cleanroom && git push origin v0.1.0-cleanroom.
 2. Complete provenance/human-interventions.md.
 3. Confirm the 1-hour fuzz results from P4-10 are recorded in BUILD_REPORT.md.
+
+### R1-01 — cbb1928
+Replaced crate::checksum::{adler32,crc32} usage in crates/cleanflate/src/tests/{zlib,gzip,stream_contract}.rs with local known_adler32/known_crc32(data) -> u32 lookup functions (match on exact byte string, panic if unlisted); every literal computed once via a throwaway oracle::ffi call (not committed). gzip_header.rs's FHCRC is structurally different (computed over a combinatorially-varying header byte sequence, ~15 test cases, GzipHeaderParser is pub(crate) so can't move to oracle/tests/ either): hcrc_override now means "must be supplied when FHCRC is set, else panic" instead of "None = auto-compute"; supplied the 3 needed literals at their call sites the same way.
+Added docs/foundry.json rule no-cleanflate-checksums-in-fixtures (paths crates/cleanflate/src/tests/, exclude tests/checksum.rs, pattern \bcrate::checksum\b) and tagged CLAUDE.md's C16 with [rule:no-cleanflate-checksums-in-fixtures]. Comments explaining the change avoid the literal "crate::checksum" substring (rule matches raw text incl. comments, precedent: no-unsafe-token-in-cleanflate).
+Would-have-caught: the task's named mutation (s2 = (s2+s1) % (ADLER_MOD-1) on the old per-byte line) no longer applies verbatim since P4-09's deferred-modulo rewrite; the equivalent mutation on current code (s2 %= ADLER_MOD -> % (ADLER_MOD-1)) turns out unreachable for any small-buffer fixture in either old or new checksum.rs (reduction only triggers >=5552 bytes). Validated the general property with a mutation that does affect small inputs (Adler32::new() s1 init 1->0): 7/14 zlib.rs tests failed as expected, confirming independent fixtures now catch a real bug.
+Tests: full crates/cleanflate/src/tests suite (154, unchanged count) pass. make ci green. foundry_verify: new rule 0 hits.
