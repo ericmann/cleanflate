@@ -42,7 +42,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P4-02 Chunking-invariance property test (proptest)
 - [x] P4-03 Output-limit hardening and zip-bomb fixture
 - [x] P4-04 Fuzz crate and never-panic targets
-- [ ] P4-05 Differential fuzz targets against the oracle
+- [x] P4-05 Differential fuzz targets against the oracle
 - [ ] P4-06 Nightly fuzz workflow and long-run target
 - [ ] P4-07 Benchmark harness and baseline
 - [ ] P4-08 Performance pass 1 — bulk refill and fast decode loop
@@ -261,3 +261,26 @@ and fixed before committing). fuzz/Cargo.lock is gitignored rather
 than committed since it necessarily lists oracle's transitive
 libz-sys pin, which trips libz-only-in-oracle; documented why in
 .gitignore. foundry_verify and make ci both green.
+
+### P4-05 — c8720c5
+Added diff_oracle_roundtrip (target b): first 5 bytes select framing/
+level/strategy/wb/mem, rest (<=64 KiB) compressed via oracle::ffi::
+deflate_bytes, must decode back identically through cleanflate
+one-shot, cleanflate streaming (chunked), and oracle::ffi::inflate_bytes
+-- any mismatch panic!s (the fuzz failure). Added diff_oracle_arbitrary
+(target c): arbitrary bytes under TrailingData::Allow through both
+decoders for each of Raw/Zlib/Gzip, classified into both_ok_same/
+both_ok_differ/both_err/clean_ok_oracle_err/clean_err_oracle_ok;
+every class but both_ok_same/both_err appended as JSON to
+$CLEANFLATE_DIVERGENCE_LOG (default fuzz/artifacts/divergences.jsonl),
+never panics on divergence. Wired both into fuzz-smoke and added
+fuzz-divergences (jq per-class counts). Seeded 7 + 10 fixtures.
+
+Ran make fuzz-smoke for all 5 targets, 60s each: 270973/259945/189009/
+52349/161328 execs, zero crashes, zero artifacts. fuzz-divergences
+showed only gzip/both_ok_differ:15 and gzip/clean_err_oracle_ok:666 --
+the expected, already-documented (P1-01, D-19) consequence of
+cleanflate decoding every concatenated gzip member per RFC 1952 S2.2
+while the oracle's windowBits=31 inflate stops after the first member;
+no raw or zlib divergences at all. Not a bug, no fix needed.
+make ci and foundry_verify both green.
