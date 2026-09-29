@@ -37,7 +37,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P3-03 Gzip members, trailer, multi-member streams and gzip API
 - [x] P3-04 Zlib and gzip conformance, dictionary and multi-member tests
 - [x] P3-05 Malformed zlib and gzip cases
-- [ ] P3-06 M3 acceptance and push
+- [x] P3-06 M3 acceptance and push
 - [x] P4-01 Finalise the streaming contract for all formats
 - [x] P4-02 Chunking-invariance property test (proptest)
 - [x] P4-03 Output-limit hardening and zip-bomb fixture
@@ -341,3 +341,9 @@ check_entries() decode_fn now takes &ManifestEntry alongside bytes (needed for p
 New tests: conformance.rs::{conformance_zlib_all,conformance_zlib_dictionary,conformance_gzip_all,conformance_wrappers_streaming_odd_chunks}; wrappers.rs (new file)::{gzip_multi_member_oracle (200 cases, 2-5 members, random inputs incl. empty, checks decoded data + gzip_headers().len()), zlib_dictionary_required_on_oracle_stream (dict_id == oracle::ffi::adler32(dict)), zlib_wrong_dictionary_mismatch (expected/actual both checked)}.
 Quick tier (make test): 654/9/290/944 entries across the four conformance_* wrapper tests, 3/3 wrappers.rs. Full tier: 702/9/338/1040, all pass, 37.75s release.
 make fmt-check/lint/corpus/test/crate-checks/cleanroom-selftest all green.
+
+### P3-06 — c656400
+M3 acceptance: make ci exit 0. make conformance-full: 7/7 tests pass, 36.19s release. cargo test -p oracle --test wrappers --test malformed: 3/3 + 4/4 pass. No code fix needed -- all green from P3-01..P3-05. DESIGN.md audit: D-16 (table-driven Huffman), D-17 (zlib wrapper), D-18 (gzip member header parser) all present with RFC 1950/1952 citations. make provenance-snapshot: 1213 lines. Pushed build/2026-09-29 to origin (395ae09..c656400).
+Manual check: NOT VERIFIED (human):
+1. Review DESIGN.md D-16..D-18 against RFC 1950/1952.
+2. Confirm GitHub CI is green.
