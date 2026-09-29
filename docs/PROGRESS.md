@@ -56,7 +56,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] R1-03 Gzip: exact consumed at Done under TrailingData::Allow
 - [x] R1-04 Bound retained gzip member headers during streaming
 - [x] R1-05 Make stream_contract test drivers fail instead of hang on no progress
-- [ ] R1-06 Commit fuzz/Cargo.lock instead of gitignoring it to dodge libz-only-in-oracle
+- [x] R1-06 Commit fuzz/Cargo.lock instead of gitignoring it to dodge libz-only-in-oracle
 - [ ] R1-07 Multi-member-aware oracle for differential fuzz target (c)
 - [ ] R1-08 Complete the provenance record: intervention row, denial notes, bootstrap gaps
 
@@ -420,3 +420,7 @@ Tests: full cleanflate suite 159 (+2), make lint, foundry_verify (both extended 
 Audited all 7 decompress-driving loops in stream_contract.rs: 5 already had an explicit "input exhausted + NeedsInput -> break" exit (needed by design, gzip only reaches Done via finish() at a clean member boundary), left as-is. The other 2 (after_done_reject_and_allow's Reject-policy loop, error_sticky_all_formats) had NO exit condition for that shape -- a decoder regression stuck reporting NeedsInput with zero progress on empty input would hang make test forever rather than fail it. Added the no-progress guard (consumed==0 && produced==0 && input empty && status!=Done -> panic naming format+status) to both.
 Would-have-caught: mutating gzip.rs's ISIZE comparison (if expected_isize != actual_isize -> if false && ...) previously hung error_sticky_all_formats forever; now fails in <1s with "Gzip: no progress on empty input, status=NeedsInput (expected a checksum error)". Reverted the mutation after confirming.
 Tests: full stream_contract suite (9, unchanged), make lint, foundry_verify all green.
+
+### R1-06 — 3176487
+Removed the /fuzz/Cargo.lock gitignore entry and explanatory comment; committed fuzz/Cargo.lock (pins libz-sys 1.1.29, matching the workspace Cargo.lock, verified before committing). Added "exclude": ["fuzz/Cargo.lock"] to docs/foundry.json's libz-only-in-oracle constraint and reworded its description to say lockfiles are exempt (a lockfile necessarily lists oracle's transitive libz-sys pin like every other transitive dep); every existing fixture kept unchanged.
+Tests: make crate-checks (forbidden-paths ok with the tracked file), make fuzz-check (builds clean against the committed lockfile), foundry_verify (libz-only-in-oracle: ok, 0 hits).
