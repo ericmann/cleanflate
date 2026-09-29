@@ -16,8 +16,8 @@ Started: 2026-09-29T14:33:40.844Z
 - [-] P0-11 M0 acceptance and push
 - [x] P1-01 Oracle FFI wrappers over libz-sys
 - [x] P1-02 Deterministic synthetic inputs and generation matrix
-- [ ] P1-03 Corpus generator CLI and MANIFEST
-- [ ] P1-04 Adler-32 and CRC-32 in cleanflate
+- [-] P1-03 Corpus generator CLI and MANIFEST
+- [x] P1-04 Adler-32 and CRC-32 in cleanflate
 - [ ] P1-05 Error types, options, config constants, RFC tables, DESIGN.md skeleton
 - [ ] P1-06 Resumable bit reader and 32 KiB window
 - [ ] P1-07 Canonical Huffman construction and bit-serial decoder
@@ -93,3 +93,9 @@ crates/oracle now depends on libz-sys 1.1.29 (features=["static"], bundled C bac
 
 ### P1-02 — 407bd7e
 crates/oracle/src/prng.rs: SplitMix64 (state += 0x9E3779B97F4A7C15, xor-shift-multiply finalizer) + fnv1a64. inputs.rs: Tier{Synthetic,Canterbury,Silesia}, Input{id,tier,len,source}, generate_synthetic(id) covering all 16 SPEC S4 ids (empty, one-byte, zeros-{1KiB,64KiB,1MiB,16MiB}, random-{64KiB,1MiB}, text-256KiB via a 64-word list, repeat-abc-1MiB, repeat-period17-1MiB, window-d{32767,32768,32769}, run-64KiB, period258-64KiB), canterbury_inputs/silesia_inputs (enumerate testdata/corpora/{canterbury,silesia}/ sorted by name, id=<tier>-<name>, empty Vec if dir absent -- no error), find_canterbury_file. matrix.rs: CORPUS_SEED=0x636C_6561_6E66_6C61, EntrySpec, make_entry building id `<input>__<framing>_l<level>_<strategy>_w<wb>_m<mem>[_dict]` and path `<tier>/<input>/<rfc195N>-l<level>-<strategy>-w<wb>-m<mem>[-dict].bin`, groups A (levels 0-9 x 3 framings, {0,1,6,9} if input>4MiB), B (strategies, per-size branch), C (window/memlevel, only inputs<=1MiB), D (dictionary: canterbury alice29/asyoulik/cp.html x levels{1,6,9} x Zlib with lcet10.txt as dict, silently empty if lcet10.txt absent), deduplicated by entry id via HashSet. inputs_for_tier(Quick|Full, corpora_root). All 5 matrix tests pass; window test confirms exact-distance repeat; quick tier currently synthetic-only (Canterbury still blocked per P0-08) sits at the low end of 300..=6000 but within bounds. Dictionary entries are 0 right now (lcet10.txt absent) -- matrix_covers_all_parameter_values only requires dict_count>=1 when that file is present.
+
+### P1-03 — skipped
+SKIPPED: depends on P0-08
+
+### P1-04 — d2bbfd4
+crates/cleanflate/src/checksum.rs: Adler32{new,update,finish} (s1 init 1, s2 init 0, mod 65521 per byte per RFC 1950 S2.2) and adler32(); Crc32{new,update,finish} + crc32() built from a const-fn 256-entry table over the reflected polynomial 0xEDB88320 (RFC 1952 S8 sample-code style, standard invert-in/invert-out reflected CRC). RFC section citations in module rustdoc: RFC 1950 S2.2 (Adler-32 field/algorithm) + S8.2 (appendix reference algorithm); RFC 1952 S2.3.1 (CRC32 trailer field) + S8 (Appendix: Sample CRC Code). Table build uses one narrow #[allow(clippy::indexing_slicing)] (get_mut isn't const-callable on this toolchain; index is loop-bounded 0..256, exactly table's length, documented inline). Declared pub mod checksum in lib.rs; unit tests in crates/cleanflate/src/tests/checksum.rs (module registered via `mod checksum;` in tests/mod.rs, satisfying C6). All 7 cleanflate tests + 2 oracle cross-check tests (200 random buffers each, lengths 0..=10,000, SplitMix64-seeded, checked against oracle::ffi::{adler32,crc32} i.e. real C zlib, satisfying C16) pass. make lint/crate-checks/ci all green.
