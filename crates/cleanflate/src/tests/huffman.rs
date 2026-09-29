@@ -30,7 +30,8 @@ fn decode_one(table: &Huffman, input: &[u8], pos: &mut usize, br: &mut BitReader
 fn rfc_example_abcdefgh() {
     // A..H = symbols 0..7; lengths per RFC 1951 S3.2.2's worked example.
     let lengths = [3u8, 3, 3, 3, 3, 2, 4, 4];
-    let table = Huffman::from_lengths(&lengths).expect("valid lengths");
+    let table =
+        Huffman::from_lengths(&lengths, crate::huffman::TableKind::LitLen).expect("valid lengths");
 
     let cases: [(u16, &str); 8] = [
         (5, "00"),   // F
@@ -64,7 +65,8 @@ fn rfc_example_abcdefgh() {
 #[test]
 fn fixed_litlen_codes_rfc_3_2_6() {
     let lengths = fixed_litlen_lengths();
-    let table = Huffman::from_lengths(&lengths).expect("fixed lengths are valid");
+    let table = Huffman::from_lengths(&lengths, crate::huffman::TableKind::LitLen)
+        .expect("fixed lengths are valid");
 
     let cases: [(u16, &str); 8] = [
         (0, "00110000"),
@@ -99,7 +101,7 @@ fn fixed_litlen_codes_rfc_3_2_6() {
 fn oversubscribed_rejected() {
     // Three symbols all claiming length 1: only 2 length-1 codes exist.
     let lengths = [1u8, 1, 1];
-    let result = Huffman::from_lengths(&lengths);
+    let result = Huffman::from_lengths(&lengths, crate::huffman::TableKind::LitLen);
     assert!(matches!(
         result,
         Err(crate::error::HuffmanError::OverSubscribed)
@@ -109,7 +111,8 @@ fn oversubscribed_rejected() {
 #[test]
 fn need_more_bits_when_short() {
     let lengths = [3u8, 3, 3, 3, 3, 2, 4, 4];
-    let table = Huffman::from_lengths(&lengths).expect("valid lengths");
+    let table =
+        Huffman::from_lengths(&lengths, crate::huffman::TableKind::LitLen).expect("valid lengths");
 
     // "A" is code 010 (3 bits); supply zero bits.
     let br = BitReader::new();
@@ -119,7 +122,8 @@ fn need_more_bits_when_short() {
 #[test]
 fn decode_does_not_consume() {
     let lengths = [3u8, 3, 3, 3, 3, 2, 4, 4];
-    let table = Huffman::from_lengths(&lengths).expect("valid lengths");
+    let table =
+        Huffman::from_lengths(&lengths, crate::huffman::TableKind::LitLen).expect("valid lengths");
 
     let mut w = BitWriter::new();
     push_bit_string(&mut w, "010"); // A

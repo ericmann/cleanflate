@@ -11,6 +11,7 @@ pub(crate) mod bitwriter;
 mod checksum;
 mod error;
 mod huffman;
+mod huffman_validation;
 mod inflate_fixed;
 mod inflate_stored;
 mod invariants;

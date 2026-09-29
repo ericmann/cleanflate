@@ -4,7 +4,7 @@
 
 use crate::bitreader::BitReader;
 use crate::error::Error;
-use crate::huffman::{Decoded, Huffman};
+use crate::huffman::{Decoded, Huffman, TableKind};
 use crate::tables::{
     fixed_dist_lengths, fixed_litlen_lengths, DIST_BASE, DIST_EXTRA, END_OF_BLOCK, LENGTH_BASE,
     LENGTH_EXTRA,
@@ -75,10 +75,10 @@ pub(crate) struct Inflater {
 impl Inflater {
     /// A fresh decoder, ready to read the first block header.
     pub(crate) fn new() -> Self {
-        let fixed_litlen =
-            Huffman::from_lengths(&fixed_litlen_lengths()).unwrap_or_else(|_| Huffman::empty());
-        let fixed_dist =
-            Huffman::from_lengths(&fixed_dist_lengths()).unwrap_or_else(|_| Huffman::empty());
+        let fixed_litlen = Huffman::from_lengths(&fixed_litlen_lengths(), TableKind::LitLen)
+            .unwrap_or_else(|_| Huffman::empty());
+        let fixed_dist = Huffman::from_lengths(&fixed_dist_lengths(), TableKind::Distance)
+            .unwrap_or_else(|_| Huffman::empty());
         Inflater {
             br: BitReader::new(),
             window: Window::new(),

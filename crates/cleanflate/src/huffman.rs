@@ -16,6 +16,19 @@ pub(crate) struct Huffman {
     symbols: Vec<u16>,
 }
 
+/// Which alphabet a table is for, since the incomplete-set exception
+/// (RFC 1951 S3.2.7) applies only to the distance alphabet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TableKind {
+    /// The literal/length alphabet (0..=287).
+    LitLen,
+    /// The distance alphabet (0..=31).
+    Distance,
+    /// The code-length alphabet (0..=18) used to transmit dynamic tables.
+    #[allow(dead_code)] // constructed once dynamic-Huffman blocks arrive (P2-02)
+    CodeLength,
+}
+
 /// The result of one bit-serial decode attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Decoded {
@@ -49,9 +62,16 @@ impl Huffman {
     /// each length's first code value). Lengths are 0-15; a length of 0
     /// means the symbol has no code.
     ///
-    /// This only rejects over-subscription (more codes claimed than a
-    /// length allows). Incomplete-set validation arrives in P2-01.
-    pub(crate) fn from_lengths(lengths: &[u8]) -> Result<Huffman, HuffmanError> {
+    /// Rejects over-subscribed tables (more codes claimed than a length
+    /// allows) and incomplete tables (fewer codes than the length counts
+    /// allow), except for `TableKind::Distance`, which additionally
+    /// accepts the two cases RFC 1951 S3.2.7 carves out: exactly one code
+    /// of length 1 ("If only one distance code is used, it is encoded
+    /// using one bit, not zero bits ... there is a single code length of
+    /// one, with one unused code"), and no codes at all ("One distance
+    /// code of zero bits means that there are no distance codes used at
+    /// all").
+    pub(crate) fn from_lengths(lengths: &[u8], kind: TableKind) -> Result<Huffman, HuffmanError> {
         let mut counts = [0u16; 16];
         for &len in lengths {
             let len = len as usize;
@@ -67,7 +87,8 @@ impl Huffman {
         // "codes still available at this length" check: at length `len`
         // there are `left` unused code slots before this length's counts
         // are assigned; if consuming them would go negative, more codes
-        // were claimed than fit.
+        // were claimed than fit. Whatever is left over after length 15 is
+        // how many codes the table is short of being complete.
         let mut left: i32 = 1;
         for len in 1..=15usize {
             let count = *counts.get(len).unwrap_or(&0) as i32;
@@ -75,6 +96,16 @@ impl Huffman {
             left -= count;
             if left < 0 {
                 return Err(HuffmanError::OverSubscribed);
+            }
+        }
+
+        if left > 0 {
+            let total_codes: u32 = counts.iter().skip(1).map(|&c| c as u32).sum();
+            let all_zero = total_codes == 0;
+            let single_code_len1 = total_codes == 1 && *counts.get(1).unwrap_or(&0) == 1;
+            let exception = kind == TableKind::Distance && (all_zero || single_code_len1);
+            if !exception {
+                return Err(HuffmanError::Incomplete);
             }
         }
 

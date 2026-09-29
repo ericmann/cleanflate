@@ -264,3 +264,29 @@ on top, never contradict them. Capping the one-shot buffer's growth at
 bounded by the same limit that bounds decompressed output, so the
 "decompression bomb guard" (D-02) protects one-shot callers too, not just
 streaming callers who supply their own fixed buffer.
+
+### D-14: Huffman table validation, incomplete-set exceptions
+
+RFC: RFC 1951 S3.2.2, S3.2.7
+Decision: `Huffman::from_lengths` now takes a `TableKind` (`LitLen`,
+`Distance`, `CodeLength`) and rejects an incomplete code (fewer codes
+present than the length counts allow, tracked via the same running "left"
+capacity used for the over-subscription check) as `HuffmanError::Incomplete`,
+with exactly two exceptions, both `Distance`-only, both taken verbatim
+from RFC 1951 S3.2.7: a single code of length 1 ("there is a single code
+length of one, with one unused code"), and no codes at all ("there are no
+distance codes used at all"). A single literal/length code alone is
+*not* exempted and is rejected as incomplete, since the RFC's exception
+text names only the distance alphabet. Decoding the unused code of a
+single-code table, or decoding from an empty table, falls out of the
+existing `decode` loop as `Decoded::Invalid` with no special-casing
+needed: an empty table has zero counts at every length, and a
+single-code table's other codes at that length simply never match any
+assigned range.
+Rationale: RFC 1951 leaves general incomplete-code handling unspecified
+but explicitly carves out these two distance-alphabet cases as legal,
+naming the literal/length case by omission (it is a complete code in
+every valid DEFLATE stream). Rejecting incompleteness by default,
+narrowly excepting only what the RFC text names, keeps the decoder
+strict everywhere the spec is silent and lenient only where it is
+explicit.
