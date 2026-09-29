@@ -10,7 +10,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P0-05 Cleanroom self-test and hook wiring
 - [x] P0-06 commit-msg hook adding stage and task tags
 - [x] P0-07 Vendor RFC 1950/1951/1952 texts
-- [!] P0-08 Download Canterbury and Silesia corpora
+- [ ] P0-08 Download Canterbury and Silesia corpora
 - [-] P0-09 CI entry point and GitHub Actions workflow
 - [-] P0-10 Lockdown flag, provenance docs and log snapshot
 - [-] P0-11 M0 acceptance and push
@@ -51,6 +51,14 @@ Started: 2026-09-29T14:33:40.844Z
 - [-] P6-01 Provenance summary generator
 - [-] P6-02 Build report generator and DESIGN.md audit
 - [-] P6-03 Freeze and hand-off push
+- [ ] R1-01 Independent checksums in cleanflate unit-test fixtures (C16) plus a mechanical rule
+- [ ] R1-02 Output limit: empty output slice must be OutputFull, and cover the streaming limit arithmetic
+- [ ] R1-03 Gzip: exact consumed at Done under TrailingData::Allow
+- [ ] R1-04 Bound retained gzip member headers during streaming
+- [ ] R1-05 Make stream_contract test drivers fail instead of hang on no progress
+- [ ] R1-06 Commit fuzz/Cargo.lock instead of gitignoring it to dodge libz-only-in-oracle
+- [ ] R1-07 Multi-member-aware oracle for differential fuzz target (c)
+- [ ] R1-08 Complete the provenance record: intervention row, denial notes, bootstrap gaps
 
 ## Log
 (one entry per task, appended by implement)
@@ -329,3 +337,6 @@ SKIPPED: depends on P6-01
 
 ### P6-03 — skipped
 SKIPPED: depends on P6-01
+
+### P0-08 — unblocked (round 1)
+Resolved in commit 361e93c: fetch-corpora.sh --from-file with the operator-supplied Canterbury archive (sha256 verified) and Silesia fetched automatically; both corpora are on disk and make sources-check passes. Re-open so the implementer can verify and close it against the existing commit, which lets the 17 cascade-skipped tasks (P0-09..P0-11, P1-03, P1-11, P1-12, P2-05, P2-06, P3-04, P3-06, P4-07..P4-10, P6-01..P6-03) run.

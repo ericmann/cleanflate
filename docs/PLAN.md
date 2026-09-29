@@ -1487,3 +1487,77 @@ Also, `make design-check` passes.
 - **§3.2 incomplete codes.** RFC 1951 is silent on incomplete code sets, HDIST 31/32 usage, and length code 284 with extra value 31. Resolution: see Decisions, recorded in DESIGN.md D-11/D-13/D-14. Differential fuzz target (c) logs any disagreement with C zlib for human triage.
 - **§3.3 gzip FNAME/FCOMMENT.** These fields are unbounded, which conflicts with bounded memory. Resolution: store-and-truncate at `DEFAULT_MAX_GZIP_FIELD` without rejecting.
 - **§3.3 default output limit.** SPEC gives no value. Resolution: 1 GiB (Decisions).
+
+## Review fixes (round 1)
+
+### R1-01: Independent checksums in cleanflate unit-test fixtures (C16) plus a mechanical rule
+**Goal:** Stop cleanflate's unit-test fixture builders from computing trailer/header checksums with cleanflate's own crate::checksum, so a checksum bug can no longer hide itself, and add a docs/foundry.json rule so the same shape cannot pass again.
+**Files touched:** crates/cleanflate/src/tests/stream_contract.rs, crates/cleanflate/src/tests/zlib.rs, crates/cleanflate/src/tests/gzip.rs, crates/cleanflate/src/tests/gzip_header.rs, docs/foundry.json, CLAUDE.md
+**Design constraints:** C16: every checksum embedded in a fixture is either a hard-coded literal whose value was computed once with oracle::ffi::{crc32,adler32} (with a comment naming the call that produced it), or the test moves to crates/oracle/tests/ and calls oracle::ffi directly. cleanflate keeps zero dependencies (C3). Only crates/cleanflate/src/tests/checksum.rs may import crate::checksum under src/tests/. New foundry.json rule id `no-cleanflate-checksums-in-fixtures`: paths [crates/cleanflate/src/tests/], exclude [crates/cleanflate/src/tests/checksum.rs], pattern `\bcrate::checksum\b`, shouldMatch must include the diff's own lines `use crate::checksum::{adler32, crc32};` and `use crate::checksum::crc32;` and `use crate::checksum::adler32;`; shouldNotMatch includes `use crate::tests::bitwriter::BitWriter;` and `use crate::error::Error;`. Tag C16 in CLAUDE.md with [rule:no-cleanflate-checksums-in-fixtures]. Assertions that compare the decoder's reported `actual`/`dict_id` values must also use the independent (literal) value, not crate::checksum.
+**Acceptance tests:** All existing zlib/gzip/gzip_header/stream_contract tests keep passing with independent checksums. The new constraint rule's self-test fixtures pass in foundry_verify. Would-have-caught check: foundry_mutate on crates/cleanflate/src/checksum.rs replacing `            s2 = (s2 + s1) % ADLER_MOD;` with `            s2 = (s2 + s1) % (ADLER_MOD - 1);` must now fail at least one test in tests/zlib.rs (e.g. zlib_stored_hello), not only tests/checksum.rs.
+**Out of scope:** Changing checksum.rs itself. Changing decoder behaviour. Moving tests that do not build checksummed fixtures.
+**Verification:** make test && make lint && foundry_verify (constraints show the new rule ok with 0 hits)
+**Depends on:** none
+
+### R1-02: Output limit: empty output slice must be OutputFull, and cover the streaming limit arithmetic
+**Goal:** Make Decompressor::decompress raise OutputLimitExceeded only when the remaining max_output allowance (not the caller's output slice length) bounded the call, so a zero-length output slice yields a resumable Ok(OutputFull), and add streaming tests that pin the limit arithmetic.
+**Files touched:** crates/cleanflate/src/stream.rs, crates/cleanflate/src/tests/stream_raw.rs, docs/DESIGN.md
+**Design constraints:** C4/C5/C8 apply (no panics, no indexing, limit only via Options/config constants). The limit error fires iff remaining_allowance < output.len() or remaining_allowance == 0, and the backend reported OutputFull. Exact-limit streams still succeed; limit+1 still fails with total_out() == limit. Update DESIGN.md D-13/D-20 wording if it describes the old condition.
+**Acceptance tests:** crates/cleanflate/src/tests/stream_raw.rs::empty_output_slice_is_output_full_not_limit: a stored or fixed stream that must emit bytes, decompress(&input, &mut []) returns Ok with status OutputFull and produced 0 (currently Err(OutputLimitExceeded)), then a 16-byte buffer finishes with the right bytes and Done. crates/cleanflate/src/tests/stream_raw.rs::streaming_limit_with_large_buffer: max_output 4 with a 64-byte output buffer on stored "hello" returns Err(OutputLimitExceeded{limit:4}) with total_out()==4; max_output 5 returns Done with "hello". Would-have-caught check: foundry_mutate on stream.rs replacing `let remaining_allowance = self.options.max_output.saturating_sub(already_out);` with `let remaining_allowance = self.options.max_output.saturating_add(1).saturating_sub(already_out);` must be killed by make test.
+**Out of scope:** decompress_with's growth schedule (next_len). The default limit value. Bomb tests.
+**Verification:** make test && make lint && make bomb
+**Depends on:** none
+
+### R1-03: Gzip: exact consumed at Done under TrailingData::Allow
+**Goal:** Make gzip's member-boundary lookahead not count trailing bytes as consumed, so Progress.consumed at Done and Decoded.consumed stop exactly at the end of the last member (PLAN Decisions: 'Under Allow, consumed and trailing_start() report the exact offset'; P4-01 contract; lib.rs streaming docs; DESIGN.md D-20).
+**Files touched:** crates/cleanflate/src/gzip.rs, crates/cleanflate/src/stream.rs, crates/cleanflate/src/lib.rs, crates/cleanflate/src/tests/gzip.rs, crates/cleanflate/src/tests/stream_contract.rs, docs/DESIGN.md
+**Design constraints:** RFC 1952 S2.2 boundary rules from P3-03 stay as they are (1f 8b means a new member; anything else is trailing; a lone 0x1f that is the last byte offered is buffered and resolved by finish()). Decide at the boundary by peeking at bytes already in the current call's input rather than consuming them; only a lone trailing 0x1f at the end of a call may be consumed ahead of the decision. Document that single case as the one exception in lib.rs and D-19/D-20. decompress_with's Decoded.consumed equals trailing_start() whenever that is set. Reject-mode offsets are unchanged. C4/C5 apply.
+**Acceptance tests:** crates/cleanflate/src/tests/gzip.rs::gzip_trailing_allow_consumed_exact: one valid member of length N followed by b"XYZ" under Allow: decompress_with(..).consumed == N, and one streaming decompress call with the whole input returns Progress{consumed: N, status: Done} with trailing_start()==Some(N) (currently 27 vs 26 for a 26-byte member). Same for trailing bytes [0x1f, b'Z'] (currently overshoots by 2). crates/cleanflate/src/tests/stream_contract.rs::done_consumed_exact_all_formats extends done_consumed_exact_raw_and_zlib to Format::Gzip.
+**Out of scope:** Changing the 1f 8b rule. Raw/zlib trailing handling. Header parsing.
+**Verification:** make test && make lint
+**Depends on:** R1-01
+
+### R1-04: Bound retained gzip member headers during streaming
+**Goal:** Keep a streaming gzip Decompressor's memory bounded (SPEC S1) by capping how many GzipHeader values are retained, while still decoding every member and reporting how many members were seen.
+**Files touched:** crates/cleanflate/src/config.rs, crates/cleanflate/src/options.rs, crates/cleanflate/src/gzip.rs, crates/cleanflate/src/stream.rs, crates/cleanflate/src/tests/gzip.rs, docs/DESIGN.md, docs/foundry.json, CLAUDE.md
+**Design constraints:** New tunable DEFAULT_MAX_GZIP_HEADERS gets its value only in config.rs (C8), is re-exported beside DEFAULT_MAX_GZIP_FIELD, and Options gains max_gzip_headers initialised from it (option-defaults-not-literal). Add DEFAULT_MAX_GZIP_HEADERS to the tunables-defined-only-in-config pattern and add max_gzip_headers to the option-defaults-not-literal pattern in docs/foundry.json, each with a matching shouldMatch fixture. Headers past the cap are parsed and validated (including FHCRC) but not stored. Add Decompressor::gzip_member_count() -> u64 counting every member started. Decoded.gzip_members holds the retained headers only. New DESIGN.md decision with an RFC: line (RFC 1952 S2.2) and SPEC S1. Update CLAUDE.md's config.rs module-map line.
+**Acceptance tests:** crates/cleanflate/src/tests/gzip.rs::gzip_many_members_headers_bounded: 10 concatenated valid members with max_gzip_headers = 3 decode to the concatenation of all 10 payloads, gzip_headers().len() == 3, and gzip_member_count() == 10. crates/cleanflate/src/tests/gzip.rs::gzip_default_header_cap_from_config: Options::default().max_gzip_headers == DEFAULT_MAX_GZIP_HEADERS.
+**Out of scope:** Changing the per-field max_gzip_field cap. Output-limit logic.
+**Verification:** make test && make lint && foundry_verify
+**Depends on:** R1-03
+
+### R1-05: Make stream_contract test drivers fail instead of hang on no progress
+**Goal:** Make every chunk-driving loop in stream_contract.rs fail with a clear message when a call on empty input makes no progress and does not return Done, so a decoder regression turns into a red test instead of a hang in make test.
+**Files touched:** crates/cleanflate/src/tests/stream_contract.rs
+**Design constraints:** Test-only change. Use a no-progress guard (consumed == 0 && produced == 0 && input empty && status != Done → panic with format and state), not a wall-clock timeout. Keep every existing assertion.
+**Acceptance tests:** Would-have-caught check: foundry_mutate on crates/cleanflate/src/gzip.rs replacing `if expected_isize != actual_isize {` with `if false && expected_isize != actual_isize {` must report killed within the normal make test time. It currently hangs forever in stream_contract::error_sticky_all_formats.
+**Out of scope:** Decoder changes. Loops in other test files, unless they share a helper.
+**Verification:** make test && make lint
+**Depends on:** R1-03
+
+### R1-06: Commit fuzz/Cargo.lock instead of gitignoring it to dodge libz-only-in-oracle
+**Goal:** Restore reproducible fuzz builds by tracking fuzz/Cargo.lock, and scope the libz-only-in-oracle rule so an unavoidable transitive lockfile entry is not a violation.
+**Files touched:** .gitignore, fuzz/Cargo.lock, docs/foundry.json
+**Design constraints:** Remove the /fuzz/Cargo.lock ignore and its comment. Add `exclude: ["fuzz/Cargo.lock"]` to libz-only-in-oracle and update its description to say lockfiles are exempt; keep every existing fixture. fuzz/Cargo.lock must pin the same libz-sys version as the workspace Cargo.lock. C11: the lockfile path contains no forbidden word.
+**Acceptance tests:** foundry_verify constraints show libz-only-in-oracle ok with 0 hits while fuzz/Cargo.lock is tracked. make crate-checks passes (forbidden-paths). make fuzz-check passes using the committed lockfile.
+**Out of scope:** Changing fuzz targets. Workflow changes beyond what the lockfile needs.
+**Verification:** make fuzz-check && make crate-checks && foundry_verify
+**Depends on:** none
+
+### R1-07: Multi-member-aware oracle for differential fuzz target (c)
+**Goal:** Make diff_oracle_arbitrary compare cleanflate's RFC 1952 S2.2 multi-member gzip decoding against an oracle that also concatenates members, so gzip divergences in the log mean something instead of being background noise.
+**Files touched:** crates/oracle/src/ffi.rs, crates/oracle/tests/ffi_roundtrip.rs, fuzz/fuzz_targets/diff_oracle_arbitrary.rs, fuzz/README.md
+**Design constraints:** C9: fuzz reaches C zlib only through oracle::ffi. Add oracle::ffi::inflate_gzip_members(input, max_output) -> InflateOutcome. It calls inflate_bytes repeatedly while the remaining input starts with 1f 8b and the previous member hit StreamEnd, concatenates outputs, stops at the first non-1f8b remainder (trailing, allowed), and reports an error status if any member fails. The target uses it for Framing::Gzip only; raw/zlib are unchanged. Divergences are still logged, never panicked on.
+**Acceptance tests:** crates/oracle/tests/ffi_roundtrip.rs::gzip_multi_member_matches_concatenation: two oracle-compressed gzip members, concatenated, give the concatenated payloads with consumed == total length; appending b"XYZ" still gives StreamEnd with consumed == member bytes; a second member with a corrupt CRC gives an error status. After a make fuzz-smoke run (if nightly is available), make fuzz-divergences shows no gzip both_ok_differ entries caused by multi-member concatenation; record the per-class counts in the progress log, or record NOT RUN with the reason.
+**Out of scope:** Changing cleanflate. Target (b). Workflow changes.
+**Verification:** make test && make fuzz-check (plus make fuzz-smoke and make fuzz-divergences if nightly is available)
+**Depends on:** R1-03, R1-06
+
+### R1-08: Complete the provenance record: intervention row, denial notes, bootstrap gaps
+**Goal:** Record in provenance/ what this run actually did that the log alone does not explain: the human browser download for P0-08, the guard denials that were never noted as CR6 requires (including P1-01's blocked search for libz-sys source), the untagged bootstrap commits, and the phases that ran before LOCKDOWN existed. Also make sources-check enforce that manual fetches have an intervention row.
+**Files touched:** provenance/human-interventions.md, provenance/README.md, tools/ci/sources-check.sh, tools/ci/tests/sources_check_test.sh
+**Design constraints:** Do not delete or rewrite any log or git history. human-interventions.md keeps P0-10's table format and gains a row: the Canterbury archive downloaded by a human operator in a browser from the allowlisted URL (Cloudflare 403 for automated requests), stage/task implement/P0-08, sha256 f140e8a5b73d3f53198555a63bfb827889394a42f20825df33c810c3d5e3f8fb. provenance/README.md gains two sections. 'Denied calls during build' lists each denied entry in provenance/tool-log.jsonl with its ts, task and reason, and says explicitly that the P1-01 `find / -path '*/libz-sys-*/src/lib.rs'` attempt was blocked by the guard and that no libz-sys source was read. 'Known gaps' adds: commits c1bbaa9 4015214 8edc633 956d6d7 44f624e f776879 predate the commit-msg hook and carry no [stage:][task:] tags; LOCKDOWN was not written before Phases 1-4 ran because P0-10 was skipped; the P0-08 retries used a browser User-Agent against the allowlisted URL. sources-check fails when any testdata/corpora/SOURCES.json entry has a fetched_by value other than the automated default and human-interventions.md has no row mentioning that entry's archive_sha256.
+**Acceptance tests:** tools/ci/tests/sources_check_test.sh::case_manual_fetch_requires_intervention_row: on a temp copy, a SOURCES.json entry with fetched_by "human-operator-browser" and no matching row fails; adding the row passes. The real repo passes make sources-check.
+**Out of scope:** Generating provenance/SUMMARY.md (P6-01). Changing guard behaviour.
+**Verification:** make tools-check && make sources-check
+**Depends on:** P0-10
