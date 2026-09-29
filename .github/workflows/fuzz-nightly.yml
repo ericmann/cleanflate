@@ -1,0 +1,54 @@
+name: fuzz-nightly
+
+# 1-hour-per-target fuzz runs (SPEC S5 M4 acceptance: targets (a) and
+# (b) each run 1 hour with zero crashes / zero divergences). Runs on a
+# daily schedule and on manual dispatch; not on every push (that's
+# `make fuzz-check`'s job, wired into the regular CI workflow).
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - never_panic_raw
+          - never_panic_rfc1950
+          - never_panic_rfc1952
+          - diff_oracle_roundtrip
+          - diff_oracle_arbitrary
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly toolchain
+        run: rustup toolchain install nightly --profile minimal
+
+      - name: Install cargo-fuzz
+        run: cargo +nightly install cargo-fuzz --locked
+
+      - name: Run ${{ matrix.target }} for 1 hour
+        run: |
+          mkdir -p fuzz/corpus/${{ matrix.target }}
+          cargo +nightly fuzz run ${{ matrix.target }} \
+            fuzz/corpus/${{ matrix.target }} fuzz/seeds/${{ matrix.target }} \
+            -- -max_total_time=3600 -rss_limit_mb=2048
+
+      - name: Upload fuzz artifacts (crashes/timeouts) on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore
+
+      - name: Upload divergence log
+        if: always() && matrix.target == 'diff_oracle_arbitrary'
+        uses: actions/upload-artifact@v4
+        with:
+          name: divergences
+          path: fuzz/artifacts/divergences.jsonl
+          if-no-files-found: ignore

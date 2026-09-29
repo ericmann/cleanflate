@@ -1,0 +1,33 @@
+name: ci
+
+# SPEC S5 M0: fmt, clippy (deny warnings), test, cleanroom self-test,
+# zero-dependency and no-unsafe checks, all wired through `make ci`.
+on:
+  push:
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.89.0 --profile minimal --component rustfmt,clippy
+
+      - name: Install shellcheck and jq
+        run: |
+          command -v shellcheck >/dev/null 2>&1 || sudo apt-get install -y shellcheck
+          command -v jq >/dev/null 2>&1 || sudo apt-get install -y jq
+
+      # The archive is committed (its host 403s automated clients), so this
+      # extracts it and verifies every file against testdata/corpora/SOURCES.json
+      # without touching the network.
+      - name: Extract and verify Canterbury corpus
+        run: CLEANROOM_ALLOW_CORPUS_FETCH=1 bash tools/cleanroom/fetch-corpora.sh canterbury
+
+      - name: Install git hooks
+        run: make hooks-install
+
+      - name: Run CI
+        run: make ci

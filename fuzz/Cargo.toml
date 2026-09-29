@@ -1,0 +1,51 @@
+[package]
+name = "cleanflate-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+cleanflate = { path = "../crates/cleanflate" }
+oracle = { path = "../crates/oracle" }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "never_panic_raw"
+path = "fuzz_targets/never_panic_raw.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "never_panic_rfc1950"
+path = "fuzz_targets/never_panic_rfc1950.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "never_panic_rfc1952"
+path = "fuzz_targets/never_panic_rfc1952.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "diff_oracle_roundtrip"
+path = "fuzz_targets/diff_oracle_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "diff_oracle_arbitrary"
+path = "fuzz_targets/diff_oracle_arbitrary.rs"
+test = false
+doc = false
+bench = false

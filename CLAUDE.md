@@ -45,7 +45,7 @@ make provenance-snapshot provenance-summary build-report hooks-install
 - `crates/cleanflate/` is the product. It has zero dependencies and `#![forbid(unsafe_code)]`.
   - `src/lib.rs` holds the crate attributes, re-exports, and `inflate`, `zlib_decompress`, `gzip_decompress`, `decompress_with`.
   - `src/error.rs` defines `Error`, `HeaderError`, `HuffmanError`, `ChecksumKind` and `ErrorKind` (`Error::kind()`, `ErrorKind::as_str()`).
-  - `src/config.rs` holds `DEFAULT_MAX_OUTPUT`, `DEFAULT_MAX_GZIP_FIELD`, `LITLEN_TABLE_BITS` and `DIST_TABLE_BITS`, and is the only place they get values.
+  - `src/config.rs` holds `DEFAULT_MAX_OUTPUT`, `DEFAULT_MAX_GZIP_FIELD`, `DEFAULT_MAX_GZIP_HEADERS`, `LITLEN_TABLE_BITS` and `DIST_TABLE_BITS`, and is the only place they get values.
   - `src/options.rs` defines `Format { Raw, Zlib, Gzip }`, `Options`, and `TrailingData { Reject, Allow }`.
   - `src/checksum.rs` provides `Adler32`/`adler32` (RFC 1950) and `Crc32`/`crc32` (RFC 1952). It is public.
   - `src/tables.rs` holds the RFC 1951 §3.2.5–3.2.7 constant tables.
@@ -75,7 +75,7 @@ Rules marked [rule:<id>] are enforced by `docs/foundry.json` constraints. The ot
 - C2: `crates/cleanflate/src/lib.rs` keeps `#![forbid(unsafe_code)]` and `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing, ...)]`. Checked by `make crate-checks`. This is a presence check, not a line pattern.
 - C3: `crates/cleanflate` has no dependencies of any kind (normal, dev or build) and no build.rs. Checked by `make crate-checks` via cargo metadata, because it spans the manifest and cannot be a line pattern.
 - C4: No `.unwrap()`, `.expect(`, `panic!`, `unreachable!`, `todo!`, `unimplemented!`, `assert!`, `assert_eq!` or `assert_ne!` in `crates/cleanflate/src/` outside `src/tests/`, and that includes doc examples, which use `?`. `debug_assert!` is allowed. [rule:no-panicking-calls-in-cleanflate-lib]
-- C5: No `[]` indexing or slicing in cleanflate library code. Use `get`, `get_mut`, iterators, `split_at_checked` or `chunks`. Checked by clippy `indexing_slicing` (`make lint`). A line pattern cannot tell indexing apart from array types.
+- C5: No `[]` indexing or slicing in cleanflate library code. Use `get`, `get_mut`, iterators, `split_at_checked` or `chunks`. Checked by clippy `indexing_slicing` (`make lint`). A line pattern cannot tell indexing apart from array types. No local `#[allow]`/`#![allow]` of `clippy::indexing_slicing`, `unwrap_used`, `expect_used` or `panic` anywhere in library code either -- that would hide a C4/C5 violation instead of fixing it. [rule:no-panic-lint-allow-in-cleanflate-lib]
 - C6: cleanflate unit tests live only under `crates/cleanflate/src/tests/`. [rule:no-inline-tests-in-cleanflate-src]
 - C7: No clocks, hash maps, randomness, filesystem, network, process, env or thread use in `crates/cleanflate/src/`. [rule:no-io-or-nondeterminism-in-cleanflate]
 - C8: Tunables get values only in `crates/cleanflate/src/config.rs`. Everything else refers to them by name, and the 1 GiB limit is never written as a literal. [rule:tunables-defined-only-in-config] [rule:option-defaults-not-literal] [rule:no-output-limit-literal]
@@ -86,7 +86,7 @@ Rules marked [rule:<id>] are enforced by `docs/foundry.json` constraints. The ot
 - C13: Conformance and malformed tests fail, never skip, when files are missing or a selection is empty. The reviewer checks this by reading, since it is a behavioural rule.
 - C14: Every `### D-` block in DESIGN.md has an `RFC:` line. Checked by `make design-check`, a multi-line structural rule.
 - C15: Arithmetic that can overflow on hostile input uses checked, saturating or wrapping ops, because debug builds and fuzzing panic on overflow. The reviewer checks this by reading, and fuzz target (a) checks it too.
-- C16: Checksums used to build test fixtures come from `oracle::ffi`, never from cleanflate, so fixtures stay independent. The reviewer checks this by reading.
+- C16: Checksums used to build test fixtures come from `oracle::ffi`, never from cleanflate, so fixtures stay independent. Enforced for `crates/cleanflate/src/tests/` (except `tests/checksum.rs` itself, which legitimately tests `crate::checksum`) by [rule:no-cleanflate-checksums-in-fixtures]; a value used elsewhere in `crates/oracle/` is checked by the reviewer reading.
 
 ## Commit template
 ```

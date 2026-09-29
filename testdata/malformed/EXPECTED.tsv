@@ -1,0 +1,49 @@
+# Hand-built malformed corpus (SPEC S4): RFC 1951/1950/1952.
+# path	expected	rule
+rfc1951/btype3.bin	BadBlockType	RFC 1951 S3.2.3: BTYPE 11 is reserved
+rfc1951/stored_nlen_mismatch.bin	InvalidStoredLength	RFC 1951 S3.2.4: NLEN must be the one's complement of LEN
+rfc1951/fixed_litlen_286.bin	InvalidSymbol	RFC 1951 S3.2.6: litlen codes 286/287 never occur in real data
+rfc1951/fixed_dist_code_30.bin	InvalidSymbol	RFC 1951 S3.2.6: distance codes 30/31 never occur in real data
+rfc1951/fixed_distance_at_start.bin	InvalidDistance	RFC 1951 S3.2.5: a distance cannot refer past the start of output
+rfc1951/fixed_distance_too_far.bin	InvalidDistance	RFC 1951 S3.2.5: distance exceeds bytes produced so far
+rfc1951/fixed_len284_extra31.bin	OK	RFC 1951 S3.2.5: code 284 extra value 31 decodes to length 258
+rfc1951/valid_stored_trailing_byte.bin	TrailingData	SPEC S3.3: trailing data is rejected by default
+rfc1951/dynamic_hlit_287.bin	InvalidHuffmanTable	RFC 1951 S3.2.7: HLIT+257 must not exceed 286
+rfc1951/dynamic_codelength_oversubscribed.bin	InvalidHuffmanTable	RFC 1951 S3.2.2: code-length alphabet table is over-subscribed
+rfc1951/dynamic_codelength_incomplete.bin	InvalidHuffmanTable	RFC 1951 S3.2.2: code-length alphabet table is incomplete
+rfc1951/dynamic_litlen_oversubscribed.bin	InvalidHuffmanTable	RFC 1951 S3.2.2: literal/length table is over-subscribed
+rfc1951/dynamic_litlen_incomplete.bin	InvalidHuffmanTable	RFC 1951 S3.2.2: literal/length table is incomplete (no exception applies)
+rfc1951/dynamic_dist_oversubscribed.bin	InvalidHuffmanTable	RFC 1951 S3.2.2: distance table is over-subscribed
+rfc1951/dynamic_dist_incomplete_two_codes.bin	InvalidHuffmanTable	RFC 1951 S3.2.7: two distance codes still must form a complete table
+rfc1951/dynamic_repeat16_first.bin	InvalidHuffmanTable	RFC 1951 S3.2.7: repeat code 16 with no previous length to repeat
+rfc1951/dynamic_repeat_overflow.bin	InvalidHuffmanTable	RFC 1951 S3.2.7: a repeat run must not exceed HLIT+HDIST lengths
+rfc1951/dynamic_missing_eob.bin	InvalidHuffmanTable	RFC 1951 S3.2.3: every block needs an end-of-block code
+rfc1951/dynamic_no_dist_then_length.bin	InvalidSymbol	RFC 1951 S3.2.7: a length code with an empty distance table has no valid decode
+rfc1951/dynamic_single_dist_code.bin	OK	RFC 1951 S3.2.7: a single distance code (length 1) is valid
+rfc1951/dynamic_no_dist_literals.bin	OK	RFC 1951 S3.2.7: no distance codes at all is valid for an all-literal block
+rfc1951/valid_small_stored.bin	OK	control case: a valid stored block
+sweep:rfc1951/valid_small_stored.bin	Truncated	every strict prefix of a valid stream is truncated
+rfc1951/valid_small_fixed.bin	OK	control case: a valid fixed-Huffman block
+sweep:rfc1951/valid_small_fixed.bin	Truncated	every strict prefix of a valid stream is truncated
+rfc1951/valid_small_dynamic.bin	OK	control case: a valid dynamic-Huffman block
+sweep:rfc1951/valid_small_dynamic.bin	Truncated	every strict prefix of a valid stream is truncated
+rfc1950/bad_fcheck.bin	BadHeader	RFC 1950 S2.2: (CMF*256+FLG) must be a multiple of 31
+rfc1950/cm_7.bin	BadHeader	RFC 1950 S2.2: CM must be 8 (deflate)
+rfc1950/cinfo_8.bin	BadHeader	RFC 1950 S2.2: CINFO must not exceed 7
+rfc1950/fdict_no_dictionary.bin	PresetDictionaryRequired	RFC 1950 S2.2: FDICT set requires a preset dictionary
+rfc1950/adler_mismatch.bin	ChecksumMismatch	RFC 1950 S2.3: Adler-32 trailer must match the decoded data
+rfc1950/trailing_byte.bin	TrailingData	SPEC S3.3: trailing data is rejected by default
+rfc1950/valid_small.bin	OK	control case: a valid minimal zlib stream
+sweep:rfc1950/valid_small.bin	Truncated	every strict prefix of a valid stream is truncated
+rfc1952/bad_magic.bin	BadHeader	RFC 1952 S2.3.1: ID1/ID2 must be 1f 8b
+rfc1952/cm_7.bin	BadHeader	RFC 1952 S2.3.1: CM must be 8 (deflate)
+rfc1952/reserved_flag_bit5.bin	BadHeader	RFC 1952 S2.3.1: FLG bits 5-7 are reserved and must be zero
+rfc1952/reserved_flag_bit7.bin	BadHeader	RFC 1952 S2.3.1: FLG bits 5-7 are reserved and must be zero
+rfc1952/fhcrc_mismatch.bin	ChecksumMismatch	RFC 1952 S2.3.1: FHCRC must match the header CRC-32's low 16 bits
+rfc1952/crc32_mismatch.bin	ChecksumMismatch	RFC 1952 S2.3.1: member CRC32 must match the decoded data
+rfc1952/isize_mismatch.bin	ChecksumMismatch	RFC 1952 S2.3.1: ISIZE must match the decoded length mod 2^32
+rfc1952/trailing_garbage.bin	TrailingData	SPEC S3.3: trailing data is rejected by default
+rfc1952/second_member_bad_cm.bin	BadHeader	RFC 1952 S2.2: each concatenated member's header is validated independently
+rfc1952/all_flags_valid.bin	OK	control case: a valid gzip member using every optional header field
+sweep:rfc1952/all_flags_valid.bin	Truncated	every strict prefix of a valid stream is truncated
+rfc1952/two_members_valid.bin	OK	RFC 1952 S2.2: members are simply concatenated

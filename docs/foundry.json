@@ -139,7 +139,7 @@
     },
     {
       "id": "tunables-defined-only-in-config",
-      "description": "Every tunable number (DEFAULT_MAX_OUTPUT, DEFAULT_MAX_GZIP_FIELD, LITLEN_TABLE_BITS, DIST_TABLE_BITS) is given a value only in crates/cleanflate/src/config.rs; everywhere else refers to the constant by name.",
+      "description": "Every tunable number (DEFAULT_MAX_OUTPUT, DEFAULT_MAX_GZIP_FIELD, DEFAULT_MAX_GZIP_HEADERS, LITLEN_TABLE_BITS, DIST_TABLE_BITS) is given a value only in crates/cleanflate/src/config.rs; everywhere else refers to the constant by name.",
       "paths": [
         "crates/",
         "fuzz/"
@@ -147,12 +147,13 @@
       "exclude": [
         "crates/cleanflate/src/config.rs"
       ],
-      "pattern": "\\b(DEFAULT_MAX_OUTPUT|DEFAULT_MAX_GZIP_FIELD|LITLEN_TABLE_BITS|DIST_TABLE_BITS)\\b\\s*(:\\s*[A-Za-z0-9_:<>]+\\s*)?=\\s*[-0-9(]",
+      "pattern": "\\b(DEFAULT_MAX_OUTPUT|DEFAULT_MAX_GZIP_FIELD|DEFAULT_MAX_GZIP_HEADERS|LITLEN_TABLE_BITS|DIST_TABLE_BITS)\\b\\s*(:\\s*[A-Za-z0-9_:<>]+\\s*)?=\\s*[-0-9(]",
       "shouldMatch": [
         "pub const DEFAULT_MAX_OUTPUT: u64 = 1 << 30;",
         "const LITLEN_TABLE_BITS: u32 = 10;",
         "let DIST_TABLE_BITS = 8;",
-        "pub(crate) const DEFAULT_MAX_GZIP_FIELD: usize = (64 * 1024);"
+        "pub(crate) const DEFAULT_MAX_GZIP_FIELD: usize = (64 * 1024);",
+        "pub const DEFAULT_MAX_GZIP_HEADERS: usize = 1024;"
       ],
       "shouldNotMatch": [
         "let bits = config::LITLEN_TABLE_BITS;",
@@ -171,18 +172,20 @@
         "crates/cleanflate/src/config.rs",
         "crates/cleanflate/src/tests/"
       ],
-      "pattern": "\\b(max_output|max_gzip_field)\\s*(:|=)\\s*[0-9(]",
+      "pattern": "\\b(max_output|max_gzip_field|max_gzip_headers)\\s*(:|=)\\s*[0-9(]",
       "shouldMatch": [
         "max_output: 1 << 30,",
         "max_gzip_field: 65536,",
         "options.max_output = 1_073_741_824;",
-        "let max_output = (1u64 << 30);"
+        "let max_output = (1u64 << 30);",
+        "max_gzip_headers: 1024,"
       ],
       "shouldNotMatch": [
         "max_output: config::DEFAULT_MAX_OUTPUT,",
         "pub max_output: u64,",
         "if self.total_out >= self.max_output {",
-        "max_gzip_field: DEFAULT_MAX_GZIP_FIELD,"
+        "max_gzip_field: DEFAULT_MAX_GZIP_FIELD,",
+        "max_gzip_headers: DEFAULT_MAX_GZIP_HEADERS,"
       ]
     },
     {
@@ -211,10 +214,13 @@
     },
     {
       "id": "libz-only-in-oracle",
-      "description": "SPEC 2.1/4: libz-sys is linked and named only inside crates/oracle. cleanflate and the fuzz crate reach C zlib only through oracle's safe wrappers.",
+      "description": "SPEC 2.1/4: libz-sys is linked and named only inside crates/oracle. cleanflate and the fuzz crate reach C zlib only through oracle's safe wrappers. fuzz/Cargo.lock is exempt: it is a lockfile, not fuzz's own source/Cargo.toml, and necessarily lists oracle's transitive libz-sys pin like every other transitive dependency.",
       "paths": [
         "crates/cleanflate/",
         "fuzz/"
+      ],
+      "exclude": [
+        "fuzz/Cargo.lock"
       ],
       "pattern": "libz[-_]sys",
       "shouldMatch": [
@@ -256,6 +262,45 @@
         "// compared against the C zlib oracle",
         "pub(crate) struct Inflater {",
         "| cleanflate | 412 MB/s |"
+      ]
+    },
+    {
+      "id": "no-cleanflate-checksums-in-fixtures",
+      "description": "C16: cleanflate unit-test fixtures never compute a trailer/header checksum with this crate's own crate::checksum -- that would let a real checksum bug hide (a broken encoder would satisfy a broken decoder's expectation). Every checksum embedded in a fixture is a hard-coded literal computed once with oracle::ffi::{crc32,adler32}, or the test lives in crates/oracle/tests/ instead.",
+      "paths": [
+        "crates/cleanflate/src/tests/"
+      ],
+      "exclude": [
+        "crates/cleanflate/src/tests/checksum.rs"
+      ],
+      "pattern": "\\bcrate::checksum\\b",
+      "shouldMatch": [
+        "use crate::checksum::{adler32, crc32};",
+        "use crate::checksum::crc32;",
+        "use crate::checksum::adler32;"
+      ],
+      "shouldNotMatch": [
+        "use crate::tests::bitwriter::BitWriter;",
+        "use crate::error::Error;"
+      ]
+    },
+    {
+      "id": "no-panic-lint-allow-in-cleanflate-lib",
+      "description": "C4/C5/C8/C10: a local clippy allow of unwrap_used/expect_used/panic/indexing_slicing could silently reintroduce a panic or an [] index the C4/C5 rules exist to ban, so no such allow is permitted anywhere in library code (unit-test tree excluded).",
+      "paths": [
+        "crates/cleanflate/src/"
+      ],
+      "exclude": [
+        "crates/cleanflate/src/tests/"
+      ],
+      "pattern": "allow\\s*\\([^)]*clippy::(unwrap_used|expect_used|panic|indexing_slicing)\\b",
+      "shouldMatch": [
+        "#[allow(clippy::indexing_slicing)]",
+        "#![allow(clippy::unwrap_used, clippy::indexing_slicing)]"
+      ],
+      "shouldNotMatch": [
+        "#[allow(dead_code)]",
+        "#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]"
       ]
     }
   ]

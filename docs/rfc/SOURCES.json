@@ -1,0 +1,5 @@
+[
+  {"file":"rfc1950.txt","url":"https://www.rfc-editor.org/rfc/rfc1950.txt","sha256":"8f0475a5c984657bf26277f73df9456c9b97f175084f0c1748f1eb1f0b9b10b9","bytes":20502,"fetched_at":"2026-09-29T14:48:57Z"},
+  {"file":"rfc1951.txt","url":"https://www.rfc-editor.org/rfc/rfc1951.txt","sha256":"5ebf4b5b7fe1c3a0c0ab9aa3ac8c0f3853a7dc484905e76e03b0b0f301350009","bytes":36944,"fetched_at":"2026-09-29T14:48:57Z"},
+  {"file":"rfc1952.txt","url":"https://www.rfc-editor.org/rfc/rfc1952.txt","sha256":"164ef0897b4cbec63abf1b57f069f3599bd0fb7c72c2a4dee21bd7e03ec9af67","bytes":25037,"fetched_at":"2026-09-29T14:48:57Z"}
+]

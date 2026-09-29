@@ -1,0 +1,1 @@
+{"tool_name": "Bash", "tool_input": {"command": "gh repo clone madler/zlib"}, "cwd": "__ROOT__"}
