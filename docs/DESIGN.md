@@ -470,12 +470,18 @@ followed by `0x8b`). Fixed by deciding at each byte via `input.get(pos)`/
 byte is confirmed to belong to a member (`0x1f` immediately followed by
 `0x8b`); a byte found not to start a member is left unconsumed entirely,
 so `resolve_trailing` always lands exactly on `boundary_start`. The one
-narrow exception (documented in `lib.rs`'s streaming-contract docs) is a
-lone `0x1f` that is the very last byte a call offers: the
-`NeedsInput`-consumes-everything invariant (D-07) leaves no choice but
-to consume it before a second byte can arrive to disambiguate it, so in
-that specific case a caller's running `consumed` total can end up one
-byte ahead of `trailing_start()`.
+narrow exception (documented in `lib.rs`'s streaming-contract docs)
+applies only to streaming `Decompressor` callers: a lone `0x1f` that is
+the very last byte a call offers must be consumed then (the
+`NeedsInput`-consumes-everything invariant, D-07, leaves no choice
+before a second byte can arrive to disambiguate it), so in that
+specific case a streaming caller's running `consumed` total can end up
+one byte ahead of `trailing_start()`. `decompress_with` (R2-03) sees
+the whole input in one shot and has no such excuse, so it reports
+`Decoded::consumed` as `trailing_start()` (falling back to its own
+accumulated `in_pos` only when `trailing_start()` is unset) rather than
+the raw bytes-consumed total, undoing that one-byte overshoot for the
+one-shot API.
 Rationale: Keeping the "is this trailing data" decision inside the
 format that alone has enough information to make it (only gzip's own
 concatenation rule creates the header-magic ambiguity; zlib and raw
@@ -500,7 +506,8 @@ always means `consumed` stops exactly at the stream's logical end,
 regardless of format-specific trailing-data mechanics (D-19's gzip
 member-boundary lookahead decides by peeking, not consuming, so it
 resolves before `Done` is returned without overshooting -- see D-19's
-R1-03 update for the one lone-`0x1f`-at-end-of-call exception).
+R1-03 update for the one lone-`0x1f`-at-end-of-call exception, which is
+streaming-only: `decompress_with` corrects for it, per R2-03).
 Errors are sticky (checked first, before touching the backend, on every
 call). `finish()` is delegated per backend (`Backend::finish`): Raw/Zlib
 require `is_done()`; Gzip additionally resolves an outstanding
@@ -646,3 +653,33 @@ per-field cap. Capping the count while still decoding, checksumming and
 counting every member (rather than stopping early) preserves the
 existing guarantee that every byte of every member's compressed payload
 is verified; only the header bookkeeping is bounded.
+
+### D-25: decompress_with reports the corrected consumed offset, and refuses to spin when its buffer cannot grow
+
+RFC: n/a (API) -- SPEC S3.3
+Decision: `decompress_with` (R2-03) now reports `Decoded::consumed` as
+`Decompressor::trailing_start()` whenever that is set, falling back to
+its own accumulated `in_pos` only when it is not. This undoes the one
+streaming-only overshoot D-19/D-20 document (a lone trailing `0x1f`
+consumed at true end-of-call before a second byte can disambiguate it):
+since `decompress_with` sees the whole input in one call, it has no
+excuse to report that extra byte as consumed the way a streaming caller
+does. Separately, its growth loop now tracks whether the `write_region`
+it offered `decompress` was empty *before* the call, and if the result
+is `Status::OutputFull` with that empty region, returns
+`Error::OutputLimitExceeded` directly instead of `continue`-ing. This is
+a backstop independent of `Decompressor::decompress`'s own limit-bound
+arithmetic: once `buf.len()` reaches `options.max_output` (`next_len`'s
+cap), every further call would otherwise offer an empty write region,
+get `OutputFull` back, and `continue` forever if that inner arithmetic
+ever disagreed about whether the limit was truly binding.
+Rationale: A one-shot API that reports its own resumable-only quirks to
+the caller is a worse contract than the streaming one it wraps; folding
+the correction in here keeps `Decoded::consumed` meaning exactly what it
+says without asking every one-shot caller to know about D-19's
+exception. The `write_region`-was-empty backstop turns a possible
+silent hang (SPEC S1's "no CPU exhaustion" requirement, checked here by
+construction rather than only by the `remaining_allowance` calculation
+in `Decompressor::decompress`) into a defined error the moment the
+buffer genuinely cannot grow further, regardless of which of the two
+independent checks would have caught it.

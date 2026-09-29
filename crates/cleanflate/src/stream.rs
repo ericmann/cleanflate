@@ -363,13 +363,29 @@ pub fn decompress_with(format: Format, input: &[u8], options: &Options) -> Resul
         }
         let remaining_input = input.get(in_pos..).unwrap_or(&[]);
         let write_region = buf.get_mut(cur_len..).unwrap_or(&mut []);
+        // The buffer cannot grow past `options.max_output` (`next_len`'s
+        // cap), so once it is already there, `write_region` is
+        // permanently empty and every further call would return
+        // `OutputFull` again with nothing consumed or produced: `continue`
+        // would spin forever instead of terminating. Decide this from the
+        // region actually offered, not from re-deriving the limit
+        // arithmetic `decompress` already did, so a bug in that
+        // arithmetic cannot reintroduce the hang here too.
+        let write_region_was_empty = write_region.is_empty();
         let progress = decompressor.decompress(remaining_input, write_region)?;
         in_pos += progress.consumed;
         buf.truncate(cur_len + progress.produced);
 
         match progress.status {
             Status::Done => break,
-            Status::OutputFull => continue,
+            Status::OutputFull => {
+                if write_region_was_empty {
+                    return Err(Error::OutputLimitExceeded {
+                        limit: options.max_output,
+                    });
+                }
+                continue;
+            }
             Status::NeedsInput => {
                 if progress.consumed == 0 {
                     break;
@@ -379,9 +395,20 @@ pub fn decompress_with(format: Format, input: &[u8], options: &Options) -> Resul
     }
 
     decompressor.finish()?;
+    // `trailing_start()`, when set, is the exact offset where the member
+    // stream ended -- gzip may have had to consume one more byte than
+    // that to disambiguate a lone trailing `0x1f` (RFC 1952 gives no
+    // meaning to a stray byte at a member boundary; PLAN R1-03), and
+    // that extra consumed byte must not be reported as part of the
+    // decoded stream since the one-shot caller sees the whole input at
+    // once and has no "streaming exception" to excuse it.
+    let consumed = decompressor
+        .trailing_start()
+        .map(|offset| offset as usize)
+        .unwrap_or(in_pos);
     Ok(Decoded {
         data: buf,
-        consumed: in_pos,
+        consumed,
         gzip_members: decompressor.gzip_headers().to_vec(),
     })
 }

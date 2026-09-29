@@ -31,14 +31,18 @@
 //!   with a fresh output buffer.
 //! - [`Status::Done`]: the stream is fully decoded; `consumed` stops
 //!   exactly at its logical end (any input after that is not counted as
-//!   consumed by this call). [`Format::Gzip`] has one narrow exception:
-//!   deciding whether a trailing `0x1f` starts another member requires a
-//!   second byte, and if that lone `0x1f` is the very last byte a call
-//!   offers, it must be consumed then (the `NeedsInput` rule above
-//!   leaves no choice) even though it turns out, once the next byte
-//!   arrives, to have been trailing data all along; in that one case
-//!   [`Decompressor::trailing_start`] can be one byte behind the total
-//!   `consumed` a caller has accumulated across calls. Every other
+//!   consumed by this call). [`Format::Gzip`] has one narrow exception,
+//!   and it applies only to streaming [`Decompressor`] callers, never to
+//!   [`decompress_with`]: deciding whether a trailing `0x1f` starts
+//!   another member requires a second byte, and if that lone `0x1f` is
+//!   the very last byte a call offers, it must be consumed then (the
+//!   `NeedsInput` rule above leaves no choice) even though it turns out,
+//!   once the next byte arrives, to have been trailing data all along;
+//!   in that one case [`Decompressor::trailing_start`] can be one byte
+//!   behind the total `consumed` a caller has accumulated across calls.
+//!   [`decompress_with`] sees the whole input at once, so it has no such
+//!   excuse: its `Decoded::consumed` always equals
+//!   [`Decompressor::trailing_start`] whenever that is set. Every other
 //!   boundary byte is only ever peeked before the decision, never
 //!   counted as consumed until it is confirmed to belong to a member.
 //!

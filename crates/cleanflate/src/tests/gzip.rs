@@ -397,3 +397,35 @@ fn gzip_zero_header_cap_truncated_first_member_still_errors() {
     let err = decompress_with(Format::Gzip, truncated, &options).expect_err("truncated");
     assert_eq!(err, Error::Truncated);
 }
+
+#[test]
+fn gzip_trailing_allow_lone_1f_one_shot() {
+    // R2-03: `decompress_with` sees the whole input in one call, so it
+    // has no streaming-only excuse to report the lone trailing `0x1f`
+    // (consumed only because a resumable caller cannot know a second
+    // byte isn't coming, D-19/R1-03) as part of `Decoded::consumed`.
+    let member = gzip_member(&stored_body(b"hi"), b"hi");
+    let member_len = member.len();
+    let mut bytes = member;
+    bytes.push(0x1f);
+
+    let allow = Options {
+        trailing: TrailingData::Allow,
+        ..Options::default()
+    };
+    let decoded = decompress_with(Format::Gzip, &bytes, &allow).expect("allowed");
+    assert_eq!(decoded.data, b"hi");
+    assert_eq!(decoded.consumed, member_len);
+
+    let reject = Options {
+        trailing: TrailingData::Reject,
+        ..Options::default()
+    };
+    let err = decompress_with(Format::Gzip, &bytes, &reject).expect_err("rejected");
+    assert_eq!(
+        err,
+        Error::TrailingData {
+            offset: member_len as u64
+        }
+    );
+}
