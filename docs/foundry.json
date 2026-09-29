@@ -283,6 +283,25 @@
         "use crate::tests::bitwriter::BitWriter;",
         "use crate::error::Error;"
       ]
+    },
+    {
+      "id": "no-panic-lint-allow-in-cleanflate-lib",
+      "description": "C4/C5/C8/C10: a local clippy allow of unwrap_used/expect_used/panic/indexing_slicing could silently reintroduce a panic or an [] index the C4/C5 rules exist to ban, so no such allow is permitted anywhere in library code (unit-test tree excluded).",
+      "paths": [
+        "crates/cleanflate/src/"
+      ],
+      "exclude": [
+        "crates/cleanflate/src/tests/"
+      ],
+      "pattern": "allow\\s*\\([^)]*clippy::(unwrap_used|expect_used|panic|indexing_slicing)\\b",
+      "shouldMatch": [
+        "#[allow(clippy::indexing_slicing)]",
+        "#![allow(clippy::unwrap_used, clippy::indexing_slicing)]"
+      ],
+      "shouldNotMatch": [
+        "#[allow(dead_code)]",
+        "#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]"
+      ]
     }
   ]
 }

@@ -76,6 +76,35 @@ fn adler32_bound_worst_case() {
 }
 
 #[test]
+fn crc32_table_matches_bitwise_reference() {
+    // Recovers `CRC32_TABLE[n]` from `crc32` of a single byte without
+    // exposing the table: `crc32(&[b])` starts from `crc = 0xFFFF_FFFF`,
+    // whose low byte is `0xFF`, so the table index it looks up is
+    // `0xFF ^ b`. Choosing `b = 0xFF ^ n` therefore looks up index `n`.
+    // Undoing the post-XOR (`^ (crc >> 8)`) and the final invert
+    // (`finish = crc ^ 0xFFFF_FFFF`) algebraically isolates the raw
+    // table entry: `finish = entry ^ 0x00FF_FFFF ^ 0xFFFF_FFFF = entry ^
+    // 0xFF00_0000`.
+    fn reference_entry(n: u32) -> u32 {
+        let mut c = n;
+        for _ in 0..8 {
+            if c & 1 != 0 {
+                c = 0xEDB8_8320 ^ (c >> 1);
+            } else {
+                c >>= 1;
+            }
+        }
+        c
+    }
+
+    for n in 0u32..256 {
+        let byte = (0xFFu32 ^ n) as u8;
+        let table_entry = crc32(&[byte]) ^ 0xFF00_0000;
+        assert_eq!(table_entry, reference_entry(n), "n={n}");
+    }
+}
+
+#[test]
 fn adler32_large_buffer_of_ff() {
     let data = vec![0xFFu8; 1024 * 1024];
     // Cross-checked against the RFC 1950 S2.2 definition computed by hand

@@ -92,28 +92,35 @@ pub fn adler32(data: &[u8]) -> u32 {
 /// Reflected CRC-32 polynomial (RFC 1952 S8): 0xEDB88320.
 const CRC32_POLY: u32 = 0xEDB8_8320;
 
-// `clippy::indexing_slicing` is allowed only on this single assignment:
-// `slice::get_mut` is not callable in a `const fn` on this toolchain (see
-// the compiler's E0015), and `n` is provably in `0..256`, the exact
-// length of `table`, by the enclosing `while n < 256` loop, so this
-// indexing can never panic.
-#[allow(clippy::indexing_slicing)]
+/// The reflected-CRC table entry for byte value `n` (RFC 1952 S8): eight
+/// bitwise steps of "if the low bit is set, XOR the shifted polynomial in".
+const fn crc32_entry(n: u32) -> u32 {
+    let mut c = n;
+    let mut k = 0;
+    while k < 8 {
+        if c & 1 != 0 {
+            c = CRC32_POLY ^ (c >> 1);
+        } else {
+            c >>= 1;
+        }
+        k += 1;
+    }
+    c
+}
+
+// Walks `table` with `split_first_mut` instead of `table[n] = ...`: each
+// step peels the first remaining element off the *tail*, so there is
+// never a `[]` index to get wrong, and the borrow checker (not a runtime
+// bounds check) is what proves this terminates and never panics.
+// `split_first_mut` is const-stable on the pinned 1.89 toolchain.
 const fn crc32_table() -> [u32; 256] {
     let mut table = [0u32; 256];
-    let mut n = 0usize;
-    while n < 256 {
-        let mut c = n as u32;
-        let mut k = 0;
-        while k < 8 {
-            if c & 1 != 0 {
-                c = CRC32_POLY ^ (c >> 1);
-            } else {
-                c >>= 1;
-            }
-            k += 1;
-        }
-        table[n] = c;
+    let mut rest: &mut [u32] = &mut table;
+    let mut n = 0u32;
+    while let Some((first, tail)) = rest.split_first_mut() {
+        *first = crc32_entry(n);
         n += 1;
+        rest = tail;
     }
     table
 }
