@@ -62,7 +62,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] R2-01 C5: CRC-32 table without indexing, plus a rule against panic-lint suppression in cleanflate lib
 - [x] R2-02 Gzip finish(): member-seen test must use member_count, not retained headers
 - [x] R2-03 decompress_with: exact consumed at a lone trailing 0x1f, and fail instead of spinning when the buffer cannot grow
-- [ ] R2-04 Oracle multi-member gzip: test a 0x1f-not-0x8b trailer
+- [x] R2-04 Oracle multi-member gzip: test a 0x1f-not-0x8b trailer
 - [ ] R2-05 Provenance summary: list URLs fetched via Bash, and state the Bash-read gap
 
 ## Log
@@ -459,3 +459,8 @@ decompress_with now computes Decoded::consumed as decompressor.trailing_start().
 Updated lib.rs streaming-contract doc comment and DESIGN.md D-19/D-20 (new D-25) to say the lone-0x1f overshoot is streaming-Decompressor-only and that decompress_with corrects for it.
 Added gzip_trailing_allow_lone_1f_one_shot (tests/gzip.rs): one member + trailing lone 0x1f under Allow -> consumed == member_len; under Reject -> TrailingData{offset: member_len}.
 make test, make lint, make bomb, make design-check, foundry_verify all green; existing limit_exact_ok/limit_plus_one_err/streaming_limit_with_large_buffer still pass, no hang observed.
+
+### R2-04 — 7003e58
+Added gzip_multi_member_1f_trailer_is_trailing to crates/oracle/tests/ffi_roundtrip.rs: two oracle-produced gzip members followed by [0x1f, b'Z'] -> StreamEnd, output "helloworld", consumed == both.len().
+Manually verified the mutation-kill claim: temporarily changed ffi.rs's starts_new_member to check only next.first()==Some(&0x1f) (dropping the next.get(1)==Some(&0x8b) check), reran the new test -- it failed (DataError != StreamEnd) as expected -- then reverted with git checkout (confirmed clean diff before recommitting).
+make test, foundry_verify all green.
