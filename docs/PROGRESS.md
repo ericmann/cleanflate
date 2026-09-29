@@ -35,8 +35,8 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P3-01 Preset dictionary support and the zlib wrapper
 - [x] P3-02 Gzip member header parser
 - [x] P3-03 Gzip members, trailer, multi-member streams and gzip API
-- [ ] P3-04 Zlib and gzip conformance, dictionary and multi-member tests
-- [ ] P3-05 Malformed zlib and gzip cases
+- [-] P3-04 Zlib and gzip conformance, dictionary and multi-member tests
+- [x] P3-05 Malformed zlib and gzip cases
 - [ ] P3-06 M3 acceptance and push
 - [ ] P4-01 Finalise the streaming contract for all formats
 - [ ] P4-02 Chunking-invariance property test (proptest)
@@ -161,3 +161,22 @@ tests/gzip.rs (multi-member concat, empty members, CRC/ISIZE mismatch,
 trailing reject/allow, lone-0x1f boundary, 1-byte chunking, truncated
 trailer). Recorded design decision D-19. make ci and foundry_verify
 both pass.
+
+### P3-04 — skipped
+SKIPPED: depends on P1-11
+
+### P3-05 — 5ad2563
+Extended crates/oracle/src/malformed.rs with a Family enum (Rfc1951/
+Rfc1950/Rfc1952) tagging each Case, plus independent zlib_wrap/
+gzip_member_bytes builders using oracle::ffi::adler32/crc32 (C zlib)
+for every checksum. Added rfc1950_cases() (bad_fcheck, cm_7, cinfo_8,
+fdict_no_dictionary, adler_mismatch, trailing_byte, valid_small+sweep)
+and rfc1952_cases() (bad_magic, cm_7, reserved_flag_bit5/7,
+fhcrc_mismatch, crc32_mismatch, isize_mismatch, trailing_garbage,
+second_member_bad_cm, all_flags_valid+sweep, two_members_valid) --
+exactly the cases listed in PLAN.md. main.rs writes each family into
+its own testdata/malformed/rfc19NN/ dir. Added
+malformed_wrapper_cases (routes rfc1950 rows through zlib_decompress,
+rfc1952 through gzip_decompress); malformed_corpus_is_up_to_date now
+regenerates and byte-compares all three families. make malformed &&
+make ci both pass; foundry_verify green.
