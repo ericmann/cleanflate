@@ -135,6 +135,32 @@ overlap, e.g. run-length patterns). Interleaving the push with the copy
 (rather than copying from a snapshot of the window) is what makes that
 overlap correct without special-casing it.
 
+### D-09: Canonical Huffman construction and bit-serial decode
+
+RFC: RFC 1951 S3.2.2, S3.1.1
+Decision: `Huffman::from_lengths` counts codes per length and validates
+only over-subscription in this task (RFC 1951 S3.2.2 steps 1-2's
+recurrence, run as a "codes still available at this length" check);
+incomplete-set validation is deferred to P2-01. `Huffman::decode` walks
+lengths 1..=15, reading one new stream bit per length and folding it in
+as `code = (code << 1) | bit` (MSB-first, per RFC 1951 S3.1.1), tracking
+`first` (the first code value assigned at the current length, via the
+same recurrence used to build the table) and `index` (how many shorter
+symbols precede this length in the length-then-symbol-ordered `symbols`
+list). A length matches as soon as `code - first < count` for that
+length's code count. `decode` only peeks; the caller consumes.
+Rationale: This is the direct generalization of RFC 1951 S3.2.2's own
+canonical-code construction algorithm (its `next_code[bits]` recurrence)
+into an incremental decode: because codes of a given length are
+lexicographically consecutive starting at `first_code[len]`, checking
+membership in `[first_code[len], first_code[len] + count)` at each length
+is exactly the RFC's own encoding rule read backwards. Building the code
+MSB-first one bit at a time (rather than peeking many bits and reversing
+them) keeps the decoder naturally resumable: `NeedMoreBits` can be
+returned the instant the buffer runs out, with no bits consumed either
+way, satisfying the streaming API's chunking-invariance requirement
+(SPEC S3.3) before that API exists.
+
 ### D-10: Checksums
 
 RFC: RFC 1950 S2.2, RFC 1950 S8.2, RFC 1952 S2.3.1, RFC 1952 S8

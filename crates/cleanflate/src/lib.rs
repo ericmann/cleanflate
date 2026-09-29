@@ -14,15 +14,17 @@
 //! DEFLATE decompression (RFC 1951) with zlib (RFC 1950) and gzip (RFC 1952)
 //! wrappers, built from the RFC texts alone.
 
-#[allow(dead_code)] // consumed starting in Phase 2 (huffman.rs, inflate.rs)
+#[allow(dead_code)] // fully consumed starting in Phase 2 (inflate.rs)
 mod bitreader;
 pub mod checksum;
 mod config;
 pub mod error;
+#[allow(dead_code)] // consumed starting in Phase 2 (inflate.rs)
+mod huffman;
 mod options;
-#[allow(dead_code)] // consumed starting in Phase 2 (huffman.rs, inflate.rs)
+#[allow(dead_code)] // consumed starting in Phase 2 (inflate.rs)
 mod tables;
-#[allow(dead_code)] // consumed starting in Phase 2 (huffman.rs, inflate.rs)
+#[allow(dead_code)] // consumed starting in Phase 2 (inflate.rs)
 mod window;
 
 pub use config::{DEFAULT_MAX_GZIP_FIELD, DEFAULT_MAX_OUTPUT};
