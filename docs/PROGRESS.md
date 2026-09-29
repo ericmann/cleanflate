@@ -52,7 +52,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P6-02 Build report generator and DESIGN.md audit
 - [x] P6-03 Freeze and hand-off push
 - [x] R1-01 Independent checksums in cleanflate unit-test fixtures (C16) plus a mechanical rule
-- [ ] R1-02 Output limit: empty output slice must be OutputFull, and cover the streaming limit arithmetic
+- [x] R1-02 Output limit: empty output slice must be OutputFull, and cover the streaming limit arithmetic
 - [ ] R1-03 Gzip: exact consumed at Done under TrailingData::Allow
 - [ ] R1-04 Bound retained gzip member headers during streaming
 - [ ] R1-05 Make stream_contract test drivers fail instead of hang on no progress
@@ -397,3 +397,9 @@ Replaced crate::checksum::{adler32,crc32} usage in crates/cleanflate/src/tests/{
 Added docs/foundry.json rule no-cleanflate-checksums-in-fixtures (paths crates/cleanflate/src/tests/, exclude tests/checksum.rs, pattern \bcrate::checksum\b) and tagged CLAUDE.md's C16 with [rule:no-cleanflate-checksums-in-fixtures]. Comments explaining the change avoid the literal "crate::checksum" substring (rule matches raw text incl. comments, precedent: no-unsafe-token-in-cleanflate).
 Would-have-caught: the task's named mutation (s2 = (s2+s1) % (ADLER_MOD-1) on the old per-byte line) no longer applies verbatim since P4-09's deferred-modulo rewrite; the equivalent mutation on current code (s2 %= ADLER_MOD -> % (ADLER_MOD-1)) turns out unreachable for any small-buffer fixture in either old or new checksum.rs (reduction only triggers >=5552 bytes). Validated the general property with a mutation that does affect small inputs (Adler32::new() s1 init 1->0): 7/14 zlib.rs tests failed as expected, confirming independent fixtures now catch a real bug.
 Tests: full crates/cleanflate/src/tests suite (154, unchanged count) pass. make ci green. foundry_verify: new rule 0 hits.
+
+### R1-02 — f58b82f
+Fixed the OutputLimitExceeded condition in Decompressor::decompress: was comparing the already-clamped allowance (min(remaining_allowance, output.len())) against output.len(), so allowance==0 fired for ANY empty caller-supplied output slice regardless of remaining quota -- a real bug (not introduced by this task). Now: limit_bound = remaining_allowance == 0 || remaining_allowance < output.len() as u64, computed from the unclamped remaining_allowance, matching what D-02's "Update (P1-10)" text already said should happen but the old code didn't implement.
+New tests: stream_raw.rs::{empty_output_slice_is_output_full_not_limit (decompress(&input,&mut[]) now Ok(OutputFull,produced=0) then a 16-byte buffer finishes to "hello"/Done), streaming_limit_with_large_buffer (max_output=4 with a 64-byte buffer on stored "hello" -> Err(OutputLimitExceeded{limit:4}), total_out()==4; max_output=5 -> Done)}. DESIGN.md D-02 gained an "Update (R1-02)" paragraph.
+Would-have-caught: mutating remaining_allowance's saturating_sub to an off-by-one saturating_add(1) hung limit_plus_one_err (never terminates) -- confirmed caught, reverted after confirming.
+Tests: full cleanflate suite 156 (+2), make lint, make bomb, make design-check all green.
