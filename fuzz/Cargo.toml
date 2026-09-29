@@ -35,3 +35,17 @@ path = "fuzz_targets/never_panic_rfc1952.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "diff_oracle_roundtrip"
+path = "fuzz_targets/diff_oracle_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "diff_oracle_arbitrary"
+path = "fuzz_targets/diff_oracle_arbitrary.rs"
+test = false
+doc = false
+bench = false

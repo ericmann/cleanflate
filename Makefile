@@ -64,7 +64,8 @@ fuzz-check:
 	cargo check --manifest-path fuzz/Cargo.toml --bins
 
 FUZZ_SECONDS ?= 60
-FUZZ_TARGETS := never_panic_raw never_panic_rfc1950 never_panic_rfc1952
+FUZZ_TARGETS := never_panic_raw never_panic_rfc1950 never_panic_rfc1952 \
+                 diff_oracle_roundtrip diff_oracle_arbitrary
 
 fuzz-smoke:
 	@for t in $(FUZZ_TARGETS); do \
@@ -76,8 +77,14 @@ fuzz-smoke:
 fuzz-long:
 	@echo "STUB: fuzz-long arrives in a later phase"
 
+DIVERGENCE_LOG ?= fuzz/artifacts/divergences.jsonl
+
 fuzz-divergences:
-	@echo "STUB: fuzz-divergences arrives in P4-05"
+	@if [ -f $(DIVERGENCE_LOG) ]; then \
+		jq -s 'group_by(.framing + "/" + .class) | map({key: (.[0].framing + "/" + .[0].class), count: length}) | sort_by(.key) | .[] | "\(.key): \(.count)"' -r $(DIVERGENCE_LOG); \
+	else \
+		echo "no divergence log at $(DIVERGENCE_LOG) (none recorded, or fuzz-smoke not yet run)"; \
+	fi
 
 proptest-10k:
 	CLEANFLATE_CHUNKING_CASES=10000 cargo test --release -p oracle --test chunking

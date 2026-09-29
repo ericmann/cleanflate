@@ -25,6 +25,36 @@ iteration spend unbounded time producing output; that behavior is
 exercised deliberately and at realistic scale in
 `crates/oracle/tests/bomb.rs` instead.
 
+Two differential targets compare `cleanflate` against the oracle's own
+C zlib wrapper (SPEC S5 M4 (b)/(c); C9: always through `oracle::ffi`,
+never the raw C bindings directly):
+
+- `diff_oracle_roundtrip`: the first 5 input bytes select
+  framing/level/strategy/windowBits/memLevel; the rest (capped at 64
+  KiB) is compressed with `oracle::ffi::deflate_bytes` and must decode
+  back to exactly that data through `cleanflate`'s one-shot API, its
+  streaming API (chunked by a size derived from the data), and the
+  oracle's own `inflate_bytes` -- any mismatch `panic!`s, which *is*
+  the fuzz failure here: a real DEFLATE stream that any two of three
+  independent decoders disagree on is a genuine bug.
+- `diff_oracle_arbitrary`: arbitrary bytes (not necessarily anything
+  real DEFLATE data), decoded under `TrailingData::Allow` by both
+  `cleanflate` and the oracle, for each of the three framings.
+  Divergences are classified (`both_ok_same`, `both_ok_differ`,
+  `both_err`, `clean_ok_oracle_err`, `clean_err_oracle_ok`) and every
+  class except `both_ok_same`/`both_err` is appended as a JSON line to
+  `$CLEANFLATE_DIVERGENCE_LOG` (default `fuzz/artifacts/divergences.jsonl`).
+  This target never panics on a divergence -- two independently-written
+  decoders disagreeing at the ragged edge of malformed input is
+  expected background noise, not automatically a bug; `make
+  fuzz-divergences` summarizes counts per class for manual triage.
+  A 60-second smoke run reliably surfaces `gzip/clean_err_oracle_ok`
+  and `gzip/both_ok_differ`: these are the *expected* consequence of
+  `cleanflate` decoding every concatenated gzip member (RFC 1952 S2.2)
+  while the oracle's `inflateInit2_` with `windowBits=31` stops after
+  the first member (documented in `crates/oracle/src/ffi.rs` and its
+  P1-01 log entry) -- not a `cleanflate` bug.
+
 ## Seeds
 
 `fuzz/seeds/<target>/` holds up to 10 small fixtures copied from
