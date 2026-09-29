@@ -20,7 +20,10 @@ jobs:
           command -v shellcheck >/dev/null 2>&1 || sudo apt-get install -y shellcheck
           command -v jq >/dev/null 2>&1 || sudo apt-get install -y jq
 
-      - name: Fetch Canterbury corpus
+      # The archive is committed (its host 403s automated clients), so this
+      # extracts it and verifies every file against testdata/corpora/SOURCES.json
+      # without touching the network.
+      - name: Extract and verify Canterbury corpus
         run: CLEANROOM_ALLOW_CORPUS_FETCH=1 bash tools/cleanroom/fetch-corpora.sh canterbury
 
       - name: Install git hooks

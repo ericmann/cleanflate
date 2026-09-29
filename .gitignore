@@ -5,7 +5,9 @@
 /fuzz/artifacts
 /fuzz/coverage
 /testdata/generated/
-/testdata/corpora/archives/
+/testdata/corpora/archives/*
+# Canterbury is committed: its host 403s automated clients (incl. CI runners).
+!/testdata/corpora/archives/cantrbry.tar.gz
 /testdata/corpora/canterbury/
 /testdata/corpora/silesia/
 /provenance/tool-log.jsonl
