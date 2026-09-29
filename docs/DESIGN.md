@@ -180,3 +180,28 @@ Cross-checking against the independent C zlib oracle (never read as
 source, only linked via its public API per CR5) is the correctness signal
 that these two from-scratch implementations agree with a real-world
 zlib on arbitrary data, not just the RFC's own worked examples.
+
+### D-11: The Inflater step contract
+
+RFC: RFC 1951 S3.2.3, S3.2.4
+Decision: `Inflater::step(input, output) -> Result<(consumed, produced,
+InflateStatus), Error>` runs a `loop` over small, atomic sub-steps
+(read block header; align and read LEN/NLEN; copy stored bytes). Each
+sub-step either completes and advances the state, or returns immediately
+with `NeedsInput` (bits/bytes ran out; whatever whole bytes were loaded
+into the bit buffer are still counted as consumed) or `OutputFull` (a
+byte was ready but `output` had no room). Errors are stored in the state
+(`State::Failed`) and returned as a clone on every subsequent call, so a
+caller that keeps calling `step` after an error keeps getting the same
+answer rather than undefined behavior from a half-updated state machine.
+Rationale: SPEC S3.3 requires the streaming API to "produce identical
+output regardless of how input and output are chunked", including
+1-byte chunks. Modelling the decoder as small atomic sub-steps rather
+than one big function that assumes all its bits/bytes are available is
+what makes arbitrary chunking safe: a sub-step either fully commits (bits
+consumed, state advanced) or fully backs out (returns `NeedsInput`/
+`OutputFull` having only advanced the byte position by whole bytes
+actually loaded, never a partial bit-level commitment). RFC 1951 S3.2.3's
+"read block header ... otherwise ..." loop and S3.2.4's byte-align-then-
+LEN/NLEN sequence map directly onto the `BlockHeader`/`StoredLen`/
+`StoredCopy` states.

@@ -11,6 +11,7 @@ pub(crate) mod bitwriter;
 mod checksum;
 mod error;
 mod huffman;
+mod inflate_stored;
 mod tables;
 mod window;
 
