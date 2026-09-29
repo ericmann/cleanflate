@@ -20,6 +20,7 @@ mod inflate_dynamic;
 mod inflate_fixed;
 mod inflate_stored;
 mod invariants;
+mod stream_contract;
 mod stream_raw;
 mod tables;
 mod window;

@@ -454,3 +454,32 @@ threading gzip-specific lookahead logic into `Decompressor`'s otherwise
 format-agnostic core, matching the "backend owns its own protocol rules,
 `Decompressor` owns cross-cutting policy" split already established by
 D-17.
+
+### D-20: Streaming contract finalized across Raw/Zlib/Gzip
+
+RFC: n/a (API) -- SPEC S3.3
+Decision: `Decompressor::decompress`'s three-way `Status` and
+`Decompressor::finish` behavior (documented in full in the crate's
+top-level rustdoc, "Streaming contract" section) is now explicit and
+uniform across all three formats: `NeedsInput` always means all of
+`input` was consumed; `OutputFull` always means either the caller's own
+output slice filled up (resume with a fresh buffer) or the configured
+output-limit allowance was exhausted, which is surfaced as
+`Error::OutputLimitExceeded` rather than a `Status`, never both; `Done`
+always means `consumed` stops exactly at the stream's logical end,
+regardless of format-specific trailing-data mechanics (D-19's gzip
+member-boundary lookahead already resolves before `Done` is returned).
+Errors are sticky (checked first, before touching the backend, on every
+call). `finish()` is delegated per backend (`Backend::finish`): Raw/Zlib
+require `is_done()`; Gzip additionally resolves an outstanding
+lone-`0x1f`-at-EOF ambiguity via the configured `TrailingData` policy
+(D-19). A `decompress` call made after `Done` with non-empty input is
+handled once, uniformly, by `handle_post_done_input`, independent of
+which backend produced `Done`.
+Rationale: The format-specific decoders (`Inflater`, `ZlibDecoder`,
+`GzipDecoder`) already agree on a `step(input, output) -> (consumed,
+produced, InflateStatus)` shape (D-17); this decision is about pinning
+down, and testing, that `Decompressor` never leaks a format-specific
+wrinkle into the public contract callers write chunking loops against --
+the same 1-byte-chunk loop already used throughout this crate's own test
+suite (D-07 and friends) must work unmodified for any `Format`.

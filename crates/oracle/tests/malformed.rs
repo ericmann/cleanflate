@@ -198,6 +198,91 @@ fn malformed_wrapper_cases() {
     );
 }
 
+fn format_for_row(path: &str) -> cleanflate::Format {
+    if path.starts_with("rfc1950/") {
+        cleanflate::Format::Zlib
+    } else if path.starts_with("rfc1952/") {
+        cleanflate::Format::Gzip
+    } else {
+        cleanflate::Format::Raw
+    }
+}
+
+/// Stream every non-sweep malformed row 1 byte in / 1 byte out and
+/// confirm it reaches the same `ErrorKind` (or `OK`) as the one-shot
+/// decoder (SPEC S3.3: identical output regardless of chunking).
+#[test]
+fn malformed_one_byte_chunks_same_kind() {
+    let root = repo_root();
+    let tsv_path = root.join("testdata/malformed/EXPECTED.tsv");
+    let text = fs::read_to_string(&tsv_path).unwrap_or_else(|e| {
+        panic!(
+            "failed to read {}: {e} -- run `make malformed` first",
+            tsv_path.display()
+        )
+    });
+    let rows = parse_tsv(&text);
+    assert!(!rows.is_empty(), "EXPECTED.tsv has no data rows");
+
+    let mut failures: Vec<String> = Vec::new();
+
+    for row in rows.iter().filter(|r| !r.is_sweep) {
+        let file_path = root.join("testdata/malformed").join(&row.path);
+        let bytes = fs::read(&file_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", file_path.display()));
+
+        let format = format_for_row(&row.path);
+        let mut d = cleanflate::Decompressor::new(format, cleanflate::Options::default());
+        let mut out = Vec::new();
+        let mut pos = 0usize;
+        let mut stream_result: Result<(), cleanflate::Error> = Ok(());
+        loop {
+            let one_in = bytes.get(pos..(pos + 1).min(bytes.len())).unwrap_or(&[]);
+            let mut one_out = [0u8; 1];
+            match d.decompress(one_in, &mut one_out) {
+                Err(e) => {
+                    stream_result = Err(e);
+                    break;
+                }
+                Ok(progress) => {
+                    pos += progress.consumed;
+                    out.extend_from_slice(one_out.get(..progress.produced).unwrap_or(&[]));
+                    // Keep feeding every remaining byte (even past the
+                    // core stream's own `Done`, e.g. trailing-data
+                    // bytes) until there is truly nothing left to offer
+                    // and the decoder isn't just waiting for a fresh
+                    // output buffer (`OutputFull` needs no more input).
+                    if one_in.is_empty() && progress.status != cleanflate::Status::OutputFull {
+                        break;
+                    }
+                }
+            }
+        }
+        if stream_result.is_ok() {
+            stream_result = d.finish();
+        }
+
+        let actual = match &stream_result {
+            Ok(()) => "OK".to_string(),
+            Err(e) => e.kind().as_str().to_string(),
+        };
+        if actual != row.expected {
+            failures.push(format!(
+                "{} (1-byte chunks): expected {}, got {actual}",
+                row.path, row.expected
+            ));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "1-byte-chunk streaming mismatches ({} of {} rows):\n{}",
+        failures.len(),
+        rows.len(),
+        failures.join("\n")
+    );
+}
+
 #[test]
 fn malformed_corpus_is_up_to_date() {
     let root = repo_root();
