@@ -60,7 +60,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] R1-07 Multi-member-aware oracle for differential fuzz target (c)
 - [x] R1-08 Complete the provenance record: intervention row, denial notes, bootstrap gaps
 - [x] R2-01 C5: CRC-32 table without indexing, plus a rule against panic-lint suppression in cleanflate lib
-- [ ] R2-02 Gzip finish(): member-seen test must use member_count, not retained headers
+- [x] R2-02 Gzip finish(): member-seen test must use member_count, not retained headers
 - [ ] R2-03 decompress_with: exact consumed at a lone trailing 0x1f, and fail instead of spinning when the buffer cannot grow
 - [ ] R2-04 Oracle multi-member gzip: test a 0x1f-not-0x8b trailer
 - [ ] R2-05 Provenance summary: list URLs fetched via Bash, and state the Bash-read gap
@@ -447,3 +447,9 @@ Rewrote crc32_table() to walk the array with split_first_mut instead of table[n]
 Added crc32_table_matches_bitwise_reference in tests/checksum.rs: for n in 0..256, recovers CRC32_TABLE[n] from crc32(&[0xFF^n as u8]) ^ 0xFF00_0000 (algebraic inverse of the update/finish steps) and compares to an independent bit-at-a-time reference written in the test.
 Added foundry.json rule no-panic-lint-allow-in-cleanflate-lib (paths crates/cleanflate/src/, excludes src/tests/) matching allow(...clippy::unwrap_used|expect_used|panic|indexing_slicing...); fixtures per the task spec. Tagged CLAUDE.md C5 with [rule:no-panic-lint-allow-in-cleanflate-lib].
 make lint, make test, foundry_verify all green; new rule 0 hits.
+
+### R2-02 — ec1a424
+GzipDecoder::finish() checked !self.headers.is_empty() to decide "at least one member completed"; with max_gzip_headers=0 that's always false, so valid streams wrongly failed Truncated. Changed the check to self.member_count > 0 (member_count increments per member regardless of the retention cap).
+Audited gzip.rs for other headers-as-proxy uses: only the retention push (self.headers.push guarded by max_gzip_headers, unchanged) and the headers() accessor remain -- no other fix needed.
+Added gzip_zero_header_cap_still_decodes (one member via decompress_with, two concatenated members via decompress_with, and the streaming Decompressor path checking gzip_headers().len()==0 and gzip_member_count()==2) and gzip_zero_header_cap_truncated_first_member_still_errors (truncated first member still returns Error::Truncated) to tests/gzip.rs.
+make lint, make test, foundry_verify all green.
