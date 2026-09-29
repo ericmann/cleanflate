@@ -1,0 +1,123 @@
+# cleanflate design decisions
+
+This document records every non-trivial design decision made while
+building `cleanflate`, as evidence that the design flowed from the RFCs
+and SPEC rather than from a prior implementation (SPEC S3.4).
+
+## How to read this document
+
+Each decision is one `### D-NN: <title>` block with three lines:
+
+- `RFC:` the RFC section (or sections) the decision implements, or `n/a
+  (API)` for decisions that are pure API surface with no RFC counterpart.
+- `Decision:` what was chosen.
+- `Rationale:` why.
+
+`tools/ci/design-check.sh` (`make design-check`) mechanically verifies
+every `### D-` heading is followed by an `RFC:` line before the next
+heading.
+
+## Decisions
+
+### D-01: Error model
+
+RFC: n/a (API)
+Decision: A single `#[non_exhaustive] pub enum Error` with one variant per
+SPEC S3.3 error category (bad header, preset-dictionary/dictionary
+mismatch, bad block type, invalid stored-block length, invalid Huffman
+table, invalid symbol, invalid distance, checksum mismatch, truncated
+input, trailing data, output limit exceeded), plus a parallel
+`ErrorKind` enum (`Error::kind()`, `ErrorKind::as_str()`) for
+stringly-comparable but still typed matching (used by the malformed
+corpus's `EXPECTED.tsv`).
+Rationale: SPEC S3.3 requires "a typed error enum with distinct variants
+... No stringly-typed errors." Splitting `Error` (which carries payload
+data useful for debugging) from `ErrorKind` (a stable, payload-free tag)
+lets test fixtures name an expected error without depending on exact
+payload values.
+
+### D-02: Output limit default
+
+RFC: n/a (API)
+Decision: `DEFAULT_MAX_OUTPUT = 1 << 30` (1 GiB), defined once in
+`config.rs` and referenced everywhere else by name.
+Rationale: SPEC S3.3 requires a documented default output limit as a
+decompression-bomb guard. 1 GiB is larger than any conformance corpus
+member (the largest Silesia file is about 51 MB) so no legitimate
+corpus decode fails, while still bounding memory well below what a
+1:1000+ DEFLATE bomb could otherwise produce.
+
+### D-03: Trailing-data policy
+
+RFC: n/a (API)
+Decision: `TrailingData::{Reject, Allow}`, defaulting to `Reject`.
+Under `Allow`, the API reports how many input bytes were consumed so
+the caller can inspect what follows.
+Rationale: SPEC S3.3: "Trailing-data behavior is explicit and
+configurable (error vs. return remaining bytes)." Rejecting by default
+matches the "correctness first" priority (SPEC S1): silently accepting
+garbage after a stream is a more common bug source than a legitimate
+use case, so the lenient behavior is opt-in.
+
+### D-04: Single resumable decoder core
+
+RFC: n/a (API)
+Decision: The raw DEFLATE decoder is one resumable state machine
+(`Inflater`) from Phase 1 onward. The one-shot APIs (`inflate`,
+`zlib_decompress`, `gzip_decompress`) drive this same state machine to
+completion in one call; the streaming `Decompressor` drives it
+incrementally.
+Rationale: SPEC S3.3 requires a streaming API that "must produce
+identical output regardless of how input and output are chunked."
+Retrofitting resumability onto a slice-based one-shot decoder later
+would be a rewrite; building one code path from the start makes
+chunking invariance structural rather than a property to test for and
+hope holds.
+
+### D-05: RFC 1951 constant tables' source
+
+RFC: RFC 1951 S3.2.5, S3.2.6, S3.2.7
+Decision: `tables.rs`'s length-code base/extra table, distance-code
+base/extra table, code-length transmission order, and fixed Huffman
+code lengths are transcribed directly from the tables printed in
+`docs/rfc/rfc1951.txt`, with each constant's rustdoc citing the
+specific RFC table it came from.
+Rationale: These are the specification's own numbers; transcribing them
+directly (and testing them against the RFC's own printed examples, e.g.
+code 265 -> base 11, extra 1 bit) is the most direct way to keep the
+implementation traceable to the RFC text rather than to a reimplementation
+of it.
+
+### D-06: Length code 284/285 boundary
+
+RFC: RFC 1951 S3.2.5
+Decision: Code 284 (base 227, 5 extra bits) is kept exactly as the RFC's
+table states, even though its nominal range 227..=258 (32 values)
+overlaps code 285's fixed value of 258. Extra-bit value 31 on code 284
+therefore also decodes to length 258, the same value code 285 encodes
+directly.
+Rationale: The RFC's own printed table gives code 284 as "5 227-257" in
+one place and effectively extends to 258 arithmetically
+(227 + (2^5 - 1) = 258) when all 5 extra bits are set; RFC 1951 does not
+special-case this, so the arithmetic decode is accepted as specified
+rather than patched to avoid the overlap.
+
+### D-10: Checksums
+
+RFC: RFC 1950 S2.2, RFC 1950 S8.2, RFC 1952 S2.3.1, RFC 1952 S8
+Decision: Adler-32 and CRC-32 are implemented from the RFC 1950/1952
+algorithm descriptions in `checksum.rs`: Adler-32 as two mod-65521 running
+sums (s1 initialized to 1, s2 to 0), CRC-32 as a reflected-polynomial
+(0xEDB88320) table built by a `const fn`, both exposed as incremental
+(`Adler32`/`Crc32`) and one-shot (`adler32`/`crc32`) APIs. Cross-checked
+against the C zlib oracle (`crates/oracle/tests/checksums.rs`) on 200
+random buffers each, lengths 0..=10,000.
+Rationale: SPEC S3.2 requires checksums "implemented in-crate, derived
+from the RFCs' definitions." RFC 1950 S2.2 defines the Adler-32 running
+sums and modulus directly; RFC 1950 S8.2 gives the reference update
+algorithm. RFC 1952 S2.3.1 defines the CRC32 trailer field and S8 gives
+sample CRC code establishing the reflected-polynomial table construction.
+Cross-checking against the independent C zlib oracle (never read as
+source, only linked via its public API per CR5) is the correctness signal
+that these two from-scratch implementations agree with a real-world
+zlib on arbitrary data, not just the RFC's own worked examples.

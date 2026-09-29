@@ -15,6 +15,15 @@
 //! wrappers, built from the RFC texts alone.
 
 pub mod checksum;
+mod config;
+pub mod error;
+mod options;
+#[allow(dead_code)] // consumed starting in Phase 2 (huffman.rs, inflate.rs)
+mod tables;
+
+pub use config::{DEFAULT_MAX_GZIP_FIELD, DEFAULT_MAX_OUTPUT};
+pub use error::{ChecksumKind, Error, ErrorKind, HeaderError, HuffmanError};
+pub use options::{Format, Options, TrailingData};
 
 #[cfg(test)]
 mod tests;

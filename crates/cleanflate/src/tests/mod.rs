@@ -6,6 +6,8 @@
 )]
 
 mod checksum;
+mod error;
+mod tables;
 
 #[test]
 fn crate_builds() {

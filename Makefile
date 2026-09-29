@@ -58,7 +58,7 @@ tools-check: sources-check
 	fi
 
 design-check:
-	@echo "STUB: design-check arrives in P1-05"
+	bash tools/ci/design-check.sh
 
 fuzz-check:
 	@echo "STUB: fuzz-check arrives in P4-04"
@@ -102,4 +102,4 @@ build-report:
 hooks-install:
 	git config core.hooksPath tools/git-hooks
 
-ci: fmt-check lint corpus test crate-checks cleanroom-selftest tools-check
+ci: fmt-check lint corpus test crate-checks cleanroom-selftest tools-check design-check
