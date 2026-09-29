@@ -61,16 +61,23 @@ design-check:
 	bash tools/ci/design-check.sh
 
 fuzz-check:
-	@echo "STUB: fuzz-check arrives in P4-04"
+	cargo check --manifest-path fuzz/Cargo.toml --bins
+
+FUZZ_SECONDS ?= 60
+FUZZ_TARGETS := never_panic_raw never_panic_rfc1950 never_panic_rfc1952
 
 fuzz-smoke:
-	@echo "STUB: fuzz-smoke arrives in P4-04"
+	@for t in $(FUZZ_TARGETS); do \
+		echo "== fuzz-smoke: $$t =="; \
+		mkdir -p fuzz/corpus/$$t; \
+		cargo +nightly fuzz run $$t fuzz/corpus/$$t fuzz/seeds/$$t -- -max_total_time=$(FUZZ_SECONDS) -rss_limit_mb=2048 || exit 1; \
+	done
 
 fuzz-long:
-	@echo "STUB: fuzz-long arrives in P4-04"
+	@echo "STUB: fuzz-long arrives in a later phase"
 
 fuzz-divergences:
-	@echo "STUB: fuzz-divergences arrives in P4-04"
+	@echo "STUB: fuzz-divergences arrives in P4-05"
 
 proptest-10k:
 	CLEANFLATE_CHUNKING_CASES=10000 cargo test --release -p oracle --test chunking
