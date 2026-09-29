@@ -560,3 +560,31 @@ chunking-invariance proptest cases, all unchanged) even though it is
 not, by itself, a measurable win on the Silesia corpus at level 6 (see
 docs/PERF.md's Pass 1 table): most matches there are short and/or
 short-distance, the overlap-eligible case this change does not help.
+
+### D-23: Adler-32 deferred-modulo performance pass
+
+RFC: RFC 1950 S2.2
+Decision: `Adler32::update` processes `data` in chunks of `ADLER_NMAX`
+(5552) bytes, accumulating `s1`/`s2` with plain `u32` addition inside a
+chunk and reducing both mod `ADLER_MOD` (65521) only once per chunk,
+instead of after every byte. `ADLER_NMAX` is derived, not borrowed from
+any implementation: with `s1`/`s2` both at their maximum possible
+already-reduced value (`ADLER_MOD - 1 = 65520`) and every subsequent
+byte the worst case `0xFF` (the maximum possible contribution), `s1`
+after `n` bytes is `65520 + 255n`, and `s2` (the running sum of `s1`
+after each byte) is `65520 + n*65520 + 255*n*(n+1)/2`; the largest `n`
+keeping that under `2^32` is 5552 (`s2 = 4,294,690,200`), since 5553
+already exceeds it (`s2 = 4,296,171,735`). `adler32_bound_worst_case`
+(`crates/cleanflate/src/tests/checksum.rs`) exercises exactly this
+worst case (a run of `0xFF`) at lengths spanning several chunk
+boundaries (`ADLER_NMAX - 1`, `ADLER_NMAX`, `ADLER_NMAX + 1`, and
+beyond), checked against a direct per-byte reference computation.
+Rationale: `(a + b) % m == ((a % m) + b) % m` for repeated addition, so
+deferring the reduction to once per chunk is numerically identical to
+reducing every byte, but replaces up to 5552 divisions with one; SPEC
+S5 M4's performance pass calls this out by name as a candidate
+(alongside CRC-32 multi-table, not attempted in this pass -- see
+docs/PERF.md's Pass 2 for the measured effect and why slice-by-N CRC-32
+was left as future work) precisely because it changes nothing
+observable (same modulus, same per-byte contribution, just less often
+reduced) while removing the dominant per-byte cost.

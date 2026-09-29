@@ -15,10 +15,16 @@ pub const DEFAULT_MAX_GZIP_FIELD: usize = 65_536;
 
 /// Bits of lookahead the literal/length table-driven decode path
 /// indexes on (SPEC S5 M2: "a table-driven fast decode path"). Codes
-/// longer than this fall back to the bit-serial walk. Tuned properly in
-/// P4-09; this is a reasonable starting value.
+/// longer than this fall back to the bit-serial walk. P4-09 swept
+/// `{9,10,11}` against every `DIST_TABLE_BITS` in `{7,8,9}` (Canterbury,
+/// then a head-to-head of the leading candidates on Silesia at more
+/// iterations for a cleaner read); this value's throughput was tied
+/// with or ahead of every other candidate within measurement noise, so
+/// it was kept rather than swapped for a difference too small to trust
+/// (see docs/PERF.md's Pass 2 numbers).
 pub(crate) const LITLEN_TABLE_BITS: u32 = 10;
 
 /// Bits of lookahead the distance table-driven decode path indexes on.
-/// Tuned properly in P4-09; this is a reasonable starting value.
+/// Measured alongside `LITLEN_TABLE_BITS` in the same P4-09 sweep; kept
+/// for the same reason.
 pub(crate) const DIST_TABLE_BITS: u32 = 8;

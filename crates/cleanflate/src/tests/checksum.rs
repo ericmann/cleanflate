@@ -45,6 +45,37 @@ fn crc32_incremental_equals_oneshot() {
 }
 
 #[test]
+fn adler32_bound_worst_case() {
+    // The exact worst case the deferred-modulo bound (ADLER_NMAX = 5552,
+    // DESIGN.md D-23) is derived for: a run of 0xFF bytes -- the
+    // maximum possible per-byte contribution -- long enough to cross
+    // several ADLER_NMAX-sized chunk boundaries. If the bound were
+    // wrong (too large), this would silently wrap a u32 mid-chunk and
+    // produce a value that disagrees with the direct, per-byte
+    // reference computation below.
+    let lengths = [
+        1,
+        crate::checksum::ADLER_NMAX - 1,
+        crate::checksum::ADLER_NMAX,
+        crate::checksum::ADLER_NMAX + 1,
+        3 * crate::checksum::ADLER_NMAX + 17,
+    ];
+    for &len in &lengths {
+        let data = vec![0xFFu8; len];
+        let result = adler32(&data);
+
+        let mut s1: u64 = 1;
+        let mut s2: u64 = 0;
+        for _ in 0..data.len() {
+            s1 = (s1 + 0xFF) % 65521;
+            s2 = (s2 + s1) % 65521;
+        }
+        let expected = ((s2 as u32) << 16) | (s1 as u32);
+        assert_eq!(result, expected, "len={len}");
+    }
+}
+
+#[test]
 fn adler32_large_buffer_of_ff() {
     let data = vec![0xFFu8; 1024 * 1024];
     // Cross-checked against the RFC 1950 S2.2 definition computed by hand

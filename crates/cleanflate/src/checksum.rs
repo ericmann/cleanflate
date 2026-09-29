@@ -16,6 +16,22 @@
 /// 65521", the largest prime smaller than 2^16.
 const ADLER_MOD: u32 = 65521;
 
+/// The largest number of bytes `update` can fold into `s1`/`s2` (each
+/// already reduced mod `ADLER_MOD`, so each is `<= ADLER_MOD - 1 =
+/// 65520`) before it must reduce again to guarantee neither sum
+/// overflows a `u32` (SPEC S5 M4 performance pass; DESIGN.md D-23 proves
+/// this bound from RFC 1950 S2.2's modulus alone, deriving it rather
+/// than taking it from any implementation).
+///
+/// Worst case, every byte is 0xFF (adds the maximum 255 to `s1` each
+/// step) and both sums start at their maximum, `ADLER_MOD - 1 = 65520`.
+/// After `n` such bytes: `s1_n = 65520 + 255n`, and since `s2` is the
+/// running sum of `s1` after each byte, `s2_n = 65520 + n*65520 +
+/// 255*n*(n+1)/2`. The largest `n` keeping `s2_n < 2^32` is 5552 (5553
+/// already overflows): `s2_5552 = 4,294,690,200 < 4,294,967,296`, while
+/// `s2_5553 = 4,296,171,735 > 2^32`.
+pub(crate) const ADLER_NMAX: usize = 5552;
+
 /// Incremental Adler-32 (RFC 1950 S2.2, S8.2).
 #[derive(Debug, Clone)]
 pub struct Adler32 {
@@ -30,13 +46,22 @@ impl Adler32 {
         Adler32 { s1: 1, s2: 0 }
     }
 
-    /// Fold `data` into the running checksum.
+    /// Fold `data` into the running checksum. Reduces `s1`/`s2` mod
+    /// `ADLER_MOD` only once per `ADLER_NMAX`-sized chunk (see its doc)
+    /// instead of once per byte, since the two are numerically identical
+    /// (`(a + b) % m == ((a % m) + b) % m` for the plain-addition
+    /// accumulation this does chunk-internally) but the deferred version
+    /// does far fewer divisions.
     pub fn update(&mut self, data: &[u8]) {
         let mut s1 = self.s1;
         let mut s2 = self.s2;
-        for &byte in data {
-            s1 = (s1 + byte as u32) % ADLER_MOD;
-            s2 = (s2 + s1) % ADLER_MOD;
+        for chunk in data.chunks(ADLER_NMAX) {
+            for &byte in chunk {
+                s1 += byte as u32;
+                s2 += s1;
+            }
+            s1 %= ADLER_MOD;
+            s2 %= ADLER_MOD;
         }
         self.s1 = s1;
         self.s2 = s2;
