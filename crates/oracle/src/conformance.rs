@@ -8,8 +8,48 @@
 
 use std::path::{Path, PathBuf};
 
+use cleanflate::{Decompressor, Status};
+
 use crate::inputs::generate_synthetic;
 use crate::manifest::{sha256_hex, Manifest, ManifestEntry};
+
+/// Feed `bytes` into `decompressor` in `input_chunk`-sized pieces, reading
+/// into an `output_chunk`-sized buffer, looping `decompress` calls
+/// (including empty-input calls, since a chunk boundary can land inside
+/// already-buffered bits that still need a further call to flush) until
+/// [`Status::Done`], then calls `finish()`. Used to prove chunking
+/// invariance against odd chunk sizes that don't divide the corpus
+/// (SPEC S3.3, S5 M2).
+pub fn decode_streaming(
+    decompressor: &mut Decompressor,
+    bytes: &[u8],
+    input_chunk: usize,
+    output_chunk: usize,
+) -> Result<Vec<u8>, String> {
+    let mut out = vec![0u8; output_chunk.max(1)];
+    let mut result = Vec::new();
+    let mut pos = 0usize;
+
+    loop {
+        let end = pos.saturating_add(input_chunk).min(bytes.len());
+        let chunk = bytes.get(pos..end).unwrap_or(&[]);
+        let progress = decompressor
+            .decompress(chunk, &mut out)
+            .map_err(|e| format!("{e:?}"))?;
+        pos += progress.consumed;
+        result.extend_from_slice(out.get(..progress.produced).unwrap_or(&[]));
+
+        if progress.status == Status::Done {
+            break;
+        }
+        if progress.consumed == 0 && progress.produced == 0 && pos >= bytes.len() {
+            return Err("stream did not reach Done after consuming all input (stuck)".to_string());
+        }
+    }
+
+    decompressor.finish().map_err(|e| format!("{e:?}"))?;
+    Ok(result)
+}
 
 /// `testdata/`, resolved from `CARGO_MANIFEST_DIR`, never the process cwd
 /// (so `cargo test` works regardless of the directory it's invoked from).
