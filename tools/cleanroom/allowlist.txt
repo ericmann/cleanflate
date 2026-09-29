@@ -1,0 +1,13 @@
+# URLs the PreToolUse guard permits before the post-M0 lockdown flag
+# (tools/cleanroom/LOCKDOWN) exists. See SPEC.md S2.3 and CLAUDE.md CR3.
+https://www.rfc-editor.org/rfc/rfc1950.txt
+https://www.rfc-editor.org/rfc/rfc1951.txt
+https://www.rfc-editor.org/rfc/rfc1952.txt
+https://rfc-editor.org/rfc/rfc1950.txt
+https://rfc-editor.org/rfc/rfc1951.txt
+https://rfc-editor.org/rfc/rfc1952.txt
+https://corpus.canterbury.ac.nz/resources/cantrbry.tar.gz
+https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip
+https://sun.aei.polsl.pl//~sdeor/corpus/silesia.zip
+http://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip
+http://sun.aei.polsl.pl//~sdeor/corpus/silesia.zip
