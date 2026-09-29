@@ -45,7 +45,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P4-05 Differential fuzz targets against the oracle
 - [x] P4-06 Nightly fuzz workflow and long-run target
 - [x] P4-07 Benchmark harness and baseline
-- [ ] P4-08 Performance pass 1 — bulk refill and fast decode loop
+- [x] P4-08 Performance pass 1 — bulk refill and fast decode loop
 - [ ] P4-09 Performance pass 2 — measured hotspot and table-bits tuning
 - [ ] P4-10 M4 acceptance and push
 - [ ] P6-01 Provenance summary generator
@@ -352,3 +352,9 @@ Manual check: NOT VERIFIED (human):
 Added crates/oracle/src/bench.rs: BenchArgs{corpus,iters,level} (defaults silesia/5/6), BenchCorpus{Silesia,Canterbury}, run() (refuses in debug build via cfg!(debug_assertions)), bench_one_framing() (oracle-deflates each corpus file, times best-of-N cleanflate::decompress_with vs oracle::ffi::inflate_bytes via Instant, std::hint::black_box on the result), FileResult/FramingReport/BenchReport with mib_per_sec/ratio/aggregate helpers, render_markdown(). main.rs: `oracle bench [--corpus silesia|canterbury] [--iters N] [--level L]` -- falls back Silesia->Canterbury with a printed warning if Silesia's dir is empty, writes docs/PERF.md (method + uname -srm + /proc/cpuinfo model + rustc --version + the rendered tables), fully regenerated each run. Makefile bench target now real (cargo run --release -p oracle -- bench --corpus silesia).
 Test: bench::tests::throughput_math (cfg(test) unit test in oracle, allowed per task text -- C6 only covers cleanflate). make bench ran for real (Silesia, level 6, best-of-5, release, ~61s): raw aggregate cleanflate 67.4 MiB/s vs zlib 279.1 (ratio 0.24), zlib-framed 56.8 vs 250.2 (ratio 0.23) -- both well under SPEC's >=70% M4 target, reported honestly (no optimisation in scope here).
 make fmt-check/lint/corpus/test/crate-checks/cleanroom-selftest all green.
+
+### P4-08 — b85c9ce
+Implemented the full design (bit-buffer bulk refill + fast litlen/length/distance decode loop bypassing step's dispatch, guarded >=16in/258out bytes, plus Window bulk match copy). The fast decode loop found 2 real bugs: (1) over-read whole bytes corrupted gzip trailer detection -- fixed (give back unconsumed bytes to consumed on Done exit only, confirmed against all 150+24 tests); (2) a 3000-case chunking proptest then found it silently drops bits on an ~11KiB Fixed-strategy match-heavy stream (1 byte short, stuck NeedsInput after consuming all input) -- reproduced deterministically, root cause not found in budget. Per task's own "revert and record negative result" clause, reverted inflate.rs/bitreader.rs to pre-P4-08 in full.
+KEPT: Window::copy_match's bulk non-overlapping (distance>=len) path -- up to 2 slice copies each way via a 258-byte stack scratch buffer instead of len individual get_back/push calls. Verified against an independent byte-by-byte reference across distances/lengths incl. ring wraparound; full suite + 3000-case chunking proptest unchanged.
+Tests: crates/cleanflate/src/tests/fastpath.rs (3 required names, testing the surviving window-level fast path -- documented in file header why, since the inflate-level one was reverted). make ci, make heavy (10000-case proptest, bomb, full-tier conformance 1625 entries) all green.
+Measurement: raw 67.4->66.5 MiB/s (-1.3%, noise), zlib 56.8->57.9 (+1.9%). Full tables in docs/PERF.md (Baseline P4-07 + Pass 1 P4-08 sections). DESIGN.md D-22 records both the kept change and the reverted one with its two bugs.
