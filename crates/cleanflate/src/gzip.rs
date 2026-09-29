@@ -712,7 +712,7 @@ impl GzipDecoder {
         if matches!(self.state, GState::Done) {
             return Ok(());
         }
-        if matches!(self.state, GState::Boundary) && !self.headers.is_empty() {
+        if matches!(self.state, GState::Boundary) && self.member_count > 0 {
             if self.boundary_pending.is_empty() {
                 return Ok(());
             }

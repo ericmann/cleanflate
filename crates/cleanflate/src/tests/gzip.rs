@@ -341,3 +341,59 @@ fn gzip_truncated_in_trailer() {
     let err = gzip_decompress(truncated).expect_err("truncated trailer");
     assert_eq!(err, Error::Truncated);
 }
+
+#[test]
+fn gzip_zero_header_cap_still_decodes() {
+    // R2-02: "at least one member completed" must come from
+    // `member_count`, not from whether any header was retained --
+    // `max_gzip_headers: 0` retains zero headers for every member, so a
+    // headers-based check would wrongly call every stream truncated.
+    let options = Options {
+        max_gzip_headers: 0,
+        ..Options::default()
+    };
+
+    let one = gzip_member(&stored_body(b"hi"), b"hi");
+    let decoded = decompress_with(Format::Gzip, &one, &options).expect("zero header cap");
+    assert_eq!(decoded.data, b"hi");
+    assert!(decoded.gzip_members.is_empty());
+
+    let mut two = gzip_member(&fixed_literals_body(b"foo"), b"foo");
+    two.extend_from_slice(&gzip_member(&fixed_literals_body(b"bar"), b"bar"));
+    let decoded =
+        decompress_with(Format::Gzip, &two, &options).expect("zero header cap, 2 members");
+    assert_eq!(decoded.data, b"foobar");
+    assert!(decoded.gzip_members.is_empty());
+
+    let mut d = Decompressor::new(Format::Gzip, options);
+    let mut out = [0u8; 64];
+    let mut pos = 0usize;
+    loop {
+        let progress = d
+            .decompress(two.get(pos..).unwrap_or(&[]), &mut out)
+            .expect("no error");
+        pos += progress.consumed;
+        if progress.status == Status::Done {
+            break;
+        }
+        if progress.status == Status::NeedsInput && pos >= two.len() {
+            break;
+        }
+    }
+    d.finish().expect("finished cleanly");
+    assert_eq!(d.gzip_headers().len(), 0);
+    assert_eq!(d.gzip_member_count(), 2);
+}
+
+#[test]
+fn gzip_zero_header_cap_truncated_first_member_still_errors() {
+    let options = Options {
+        max_gzip_headers: 0,
+        ..Options::default()
+    };
+    let bytes = gzip_member(&stored_body(b"hi"), b"hi");
+    // Cut off 2 of the 8 trailer bytes: the first member never finished.
+    let truncated = bytes.get(..bytes.len() - 2).unwrap_or(&[]);
+    let err = decompress_with(Format::Gzip, truncated, &options).expect_err("truncated");
+    assert_eq!(err, Error::Truncated);
+}
