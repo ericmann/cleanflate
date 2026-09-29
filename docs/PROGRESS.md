@@ -46,7 +46,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P4-06 Nightly fuzz workflow and long-run target
 - [x] P4-07 Benchmark harness and baseline
 - [x] P4-08 Performance pass 1 — bulk refill and fast decode loop
-- [ ] P4-09 Performance pass 2 — measured hotspot and table-bits tuning
+- [x] P4-09 Performance pass 2 — measured hotspot and table-bits tuning
 - [ ] P4-10 M4 acceptance and push
 - [ ] P6-01 Provenance summary generator
 - [ ] P6-02 Build report generator and DESIGN.md audit
@@ -358,3 +358,10 @@ Implemented the full design (bit-buffer bulk refill + fast litlen/length/distanc
 KEPT: Window::copy_match's bulk non-overlapping (distance>=len) path -- up to 2 slice copies each way via a 258-byte stack scratch buffer instead of len individual get_back/push calls. Verified against an independent byte-by-byte reference across distances/lengths incl. ring wraparound; full suite + 3000-case chunking proptest unchanged.
 Tests: crates/cleanflate/src/tests/fastpath.rs (3 required names, testing the surviving window-level fast path -- documented in file header why, since the inflate-level one was reverted). make ci, make heavy (10000-case proptest, bomb, full-tier conformance 1625 entries) all green.
 Measurement: raw 67.4->66.5 MiB/s (-1.3%, noise), zlib 56.8->57.9 (+1.9%). Full tables in docs/PERF.md (Baseline P4-07 + Pass 1 P4-08 sections). DESIGN.md D-22 records both the kept change and the reverted one with its two bugs.
+
+### P4-09 — abe7957
+Adler-32 deferred modulo: Adler32::update reduces s1/s2 mod 65521 once per ADLER_NMAX=5552 bytes instead of per byte; ADLER_NMAX derived from RFC 1950 S2.2's modulus alone (proof in DESIGN.md D-23: worst case s1=s2=65520, every byte 0xFF, largest n keeping s2 under 2^32 is 5552). New test adler32_bound_worst_case exercises lengths spanning several chunk boundaries against a per-byte reference.
+Table-bits sweep: measured LITLEN_TABLE_BITS {9,10,11} x DIST_TABLE_BITS {7,8,9} on Canterbury (--iters 3, noisy, all within a few percent), then re-measured leading candidates on Silesia (--iters 5); existing defaults (10,8) tied-or-ahead of every alternative -- kept, documented as a measured "no change" outcome in config.rs's doc comments.
+Did not attempt CRC-32 slice-by-N (Adler-32 is the larger isolated cost per raw-vs-zlib framing gap; slice-by-N's correctness risk wasn't justified this pass) -- noted as future work.
+Measurement: raw 66.5->71.1 MiB/s (+6.9%, noise, Adler-32 doesn't run in raw framing); zlib 57.9->71.9 MiB/s (+24.2%, the real win). Result line in docs/PERF.md: cleanflate/C zlib = 25.6% (raw) / 27.3% (zlib) on Silesia (target 70%): NOT MET -- decode loop remains dominant cost, P4-08's reverted fast path is the real path forward.
+Tests: adler32_bound_worst_case + full checksum suite + oracle checksums cross-check all pass. make ci, make heavy (10000-case proptest, bomb, full-tier conformance) all green.
