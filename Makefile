@@ -76,10 +76,10 @@ proptest-10k:
 	CLEANFLATE_CHUNKING_CASES=10000 cargo test --release -p oracle --test chunking
 
 bomb:
-	@echo "STUB: bomb arrives in P4-03"
+	cargo test --release -p oracle --test bomb -- --include-ignored
 
-heavy: proptest-10k
-	@echo "STUB: further heavy targets (bomb, fuzz-long) arrive in later phases"
+heavy: proptest-10k bomb
+	@echo "STUB: further heavy targets (fuzz-long) arrive in a later phase"
 
 malformed:
 	cargo run -q -p oracle -- malformed

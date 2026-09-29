@@ -483,3 +483,41 @@ down, and testing, that `Decompressor` never leaks a format-specific
 wrinkle into the public contract callers write chunking loops against --
 the same 1-byte-chunk loop already used throughout this crate's own test
 suite (D-07 and friends) must work unmodified for any `Format`.
+
+### D-21: Output-limit hardening and the zip-bomb fixture's real ratio
+
+RFC: n/a (API) -- SPEC S3.3 (Limits), S5 M4
+Decision: `Decompressor`'s output-limit check (D-02/D-03, exercised
+throughout `Decompressor::decompress`) is proven under an actual
+decompression-bomb-shaped input in `crates/oracle/tests/bomb.rs`, always
+via `cleanflate::DEFAULT_MAX_OUTPUT` rather than a repeated `1 << 30`
+literal (C8; enforced by the `no-output-limit-literal` constraint).
+`bomb_streaming_default_limit` compresses `DEFAULT_MAX_OUTPUT + 1 MiB`
+zero bytes with C zlib at level 9 and streams the result through a fixed
+64 KiB output buffer, proving the limit is enforced with bounded
+per-call memory rather than by first materializing the (would-be
+multi-gigabyte) output and checking its length afterward.
+`bomb_oneshot_small_limit` and `limit_exact_boundary_all_formats` cover
+the one-shot path (`decompress_with`) and the inclusive boundary
+(output exactly equal to the limit succeeds) across Raw, Zlib and Gzip.
+DEFLATE's actual worst-case compression ratio is bounded by its own
+format: the longest match (RFC 1951 S3.2.5, length code 258) costs at
+minimum one length/literal Huffman code (as little as 7-9 bits under
+the fixed table, D-yet-earlier fixed-code-length decisions) plus one
+distance code, so in the best real case roughly 258 bytes of output
+cost on the order of 2 bytes of compressed input -- about 1032:1, not
+the 1000:1-from-1-KiB figure sometimes quoted informally (which would
+require decompressing 1 KiB of *compressed* input into 1 MiB of output
+using fewer bits per match than DEFLATE's own alphabet can encode).
+The `bomb_streaming_default_limit` fixture's measured ratio (roughly
+1074790400 zero bytes compressing to about 1.04 MB) matches this
+figure.
+Rationale: A hardening test that only ever compresses a few kilobytes
+would not actually prove the limit stops a large decompression before
+it exhausts memory; using `oracle::ffi`'s real C zlib compressor (never
+`cleanflate` itself, consistent with C16) to build a fixture whose
+compressed size is small but whose *claimed* decompressed size is
+larger than the configured limit is the only way to exercise the limit
+check under a realistic adversarial shape, while keeping the test suite
+itself fast (the fixture's own compression is a few hundred
+milliseconds of C code, not a multi-gigabyte allocation).
