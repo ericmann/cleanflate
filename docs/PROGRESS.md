@@ -58,7 +58,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] R1-05 Make stream_contract test drivers fail instead of hang on no progress
 - [x] R1-06 Commit fuzz/Cargo.lock instead of gitignoring it to dodge libz-only-in-oracle
 - [x] R1-07 Multi-member-aware oracle for differential fuzz target (c)
-- [ ] R1-08 Complete the provenance record: intervention row, denial notes, bootstrap gaps
+- [x] R1-08 Complete the provenance record: intervention row, denial notes, bootstrap gaps
 
 ## Log
 (one entry per task, appended by implement)
@@ -430,3 +430,9 @@ Added oracle::ffi::inflate_gzip_members(input, max_output) -> InflateOutcome: ca
 New test: crates/oracle/tests/ffi_roundtrip.rs::gzip_multi_member_matches_concatenation (two members concatenate, consumed==total; b"XYZ" trailer -> StreamEnd with consumed==member bytes only; corrupted CRC32 in member 2 -> that member's error status, output/consumed covering only member 1).
 Ran make fuzz-smoke for real (all 5 targets, 60s each): zero crashes, and fuzz/artifacts/divergences.jsonl was not even created this run -- zero divergences of any class, where earlier P4-05/R1 runs always surfaced gzip/both_ok_differ + gzip/clean_err_oracle_ok noise (confirms the multi-member gap is closed).
 Tests: make test, make fuzz-check, foundry_verify all green.
+
+### R1-08 — bc64a44
+human-interventions.md's P0-08 row now spells out the archive_sha256 inline (f140e8a5b73d3f53198555a63bfb827889394a42f20825df33c810c3d5e3f8fb) plus the browser-User-Agent retry detail. Added two provenance/README.md sections: "Denied calls during build" (all 8 denied tool-log.jsonl entries as of writing -- 5 P0-05 guard-fixture probes, 2 P0-08 allowlist-form discovery, 1 P1-01 libz-sys find -- with the P1-01 case explicitly called out as CR1/CR5-relevant, confirming no libz-sys source was ever read) and three new "Known gaps" bullets (6 untagged bootstrap commits c1bbaa9/4015214/8edc633/956d6d7/44f624e/f776879 predating the commit-msg hook; LOCKDOWN not written until P0-10 completed in review-fix round 1, well after Phases 1-4 already ran; the browser-User-Agent retry, cross-referenced to the intervention row).
+tools/ci/sources-check.sh: new check treats any testdata/corpora/SOURCES.json entry whose fetched_by is set and not "automated"/"cached" as requiring its archive_sha256 to appear somewhere in provenance/human-interventions.md; fails loudly (manual-fetch-missing-intervention-row) instead of passing silently when missing.
+New test: tools/ci/tests/sources_check_test.sh::case_manual_fetch_requires_intervention_row (fetched_by=human-operator-browser entry with no matching row fails with that exact reason; adding the row passes).
+Tests: make tools-check (57 python + all shell suites incl. this new case), make sources-check on the real repo, foundry_verify all green.
