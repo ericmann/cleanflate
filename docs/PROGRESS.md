@@ -43,7 +43,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P4-03 Output-limit hardening and zip-bomb fixture
 - [x] P4-04 Fuzz crate and never-panic targets
 - [x] P4-05 Differential fuzz targets against the oracle
-- [ ] P4-06 Nightly fuzz workflow and long-run target
+- [x] P4-06 Nightly fuzz workflow and long-run target
 - [ ] P4-07 Benchmark harness and baseline
 - [ ] P4-08 Performance pass 1 — bulk refill and fast decode loop
 - [ ] P4-09 Performance pass 2 — measured hotspot and table-bits tuning
@@ -284,3 +284,27 @@ cleanflate decoding every concatenated gzip member per RFC 1952 S2.2
 while the oracle's windowBits=31 inflate stops after the first member;
 no raw or zlib divergences at all. Not a bug, no fix needed.
 make ci and foundry_verify both green.
+
+### P4-06 — 5bcd911
+Added .github/workflows/fuzz-nightly.yml: matrix job over all 5 fuzz
+targets, triggers schedule (daily cron) + workflow_dispatch, installs
+nightly + cargo-fuzz, runs each target for 3600s, uploads
+fuzz/artifacts on failure and always uploads diff_oracle_arbitrary's
+divergence log; only actions/checkout + actions/upload-artifact used.
+YAML validated with python3 -c 'import yaml,...': OK. Added `make
+fuzz-long` (fuzz-smoke at FUZZ_SECONDS=3600); restructured fuzz-smoke
+from a shell for-loop into per-target fuzz-smoke-<target> pattern-rule
+targets with a target-specific FUZZ_SECONDS override for fuzz-long
+(not a recursive $(MAKE) call), so `make -n fuzz-long` correctly
+dry-runs and prints all five 3600-second commands rather than GNU
+Make's special-cased "$(MAKE) recipes always execute even under -n"
+silently launching five real 1-hour runs.
+
+Also fixed a real regression from P4-05: running `make crate-checks`
+standalone (not via foundry_verify, which only saw staged files at
+that task's own verify time) found two seed filenames containing
+"zlib" (forbidden word outside crates/cleanflate|oracle); renamed
+zlib_default_text.bin/zlib_rle_repeat.bin to
+rfc1950_default_text.bin/rfc1950_rle_repeat.bin via git mv.
+make ci (incl. crate-checks, fuzz-check) and foundry_verify both
+green.
