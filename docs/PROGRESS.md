@@ -53,7 +53,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P6-03 Freeze and hand-off push
 - [x] R1-01 Independent checksums in cleanflate unit-test fixtures (C16) plus a mechanical rule
 - [x] R1-02 Output limit: empty output slice must be OutputFull, and cover the streaming limit arithmetic
-- [ ] R1-03 Gzip: exact consumed at Done under TrailingData::Allow
+- [x] R1-03 Gzip: exact consumed at Done under TrailingData::Allow
 - [ ] R1-04 Bound retained gzip member headers during streaming
 - [ ] R1-05 Make stream_contract test drivers fail instead of hang on no progress
 - [ ] R1-06 Commit fuzz/Cargo.lock instead of gitignoring it to dodge libz-only-in-oracle
@@ -403,3 +403,9 @@ Fixed the OutputLimitExceeded condition in Decompressor::decompress: was compari
 New tests: stream_raw.rs::{empty_output_slice_is_output_full_not_limit (decompress(&input,&mut[]) now Ok(OutputFull,produced=0) then a 16-byte buffer finishes to "hello"/Done), streaming_limit_with_large_buffer (max_output=4 with a 64-byte buffer on stored "hello" -> Err(OutputLimitExceeded{limit:4}), total_out()==4; max_output=5 -> Done)}. DESIGN.md D-02 gained an "Update (R1-02)" paragraph.
 Would-have-caught: mutating remaining_allowance's saturating_sub to an off-by-one saturating_add(1) hung limit_plus_one_err (never terminates) -- confirmed caught, reverted after confirming.
 Tests: full cleanflate suite 156 (+2), make lint, make bomb, make design-check all green.
+
+### R1-03 — 32400c7
+Fixed a real bug: gzip's GState::Boundary state advanced pos/total_in for every byte it EXAMINED before deciding whether it started a new member, so Progress.consumed at Done always overshot trailing_start() (by 1 for an ordinary trailing byte, by 2 for a 0x1f not followed by 0x8b) -- the exact "27 vs 26" / "overshoots by 2" symptoms named in the task.
+Rewrote GState::Boundary to decide by peeking (input.get(pos)/input.get(pos+1)) instead of consuming, advancing pos/total_in only once a byte is confirmed to belong to a member (0x1f immediately followed by 0x8b); a byte not starting a member is left entirely unconsumed so resolve_trailing lands exactly on boundary_start. Kept the one documented exception: a lone 0x1f that is the last byte a call offers must still be consumed (NeedsInput-consumes-everything invariant, D-07) -- documented in lib.rs's streaming-contract docs and DESIGN.md D-19 (new "Update (R1-03)" paragraph)/D-20.
+New tests: gzip.rs::gzip_trailing_allow_consumed_exact (b"XYZ" and [0x1f,b'Z'] trailers, one-shot + streaming consumed, trailing_start()); stream_contract.rs::done_consumed_exact_all_formats (renamed/extended done_consumed_exact_raw_and_zlib to include Gzip; its loop now also breaks on NeedsInput+exhausted-input before calling finish(), since gzip with zero trailing bytes only reaches Done via finish(), never via decompress() itself).
+Tests: full cleanflate suite 157 (+1 net), make lint, make design-check, CLEANFLATE_CHUNKING_CASES=3000 proptest chunking all green.
