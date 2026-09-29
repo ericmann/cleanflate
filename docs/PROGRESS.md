@@ -40,7 +40,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [-] P3-06 M3 acceptance and push
 - [x] P4-01 Finalise the streaming contract for all formats
 - [x] P4-02 Chunking-invariance property test (proptest)
-- [ ] P4-03 Output-limit hardening and zip-bomb fixture
+- [x] P4-03 Output-limit hardening and zip-bomb fixture
 - [ ] P4-04 Fuzz crate and never-panic targets
 - [ ] P4-05 Differential fuzz targets against the oracle
 - [ ] P4-06 Nightly fuzz workflow and long-run target
@@ -221,3 +221,21 @@ decoder any trailing bytes, while one-shot always hands over the whole
 remaining buffer at once and so saw them; fixed the driver to keep
 offering input past Done, matching one-shot. make ci and
 foundry_verify both green.
+
+### P4-03 — 28e1a25
+Added crates/oracle/tests/bomb.rs: bomb_streaming_default_limit
+(#[ignore]) compresses DEFAULT_MAX_OUTPUT + 1 MiB of zeros with C zlib
+level 9 (measured: 1074790400 bytes -> 1044655 bytes compressed, well
+under the 2 MiB acceptance bound) and streams it through a fixed 64
+KiB output buffer, asserting Err(OutputLimitExceeded{limit:
+DEFAULT_MAX_OUTPUT}) and total_out()==DEFAULT_MAX_OUTPUT -- proving
+bounded per-call memory, not "decode everything then check length".
+bomb_oneshot_small_limit (64 MiB zeros, max_output=16 MiB) and
+limit_exact_boundary_all_formats (output exactly == limit succeeds)
+cover decompress_with across Raw/Zlib/Gzip. Wired `make bomb` (release,
+--include-ignored) into `make heavy`; make bomb passes in ~9.8s wall.
+Recorded design decision D-21 (DEFLATE's real ~1032:1 worst-case
+ratio, since PLAN.md's D-19 slot was already taken by P3-03's
+decision). Never used the DEFAULT_MAX_OUTPUT literal outside
+config.rs (C8, no-output-limit-literal constraint verified). make ci
+and foundry_verify both green.
