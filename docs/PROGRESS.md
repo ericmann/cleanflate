@@ -3,7 +3,7 @@ Branch: build/2026-09-29
 Started: 2026-09-29T14:33:40.844Z
 
 ## Tasks
-- [ ] P0-01 Workspace scaffold, toolchain pin and Makefile skeleton
+- [x] P0-01 Workspace scaffold, toolchain pin and Makefile skeleton
 - [ ] P0-02 Crate checks script (zero deps, no unsafe token, forbidden path names)
 - [ ] P0-03 Provenance library and PostToolUse logger
 - [ ] P0-04 PreToolUse clean-room guard
@@ -54,3 +54,6 @@ Started: 2026-09-29T14:33:40.844Z
 
 ## Log
 (one entry per task, appended by implement)
+
+### P0-01 — ba42470
+Workspace scaffold created: Cargo workspace (resolver=3), cleanflate (zero deps, forbid(unsafe_code), deny panics) and oracle crates, fuzz/ excluded, tools/cleanroom, docs/rfc, testdata, provenance dirs with README stubs. Makefile has real fmt-check/lint/test/ci targets and STUB targets for corpus, crate-checks, cleanroom-selftest, tools-check, design-check, fuzz-check, fuzz-smoke, fuzz-long, fuzz-divergences, proptest-10k, bomb, heavy, malformed, bench, sources-check, provenance-snapshot, provenance-summary, build-report, hooks-install, conformance-full (all needed since docs/foundry.json calls them). rust-toolchain.toml pins 1.89.0 (matches installed stable). Test: crate_builds asserts 1+1==2 (assert!(true) triggers clippy::assertions_on_constants under -D warnings). cargo metadata confirms cleanflate has 0 dependencies. make ci green.
