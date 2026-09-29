@@ -39,7 +39,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P3-05 Malformed zlib and gzip cases
 - [-] P3-06 M3 acceptance and push
 - [x] P4-01 Finalise the streaming contract for all formats
-- [ ] P4-02 Chunking-invariance property test (proptest)
+- [x] P4-02 Chunking-invariance property test (proptest)
 - [ ] P4-03 Output-limit hardening and zip-bomb fixture
 - [ ] P4-04 Fuzz crate and never-panic targets
 - [ ] P4-05 Differential fuzz targets against the oracle
@@ -201,4 +201,23 @@ Gzip (D-19's boundary lookahead legitimately needs one more byte or a
 finish() call), and must not treat OutputFull-with-no-more-input as
 terminal at all (it just needs a fresh output buffer). Added
 oracle's malformed_one_byte_chunks_same_kind. make ci and
+foundry_verify both green.
+
+### P4-02 — 46f41a4
+Added proptest = "1" as an oracle-only dev-dependency and
+crates/oracle/tests/chunking.rs. chunking_invariance: random data
+(0-16384 bytes, random/repetitive mix) x C-zlib params (all 3
+framings, levels 0-9, all 5 strategies, wb 9-15, mem 1-9) x
+input/output chunk schedules (1-64, 10% all-1s) -- streamed output ==
+one-shot output == original data. chunking_invariance_on_corrupted_streams:
+same but with one random byte flipped, asserting streamed and one-shot
+agree on Ok/ErrorKind (and output when Ok). CLEANFLATE_CHUNKING_CASES
+env var overrides DEFAULT_CASES=512; make proptest-10k runs 10k cases
+in release (~7s), wired into make heavy. Cargo.lock updated; cleanflate
+itself remains at 0 dependencies (cargo tree confirmed).
+Defects-caught: none in the decoder -- the property test's own 1-byte
+chunking driver initially broke out on Done before offering the
+decoder any trailing bytes, while one-shot always hands over the whole
+remaining buffer at once and so saw them; fixed the driver to keep
+offering input past Done, matching one-shot. make ci and
 foundry_verify both green.
