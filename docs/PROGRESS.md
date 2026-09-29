@@ -10,7 +10,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P0-05 Fast-vs-reference differential test
 - [x] P0-06 Regression fixture store and repro tooling
 - [x] P0-07 `stats` feature counters
-- [ ] P0-08 Bench harness: medians, framings, levels, modes, JSON
+- [x] P0-08 Bench harness: medians, framings, levels, modes, JSON
 - [ ] P0-09 bench-compare, bench-noise, bench-md and `bench --stats`
 - [ ] P0-10 Cleanflate-only profiling entry point and `make profile`
 - [ ] P0-11 Baseline and noise measurement
@@ -60,3 +60,6 @@ oracle::regress (Row/manifest parse+render, add_to, seed_into, run_add/run_seed)
 
 ### P0-07 — 21e4a39
 stats.rs (stat! macro on/off + Stats + len_bucket/dist_bucket), counters in Inflater (stats field), BitReader (refills, refill_bytes), Window (written), Huffman::decode_table_method/table_entries, gzip accumulates via Box<Stats> stats_done, Decompressor::stats(), decompress_with_stats via shared decompress_core. 6 tests in tests/stats.rs. Interpretations: table_builds excludes constructor's 2 fixed tables; fixed_table_clones = 2 per fixed block; window_bytes_written excludes dictionary prefill; given_back_bytes/fast_loop_* stay 0 until their tasks. Default build has no counter code (cfg + macro).
+
+### P0-08 — b22aa52
+bench.rs rewritten (parse_args, medians, reps_for, interleaved samples, aggregates_of, render_markdown), bench_json.rs (schema 1, format_utc), main.rs run_bench writes JSON, Makefile bench/bench-quick with BENCH_ID/BENCH_OUT, docs/perf/README.md schema. make bench-quick took 62s; baseline median ratios 0.18-0.23 (silesia raw l6 oneshot 51 MiB/s vs C 275). JSON in target/bench/P0-08.json not committed. Interpretation: reps per implementation; no corpus fallback.
