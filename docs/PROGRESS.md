@@ -11,10 +11,10 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P0-06 commit-msg hook adding stage and task tags
 - [x] P0-07 Vendor RFC 1950/1951/1952 texts
 - [!] P0-08 Download Canterbury and Silesia corpora
-- [ ] P0-09 CI entry point and GitHub Actions workflow
-- [ ] P0-10 Lockdown flag, provenance docs and log snapshot
-- [ ] P0-11 M0 acceptance and push
-- [ ] P1-01 Oracle FFI wrappers over libz-sys
+- [-] P0-09 CI entry point and GitHub Actions workflow
+- [-] P0-10 Lockdown flag, provenance docs and log snapshot
+- [-] P0-11 M0 acceptance and push
+- [x] P1-01 Oracle FFI wrappers over libz-sys
 - [ ] P1-02 Deterministic synthetic inputs and generation matrix
 - [ ] P1-03 Corpus generator CLI and MANIFEST
 - [ ] P1-04 Adler-32 and CRC-32 in cleanflate
@@ -78,3 +78,15 @@ fetch-rfcs.sh fetched the three RFC texts via curl -fsSL from the rfc-editor.org
 
 ### P0-08 — blocked
 BLOCKED: Tried: bash tools/cleanroom/fetch-corpora.sh all --record, which downloads Canterbury from the sole allowlisted URL (https://corpus.canterbury.ac.nz/resources/cantrbry.tar.gz) with 3 retries. Also tried the exact same URL directly with curl multiple times, including with full browser-like User-Agent/Accept/Accept-Language headers, both inside and outside the script. Fails: every attempt returns HTTP 403 from Cloudflare (server: cloudflare, sets a __cf_bm bot-management cookie), i.e. the corpus host is blocking this sandbox's requests at the edge, not a transient or script-level failure. Silesia, the other corpus, downloads fine (HTTP 200 on both allowlisted mirrors), and the fetch-corpora.sh script itself (usage, lockdown check, curl retry/fallback logic, tar/unzip extraction, SOURCES.json read/write, verify mode) is otherwise complete and was exercised successfully for the Silesia path. Think the fix is: this is an environment/network-policy problem (Cloudflare bot protection on corpus.canterbury.ac.nz), not something a different implementation can work around within the allowlisted URL; a human or a differently-provisioned CI runner needs to fetch Canterbury (or the SPEC/PLAN needs an approved alternate mirror URL added to the allowlist) before this task and its corpus-dependent downstream tasks (P1-02 onward) can complete for real. The fetch-corpora.sh script, its retry/verify logic and Makefile wiring are implemented and ready to rerun once Canterbury is reachable.
+
+### P0-09 — skipped
+SKIPPED: depends on P0-08
+
+### P0-10 — skipped
+SKIPPED: depends on P0-08
+
+### P0-11 — skipped
+SKIPPED: depends on P0-08
+
+### P1-01 — 1410d90
+crates/oracle now depends on libz-sys 1.1.29 (features=["static"], bundled C backend, deterministic across machines), libc 0.2.189, and cleanflate (path, unused so far). oracle::ffi provides Framing{Raw,Zlib,Gzip}, Strategy{Default,Filtered,HuffmanOnly,Rle,Fixed}, DeflateParams{level,strategy,window_bits,mem_level,framing}, deflate_bytes/deflate_zeros/inflate_bytes(->InflateOutcome{output,consumed,status})/OracleStatus{StreamEnd,DataError,NeedDict,Truncated,OutputLimit,OtherError}/crc32/adler32/zlib_version. z_stream built with every field explicit (no mem::zeroed), zalloc/zfree are extern "C" wrappers over libc::calloc/free. windowBits: raw=-wb, zlib=wb, gzip=wb+16 for deflate; inflate uses -15/15/31, gzip inflate stops at first member end (inflateInit2_ with wb=31 does this natively, verified by gzip_inflate_reports_first_member_consumed). unsafe confined to ffi.rs with a SAFETY comment per unsafe block (crate-checks/C1 only restricts crates/cleanflate). All 9 tests pass; compiled clean on first attempt using only the SPEC-listed signatures (CR5: no libz-sys source/rustdoc-src read). cargo metadata still shows cleanflate with 0 dependencies.
