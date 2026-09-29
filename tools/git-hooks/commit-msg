@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# commit-msg hook: appends "[stage:<s>] [task:<id>]" to any commit message
+# lacking them (SPEC S2.4). Must always exit 0 -- a failing hook would
+# wedge the flight.
+set -u
+
+MSG_FILE="${1:-}"
+
+main() {
+    [ -n "$MSG_FILE" ] || return 0
+    [ -f "$MSG_FILE" ] || return 0
+
+    if grep -q '\[stage:' "$MSG_FILE" 2>/dev/null; then
+        return 0
+    fi
+
+    subject="$(head -n 1 "$MSG_FILE" 2>/dev/null || true)"
+    [ -n "$subject" ] || return 0
+
+    task_id="unknown"
+    stage="implement"
+
+    if printf '%s' "$subject" | grep -qE '^[A-Z][A-Za-z0-9]*-[0-9]+:'; then
+        task_id="$(printf '%s' "$subject" | sed -E 's/^([A-Z][A-Za-z0-9]*-[0-9]+):.*/\1/')"
+    elif printf '%s' "$subject" | grep -qE '^plan:'; then
+        task_id="plan"
+        stage="plan"
+    elif printf '%s' "$subject" | grep -qE '^review:'; then
+        task_id="review"
+        stage="review"
+    elif printf '%s' "$subject" | grep -qE '^progress:'; then
+        found_id="$(printf '%s' "$subject" | grep -oE '[A-Z][A-Za-z0-9]*-[0-9]+' | head -n 1 || true)"
+        if [ -n "$found_id" ]; then
+            task_id="$found_id"
+        else
+            task_id="progress"
+        fi
+    else
+        first_word="$(printf '%s' "$subject" | sed -n 's/^\([a-zA-Z][a-zA-Z0-9_]*\):.*/\1/p')"
+        if [ -n "$first_word" ]; then
+            task_id="$(printf '%s' "$first_word" | tr '[:upper:]' '[:lower:]')"
+        else
+            task_id="unknown"
+        fi
+    fi
+
+    if printf '%s' "$subject" | grep -qi 'summary'; then
+        stage="summarize"
+    elif [ "$stage" = "implement" ]; then
+        round=""
+        # MSG_FILE is normally .git/COMMIT_EDITMSG; find repo root via git.
+        repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+        if [ -n "$repo_root" ] && [ -f "$repo_root/.foundry/state.json" ]; then
+            if command -v jq >/dev/null 2>&1; then
+                round="$(jq -r '.round // empty' "$repo_root/.foundry/state.json" 2>/dev/null || true)"
+            else
+                round="$(sed -n 's/.*"round"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$repo_root/.foundry/state.json" 2>/dev/null | head -n 1 || true)"
+            fi
+        fi
+        if [ -n "$round" ] && [ "$round" -ge 1 ] 2>/dev/null; then
+            stage="fix"
+        fi
+    fi
+
+    {
+        echo ""
+        echo "[stage:$stage] [task:$task_id]"
+    } >> "$MSG_FILE" 2>/dev/null || true
+
+    return 0
+}
+
+main
+exit 0

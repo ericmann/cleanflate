@@ -27,3 +27,9 @@ This directory is populated across Phase 0:
   snapshotting.
 
 Nothing here reads or fetches anything other than what SPEC §2.1 permits.
+
+## Commit tagging
+
+`tools/git-hooks/commit-msg` appends `[stage:<s>] [task:<id>]` to any commit
+message that lacks it. Fresh clones must run `make hooks-install` once
+(`git config core.hooksPath tools/git-hooks`) to enable it.

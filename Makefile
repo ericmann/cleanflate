@@ -100,6 +100,6 @@ build-report:
 	@echo "STUB: build-report arrives in P6"
 
 hooks-install:
-	@echo "STUB: hooks-install arrives in P0-06"
+	git config core.hooksPath tools/git-hooks
 
 ci: fmt-check lint corpus test crate-checks cleanroom-selftest tools-check
