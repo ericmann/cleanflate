@@ -61,7 +61,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] R1-08 Complete the provenance record: intervention row, denial notes, bootstrap gaps
 - [x] R2-01 C5: CRC-32 table without indexing, plus a rule against panic-lint suppression in cleanflate lib
 - [x] R2-02 Gzip finish(): member-seen test must use member_count, not retained headers
-- [ ] R2-03 decompress_with: exact consumed at a lone trailing 0x1f, and fail instead of spinning when the buffer cannot grow
+- [x] R2-03 decompress_with: exact consumed at a lone trailing 0x1f, and fail instead of spinning when the buffer cannot grow
 - [ ] R2-04 Oracle multi-member gzip: test a 0x1f-not-0x8b trailer
 - [ ] R2-05 Provenance summary: list URLs fetched via Bash, and state the Bash-read gap
 
@@ -453,3 +453,9 @@ GzipDecoder::finish() checked !self.headers.is_empty() to decide "at least one m
 Audited gzip.rs for other headers-as-proxy uses: only the retention push (self.headers.push guarded by max_gzip_headers, unchanged) and the headers() accessor remain -- no other fix needed.
 Added gzip_zero_header_cap_still_decodes (one member via decompress_with, two concatenated members via decompress_with, and the streaming Decompressor path checking gzip_headers().len()==0 and gzip_member_count()==2) and gzip_zero_header_cap_truncated_first_member_still_errors (truncated first member still returns Error::Truncated) to tests/gzip.rs.
 make lint, make test, foundry_verify all green.
+
+### R2-03 — 12d00fa
+decompress_with now computes Decoded::consumed as decompressor.trailing_start().map(|o| o as usize).unwrap_or(in_pos): the lone-trailing-0x1f exception (D-19/R1-03) is streaming-only, so the one-shot API must not report that extra consumed byte. Also tracks write_region.is_empty() before each decompress() call and, on OutputFull with an empty region, returns Err(OutputLimitExceeded) directly instead of continue -- a backstop independent of Decompressor::decompress's own remaining_allowance arithmetic (cur_len always equals already_out in practice, so this path is currently unreachable via the public API without a bug in that arithmetic, but guards against exactly that class of bug per the task's foundry_mutate scenario).
+Updated lib.rs streaming-contract doc comment and DESIGN.md D-19/D-20 (new D-25) to say the lone-0x1f overshoot is streaming-Decompressor-only and that decompress_with corrects for it.
+Added gzip_trailing_allow_lone_1f_one_shot (tests/gzip.rs): one member + trailing lone 0x1f under Allow -> consumed == member_len; under Reject -> TrailingData{offset: member_len}.
+make test, make lint, make bomb, make design-check, foundry_verify all green; existing limit_exact_ok/limit_plus_one_err/streaming_limit_with_large_buffer still pass, no hang observed.
