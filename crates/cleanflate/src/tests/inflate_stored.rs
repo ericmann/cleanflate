@@ -129,7 +129,7 @@ fn stored_one_byte_input_and_output_chunks_same_output() {
         if status == InflateStatus::Done {
             break;
         }
-        if consumed == 0 && one_byte_in.is_empty() {
+        if status == InflateStatus::NeedsInput && consumed == 0 && one_byte_in.is_empty() {
             panic!("ran out of input before Done");
         }
     }

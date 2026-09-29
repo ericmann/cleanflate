@@ -9,9 +9,11 @@ mod bitreader;
 #[allow(dead_code)] // write_code is reused by later Huffman/inflate tests
 pub(crate) mod bitwriter;
 mod checksum;
+mod dynbuilder;
 mod error;
 mod huffman;
 mod huffman_validation;
+mod inflate_dynamic;
 mod inflate_fixed;
 mod inflate_stored;
 mod invariants;

@@ -15,7 +15,7 @@ fn fixed_litlen_code(symbol: u16) -> (u32, u32) {
     }
 }
 
-fn length_symbol_and_extra(length: u16) -> (u16, u32, u32) {
+pub(crate) fn length_symbol_and_extra(length: u16) -> (u16, u32, u32) {
     for (i, &base) in LENGTH_BASE.iter().enumerate() {
         let extra = *LENGTH_EXTRA.get(i).expect("in range") as u32;
         let max = base + ((1u32 << extra) - 1) as u16;
@@ -26,7 +26,7 @@ fn length_symbol_and_extra(length: u16) -> (u16, u32, u32) {
     panic!("length {length} out of range");
 }
 
-fn distance_symbol_and_extra(dist: u32) -> (u16, u32, u32) {
+pub(crate) fn distance_symbol_and_extra(dist: u32) -> (u16, u32, u32) {
     for (i, &base) in DIST_BASE.iter().enumerate() {
         let extra = *DIST_EXTRA.get(i).expect("in range") as u32;
         let max = base as u32 + (1u32 << extra) - 1;
@@ -298,7 +298,7 @@ fn fixed_one_byte_chunks_same_output() {
         if status == InflateStatus::Done {
             break;
         }
-        if consumed == 0 && one_in.is_empty() {
+        if status == InflateStatus::NeedsInput && consumed == 0 && one_in.is_empty() {
             panic!("ran out of input before Done");
         }
     }

@@ -290,3 +290,35 @@ every valid DEFLATE stream). Rejecting incompleteness by default,
 narrowly excepting only what the RFC text names, keeps the decoder
 strict everywhere the spec is silent and lenient only where it is
 explicit.
+
+### D-15: Dynamic-Huffman block decoding
+
+RFC: RFC 1951 S3.2.7
+Decision: A dynamic block is decoded as a chain of atomic states --
+`DynHeader` (read HLIT/HDIST/HCLEN as one 14-bit field, reject HLIT >
+286) -> `CodeLenLens` (read HCLEN 3-bit lengths in `CODE_LENGTH_ORDER`,
+build the code-length table with `TableKind::CodeLength`) -> `CodeLens`
+(decode literal/length + distance code lengths as one combined sequence
+of `HLIT + HDIST` values, handling repeat codes 16/17/18 via a `Repeat`
+state) -> table construction (`TableKind::LitLen`/`TableKind::Distance`,
+rejecting a zero length for symbol 256 as `MissingEndOfBlock` before
+attempting table construction) -> the existing `LitLen`/`Dist`/`Copy`
+pipeline from P1-09, now driven by per-block `litlen_table`/`dist_table`
+fields instead of always the fixed tables. Code 16 with no prior decoded
+length is `RepeatWithoutPrevious`; any repeat whose count would push the
+sequence past `HLIT + HDIST` is `RepeatOverflow`; repeats are allowed to
+run from the literal/length lengths into the distance lengths, since RFC
+1951 treats them as "a single sequence of HLIT + HDIST + 258 values" (we
+track only the `HLIT + HDIST` code-length portion; the `+258` refers to
+the code-length alphabet's own transmitted count elsewhere in the RFC's
+accounting, not an addend here). All extra-bit and length/distance
+arithmetic reuses the existing `saturating_add`/`saturating_sub`
+discipline (C15).
+Rationale: This is RFC 1951 S3.2.7's own two-phase structure (first
+transmit the meta-alphabet, then use it to transmit the real alphabets'
+lengths) mapped directly onto atomic, resumable states, the same
+discipline P1-08/P1-09 established for stored and fixed blocks. Reusing
+`litlen_table`/`dist_table` as ordinary fields (rather than duplicating
+the `LitLen`/`Dist`/`Copy` states per block type) means fixed and dynamic
+blocks share one decode pipeline once their tables are built, so a bug
+fix or property proven for one applies to both.

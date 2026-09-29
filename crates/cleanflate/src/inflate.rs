@@ -1,13 +1,13 @@
-//! `Inflater`: the resumable raw DEFLATE (RFC 1951) state machine. This
-//! task adds block headers, stored (BTYPE=00) blocks, and fixed Huffman
-//! (BTYPE=01) blocks; dynamic Huffman (BTYPE=10) arrives in P2-02.
+//! `Inflater`: the resumable raw DEFLATE (RFC 1951) state machine. Block
+//! headers, stored (BTYPE=00), fixed Huffman (BTYPE=01) and dynamic
+//! Huffman (BTYPE=10) blocks are all implemented.
 
 use crate::bitreader::BitReader;
-use crate::error::Error;
+use crate::error::{Error, HuffmanError};
 use crate::huffman::{Decoded, Huffman, TableKind};
 use crate::tables::{
-    fixed_dist_lengths, fixed_litlen_lengths, DIST_BASE, DIST_EXTRA, END_OF_BLOCK, LENGTH_BASE,
-    LENGTH_EXTRA,
+    fixed_dist_lengths, fixed_litlen_lengths, CODE_LENGTH_ORDER, DIST_BASE, DIST_EXTRA,
+    END_OF_BLOCK, LENGTH_BASE, LENGTH_EXTRA,
 };
 use crate::window::Window;
 
@@ -31,7 +31,16 @@ enum State {
     StoredLen,
     /// Copy `remaining` literal bytes straight from input to output.
     StoredCopy { remaining: u32 },
-    /// Decode the next literal/length symbol (RFC 1951 S3.2.5/S3.2.6).
+    /// Read HLIT(5)+HDIST(5)+HCLEN(4) (RFC 1951 S3.2.7).
+    DynHeader,
+    /// Read the `i`-th (of `dyn_hclen`) 3-bit code-length-alphabet length.
+    CodeLenLens { i: usize },
+    /// Decode literal/length+distance code lengths using the code-length
+    /// table, including repeat codes 16/17/18.
+    CodeLens,
+    /// A repeat code (16/17/18) was decoded; read its extra bits.
+    Repeat { sym: u16 },
+    /// Decode the next literal/length symbol (RFC 1951 S3.2.5/S3.2.6/S3.2.7).
     LitLen,
     /// A length code (257..=285) was decoded; read its extra bits.
     LenExtra { sym: u16 },
@@ -70,6 +79,29 @@ pub(crate) struct Inflater {
     fixed_litlen: Huffman,
     /// The fixed distance table (RFC 1951 S3.2.6), built once.
     fixed_dist: Huffman,
+    /// The literal/length table in use for the current block (a clone of
+    /// `fixed_litlen`, or a freshly built dynamic table).
+    litlen_table: Huffman,
+    /// The distance table in use for the current block.
+    dist_table: Huffman,
+    /// HLIT+257 for the dynamic block currently being parsed.
+    dyn_hlit: usize,
+    /// HDIST+1 for the dynamic block currently being parsed.
+    dyn_hdist: usize,
+    /// HCLEN+4 for the dynamic block currently being parsed.
+    dyn_hclen: usize,
+    /// Code-length-alphabet lengths (index = alphabet symbol 0..=18),
+    /// filled in `CODE_LENGTH_ORDER` order.
+    dyn_cl_lengths: [u8; 19],
+    /// The code-length-alphabet table built from `dyn_cl_lengths`.
+    dyn_cl_table: Huffman,
+    /// The combined literal/length + distance code lengths accumulated
+    /// while decoding with `dyn_cl_table` (RFC 1951 S3.2.7: "all code
+    /// lengths form a single sequence of HLIT + HDIST + 258 values").
+    dyn_lengths: Vec<u8>,
+    /// The last length value decoded (or expanded by a repeat), used by
+    /// repeat code 16.
+    dyn_prev_len: u8,
 }
 
 impl Inflater {
@@ -85,8 +117,17 @@ impl Inflater {
             state: State::BlockHeader,
             total_out: 0,
             bfinal: false,
-            fixed_litlen,
-            fixed_dist,
+            fixed_litlen: fixed_litlen.clone(),
+            fixed_dist: fixed_dist.clone(),
+            litlen_table: fixed_litlen,
+            dist_table: fixed_dist,
+            dyn_hlit: 0,
+            dyn_hdist: 0,
+            dyn_hclen: 0,
+            dyn_cl_lengths: [0u8; 19],
+            dyn_cl_table: Huffman::empty(),
+            dyn_lengths: Vec::new(),
+            dyn_prev_len: 0,
         }
     }
 
@@ -161,13 +202,18 @@ impl Inflater {
                                 self.state = State::StoredLen;
                             }
                             1 => {
+                                self.litlen_table = self.fixed_litlen.clone();
+                                self.dist_table = self.fixed_dist.clone();
                                 self.state = State::LitLen;
                             }
                             2 => {
-                                // replaced by P2-02 (dynamic Huffman blocks)
-                                let e = Error::BadBlockType;
-                                self.state = State::Failed(e.clone());
-                                return Err(e);
+                                self.dyn_hlit = 0;
+                                self.dyn_hdist = 0;
+                                self.dyn_hclen = 0;
+                                self.dyn_cl_lengths = [0u8; 19];
+                                self.dyn_lengths.clear();
+                                self.dyn_prev_len = 0;
+                                self.state = State::DynHeader;
                             }
                             _ => {
                                 // BTYPE 11: reserved (RFC 1951 S3.2.3).
@@ -227,9 +273,181 @@ impl Inflater {
                         remaining: remaining - n as u32,
                     };
                 }
+                State::DynHeader => match self.br.take(input, &mut pos, 14) {
+                    None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
+                    Some(v) => {
+                        let hlit_field = v & 0x1F;
+                        let hdist_field = (v >> 5) & 0x1F;
+                        let hclen_field = (v >> 10) & 0xF;
+                        let hlit = hlit_field as usize + 257;
+                        let hdist = hdist_field as usize + 1;
+                        let hclen = hclen_field as usize + 4;
+                        if hlit > 286 {
+                            let e = Error::InvalidHuffmanTable(HuffmanError::TooManyLengthCodes);
+                            self.state = State::Failed(e.clone());
+                            return Err(e);
+                        }
+                        self.dyn_hlit = hlit;
+                        self.dyn_hdist = hdist;
+                        self.dyn_hclen = hclen;
+                        self.state = State::CodeLenLens { i: 0 };
+                    }
+                },
+                State::CodeLenLens { i } => {
+                    if i >= self.dyn_hclen {
+                        match Huffman::from_lengths(&self.dyn_cl_lengths, TableKind::CodeLength) {
+                            Ok(t) => {
+                                self.dyn_cl_table = t;
+                                self.state = State::CodeLens;
+                            }
+                            Err(he) => {
+                                let e = Error::InvalidHuffmanTable(he);
+                                self.state = State::Failed(e.clone());
+                                return Err(e);
+                            }
+                        }
+                        continue;
+                    }
+                    match self.br.take(input, &mut pos, 3) {
+                        None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
+                        Some(v) => {
+                            let sym = *CODE_LENGTH_ORDER.get(i).unwrap_or(&0);
+                            if let Some(slot) = self.dyn_cl_lengths.get_mut(sym as usize) {
+                                *slot = v as u8;
+                            }
+                            self.state = State::CodeLenLens { i: i + 1 };
+                        }
+                    }
+                }
+                State::CodeLens => {
+                    let total = self.dyn_hlit + self.dyn_hdist;
+                    if self.dyn_lengths.len() >= total {
+                        let litlen_lengths: Vec<u8> = self
+                            .dyn_lengths
+                            .get(..self.dyn_hlit)
+                            .unwrap_or(&[])
+                            .to_vec();
+                        let dist_lengths: Vec<u8> = self
+                            .dyn_lengths
+                            .get(self.dyn_hlit..)
+                            .unwrap_or(&[])
+                            .to_vec();
+                        if litlen_lengths
+                            .get(END_OF_BLOCK as usize)
+                            .copied()
+                            .unwrap_or(0)
+                            == 0
+                        {
+                            let e = Error::InvalidHuffmanTable(HuffmanError::MissingEndOfBlock);
+                            self.state = State::Failed(e.clone());
+                            return Err(e);
+                        }
+                        let litlen_table =
+                            match Huffman::from_lengths(&litlen_lengths, TableKind::LitLen) {
+                                Ok(t) => t,
+                                Err(he) => {
+                                    let e = Error::InvalidHuffmanTable(he);
+                                    self.state = State::Failed(e.clone());
+                                    return Err(e);
+                                }
+                            };
+                        let dist_table =
+                            match Huffman::from_lengths(&dist_lengths, TableKind::Distance) {
+                                Ok(t) => t,
+                                Err(he) => {
+                                    let e = Error::InvalidHuffmanTable(he);
+                                    self.state = State::Failed(e.clone());
+                                    return Err(e);
+                                }
+                            };
+                        self.litlen_table = litlen_table;
+                        self.dist_table = dist_table;
+                        self.dyn_lengths.clear();
+                        self.state = State::LitLen;
+                        continue;
+                    }
+
+                    let outcome = match Self::peek_symbol(
+                        &self.dyn_cl_table,
+                        &mut self.br,
+                        input,
+                        &mut pos,
+                    ) {
+                        None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
+                        Some(o) => o,
+                    };
+                    match outcome {
+                        SymbolOutcome::Invalid => {
+                            let e = Error::InvalidSymbol;
+                            self.state = State::Failed(e.clone());
+                            return Err(e);
+                        }
+                        SymbolOutcome::Symbol { symbol, len } => {
+                            if symbol <= 15 {
+                                self.br.consume(len);
+                                self.dyn_lengths.push(symbol as u8);
+                                self.dyn_prev_len = symbol as u8;
+                            } else if symbol == 16 {
+                                if self.dyn_lengths.is_empty() {
+                                    let e = Error::InvalidHuffmanTable(
+                                        HuffmanError::RepeatWithoutPrevious,
+                                    );
+                                    self.state = State::Failed(e.clone());
+                                    return Err(e);
+                                }
+                                self.br.consume(len);
+                                self.state = State::Repeat { sym: 16 };
+                            } else if symbol == 17 {
+                                self.br.consume(len);
+                                self.state = State::Repeat { sym: 17 };
+                            } else if symbol == 18 {
+                                self.br.consume(len);
+                                self.state = State::Repeat { sym: 18 };
+                            } else {
+                                // The code-length alphabet only has
+                                // symbols 0..=18; a table built from a
+                                // 19-length array cannot decode anything
+                                // else.
+                                let e = Error::InvalidSymbol;
+                                self.state = State::Failed(e.clone());
+                                return Err(e);
+                            }
+                        }
+                    }
+                }
+                State::Repeat { sym } => {
+                    let extra_bits: u32 = match sym {
+                        16 => 2,
+                        17 => 3,
+                        18 => 7,
+                        _ => 0,
+                    };
+                    match self.br.take(input, &mut pos, extra_bits) {
+                        None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
+                        Some(extra) => {
+                            let (count, value): (usize, u8) = match sym {
+                                16 => (3 + extra as usize, self.dyn_prev_len),
+                                17 => (3 + extra as usize, 0u8),
+                                18 => (11 + extra as usize, 0u8),
+                                _ => (0, 0u8),
+                            };
+                            let total = self.dyn_hlit + self.dyn_hdist;
+                            if self.dyn_lengths.len() + count > total {
+                                let e = Error::InvalidHuffmanTable(HuffmanError::RepeatOverflow);
+                                self.state = State::Failed(e.clone());
+                                return Err(e);
+                            }
+                            for _ in 0..count {
+                                self.dyn_lengths.push(value);
+                            }
+                            self.dyn_prev_len = value;
+                            self.state = State::CodeLens;
+                        }
+                    }
+                }
                 State::LitLen => {
                     let outcome = match Self::peek_symbol(
-                        &self.fixed_litlen,
+                        &self.litlen_table,
                         &mut self.br,
                         input,
                         &mut pos,
@@ -269,7 +487,9 @@ impl Inflater {
                             } else {
                                 // 286/287: valid codes in the fixed table
                                 // that never occur in real data (RFC 1951
-                                // S3.2.6).
+                                // S3.2.6); a dynamic table rejects them
+                                // via MissingEndOfBlock/other validation
+                                // long before decode could reach them.
                                 let e = Error::InvalidSymbol;
                                 self.state = State::Failed(e.clone());
                                 return Err(e);
@@ -291,7 +511,7 @@ impl Inflater {
                 }
                 State::Dist { len } => {
                     let outcome =
-                        match Self::peek_symbol(&self.fixed_dist, &mut self.br, input, &mut pos) {
+                        match Self::peek_symbol(&self.dist_table, &mut self.br, input, &mut pos) {
                             None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
                             Some(o) => o,
                         };
