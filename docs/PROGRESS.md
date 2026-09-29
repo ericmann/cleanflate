@@ -11,12 +11,12 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P0-06 commit-msg hook adding stage and task tags
 - [x] P0-07 Vendor RFC 1950/1951/1952 texts
 - [ ] P0-08 Download Canterbury and Silesia corpora
-- [-] P0-09 CI entry point and GitHub Actions workflow
-- [-] P0-10 Lockdown flag, provenance docs and log snapshot
-- [-] P0-11 M0 acceptance and push
+- [ ] P0-09 CI entry point and GitHub Actions workflow
+- [ ] P0-10 Lockdown flag, provenance docs and log snapshot
+- [ ] P0-11 M0 acceptance and push
 - [x] P1-01 Oracle FFI wrappers over libz-sys
 - [x] P1-02 Deterministic synthetic inputs and generation matrix
-- [-] P1-03 Corpus generator CLI and MANIFEST
+- [ ] P1-03 Corpus generator CLI and MANIFEST
 - [x] P1-04 Adler-32 and CRC-32 in cleanflate
 - [x] P1-05 Error types, options, config constants, RFC tables, DESIGN.md skeleton
 - [x] P1-06 Resumable bit reader and 32 KiB window
@@ -24,33 +24,33 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P1-08 Inflater state machine with block headers and stored blocks
 - [x] P1-09 Fixed-Huffman blocks, length/distance decoding and window copies
 - [x] P1-10 Public raw API, Decompressor, output limit, trailing policy and early invariants
-- [-] P1-11 Conformance harness and M1 conformance test
-- [-] P1-12 M1 acceptance and push
+- [ ] P1-11 Conformance harness and M1 conformance test
+- [ ] P1-12 M1 acceptance and push
 - [x] P2-01 Huffman table validation, including single-code edge cases
 - [x] P2-02 Dynamic block header and code-length alphabet decoding
 - [x] P2-03 Table-driven Huffman decode path
 - [x] P2-04 Malformed corpus builder, raw cases and malformed test
-- [-] P2-05 Full raw conformance
-- [-] P2-06 M2 acceptance and push
+- [ ] P2-05 Full raw conformance
+- [ ] P2-06 M2 acceptance and push
 - [x] P3-01 Preset dictionary support and the zlib wrapper
 - [x] P3-02 Gzip member header parser
 - [x] P3-03 Gzip members, trailer, multi-member streams and gzip API
-- [-] P3-04 Zlib and gzip conformance, dictionary and multi-member tests
+- [ ] P3-04 Zlib and gzip conformance, dictionary and multi-member tests
 - [x] P3-05 Malformed zlib and gzip cases
-- [-] P3-06 M3 acceptance and push
+- [ ] P3-06 M3 acceptance and push
 - [x] P4-01 Finalise the streaming contract for all formats
 - [x] P4-02 Chunking-invariance property test (proptest)
 - [x] P4-03 Output-limit hardening and zip-bomb fixture
 - [x] P4-04 Fuzz crate and never-panic targets
 - [x] P4-05 Differential fuzz targets against the oracle
 - [x] P4-06 Nightly fuzz workflow and long-run target
-- [-] P4-07 Benchmark harness and baseline
-- [-] P4-08 Performance pass 1 — bulk refill and fast decode loop
-- [-] P4-09 Performance pass 2 — measured hotspot and table-bits tuning
-- [-] P4-10 M4 acceptance and push
-- [-] P6-01 Provenance summary generator
-- [-] P6-02 Build report generator and DESIGN.md audit
-- [-] P6-03 Freeze and hand-off push
+- [ ] P4-07 Benchmark harness and baseline
+- [ ] P4-08 Performance pass 1 — bulk refill and fast decode loop
+- [ ] P4-09 Performance pass 2 — measured hotspot and table-bits tuning
+- [ ] P4-10 M4 acceptance and push
+- [ ] P6-01 Provenance summary generator
+- [ ] P6-02 Build report generator and DESIGN.md audit
+- [ ] P6-03 Freeze and hand-off push
 - [ ] R1-01 Independent checksums in cleanflate unit-test fixtures (C16) plus a mechanical rule
 - [ ] R1-02 Output limit: empty output slice must be OutputFull, and cover the streaming limit arithmetic
 - [ ] R1-03 Gzip: exact consumed at Done under TrailingData::Allow
@@ -87,23 +87,11 @@ fetch-rfcs.sh fetched the three RFC texts via curl -fsSL from the rfc-editor.org
 ### P0-08 — blocked
 BLOCKED: Tried: bash tools/cleanroom/fetch-corpora.sh all --record, which downloads Canterbury from the sole allowlisted URL (https://corpus.canterbury.ac.nz/resources/cantrbry.tar.gz) with 3 retries. Also tried the exact same URL directly with curl multiple times, including with full browser-like User-Agent/Accept/Accept-Language headers, both inside and outside the script. Fails: every attempt returns HTTP 403 from Cloudflare (server: cloudflare, sets a __cf_bm bot-management cookie), i.e. the corpus host is blocking this sandbox's requests at the edge, not a transient or script-level failure. Silesia, the other corpus, downloads fine (HTTP 200 on both allowlisted mirrors), and the fetch-corpora.sh script itself (usage, lockdown check, curl retry/fallback logic, tar/unzip extraction, SOURCES.json read/write, verify mode) is otherwise complete and was exercised successfully for the Silesia path. Think the fix is: this is an environment/network-policy problem (Cloudflare bot protection on corpus.canterbury.ac.nz), not something a different implementation can work around within the allowlisted URL; a human or a differently-provisioned CI runner needs to fetch Canterbury (or the SPEC/PLAN needs an approved alternate mirror URL added to the allowlist) before this task and its corpus-dependent downstream tasks (P1-02 onward) can complete for real. The fetch-corpora.sh script, its retry/verify logic and Makefile wiring are implemented and ready to rerun once Canterbury is reachable.
 
-### P0-09 — skipped
-SKIPPED: depends on P0-08
-
-### P0-10 — skipped
-SKIPPED: depends on P0-08
-
-### P0-11 — skipped
-SKIPPED: depends on P0-08
-
 ### P1-01 — 1410d90
 crates/oracle now depends on libz-sys 1.1.29 (features=["static"], bundled C backend, deterministic across machines), libc 0.2.189, and cleanflate (path, unused so far). oracle::ffi provides Framing{Raw,Zlib,Gzip}, Strategy{Default,Filtered,HuffmanOnly,Rle,Fixed}, DeflateParams{level,strategy,window_bits,mem_level,framing}, deflate_bytes/deflate_zeros/inflate_bytes(->InflateOutcome{output,consumed,status})/OracleStatus{StreamEnd,DataError,NeedDict,Truncated,OutputLimit,OtherError}/crc32/adler32/zlib_version. z_stream built with every field explicit (no mem::zeroed), zalloc/zfree are extern "C" wrappers over libc::calloc/free. windowBits: raw=-wb, zlib=wb, gzip=wb+16 for deflate; inflate uses -15/15/31, gzip inflate stops at first member end (inflateInit2_ with wb=31 does this natively, verified by gzip_inflate_reports_first_member_consumed). unsafe confined to ffi.rs with a SAFETY comment per unsafe block (crate-checks/C1 only restricts crates/cleanflate). All 9 tests pass; compiled clean on first attempt using only the SPEC-listed signatures (CR5: no libz-sys source/rustdoc-src read). cargo metadata still shows cleanflate with 0 dependencies.
 
 ### P1-02 — 407bd7e
 crates/oracle/src/prng.rs: SplitMix64 (state += 0x9E3779B97F4A7C15, xor-shift-multiply finalizer) + fnv1a64. inputs.rs: Tier{Synthetic,Canterbury,Silesia}, Input{id,tier,len,source}, generate_synthetic(id) covering all 16 SPEC S4 ids (empty, one-byte, zeros-{1KiB,64KiB,1MiB,16MiB}, random-{64KiB,1MiB}, text-256KiB via a 64-word list, repeat-abc-1MiB, repeat-period17-1MiB, window-d{32767,32768,32769}, run-64KiB, period258-64KiB), canterbury_inputs/silesia_inputs (enumerate testdata/corpora/{canterbury,silesia}/ sorted by name, id=<tier>-<name>, empty Vec if dir absent -- no error), find_canterbury_file. matrix.rs: CORPUS_SEED=0x636C_6561_6E66_6C61, EntrySpec, make_entry building id `<input>__<framing>_l<level>_<strategy>_w<wb>_m<mem>[_dict]` and path `<tier>/<input>/<rfc195N>-l<level>-<strategy>-w<wb>-m<mem>[-dict].bin`, groups A (levels 0-9 x 3 framings, {0,1,6,9} if input>4MiB), B (strategies, per-size branch), C (window/memlevel, only inputs<=1MiB), D (dictionary: canterbury alice29/asyoulik/cp.html x levels{1,6,9} x Zlib with lcet10.txt as dict, silently empty if lcet10.txt absent), deduplicated by entry id via HashSet. inputs_for_tier(Quick|Full, corpora_root). All 5 matrix tests pass; window test confirms exact-distance repeat; quick tier currently synthetic-only (Canterbury still blocked per P0-08) sits at the low end of 300..=6000 but within bounds. Dictionary entries are 0 right now (lcet10.txt absent) -- matrix_covers_all_parameter_values only requires dict_count>=1 when that file is present.
-
-### P1-03 — skipped
-SKIPPED: depends on P0-08
 
 ### P1-04 — d2bbfd4
 crates/cleanflate/src/checksum.rs: Adler32{new,update,finish} (s1 init 1, s2 init 0, mod 65521 per byte per RFC 1950 S2.2) and adler32(); Crc32{new,update,finish} + crc32() built from a const-fn 256-entry table over the reflected polynomial 0xEDB88320 (RFC 1952 S8 sample-code style, standard invert-in/invert-out reflected CRC). RFC section citations in module rustdoc: RFC 1950 S2.2 (Adler-32 field/algorithm) + S8.2 (appendix reference algorithm); RFC 1952 S2.3.1 (CRC32 trailer field) + S8 (Appendix: Sample CRC Code). Table build uses one narrow #[allow(clippy::indexing_slicing)] (get_mut isn't const-callable on this toolchain; index is loop-bounded 0..256, exactly table's length, documented inline). Declared pub mod checksum in lib.rs; unit tests in crates/cleanflate/src/tests/checksum.rs (module registered via `mod checksum;` in tests/mod.rs, satisfying C6). All 7 cleanflate tests + 2 oracle cross-check tests (200 random buffers each, lengths 0..=10,000, SplitMix64-seeded, checked against oracle::ffi::{adler32,crc32} i.e. real C zlib, satisfying C16) pass. make lint/crate-checks/ci all green.
@@ -126,12 +114,6 @@ inflate.rs extended: Inflater gains fixed_litlen/fixed_dist:Huffman (built once 
 ### P1-10 — 5b78b7d
 stream.rs (new, public): Status{NeedsInput,OutputFull,Done}, Progress{consumed,produced,status}, Decoded{data,consumed}, Decompressor{inflater,options,total_in,trailing_start,error}::{new(format,options),decompress(input,output)->Result<Progress,Error>,finish()->Result<(),Error>,total_in(),total_out(),trailing_start()}, pub(crate) next_len(len,limit)->usize (grows by max(len,32768), capped at limit, never shrinks), decompress_with(format,input,&options)->Result<Decoded,Error>, inflate(input)->Result<Vec<u8>,Error>. decompress() caps output to max_output-total_out via output.get_mut(..allowance); OutputLimitExceeded only fires when allowance<output.len() or allowance==0 (i.e. the limit was the binding constraint, not a genuine full caller buffer) -- exact-limit streams succeed since EOB needs no output space. Trailing data checked both for leftover unconsumed bytes within the same call that reaches Done and for any input in a later call after Done; Reject errors with absolute offset, Allow sets trailing_start() once. Decompressor has its own sticky-error field (separate from Inflater's internal one) since OutputLimitExceeded/TrailingData originate at this layer. decompress_with grows a Vec via next_len, writes into the resized tail, truncates to what was produced, loops until Done or stuck, then calls finish(). Made inflate_fixed.rs's emit_* helpers pub(crate) for reuse across stream_raw.rs/invariants.rs. DESIGN.md D-13 plus "Update (P1-10)" notes on D-02/D-03. All 25 new tests pass (12 stream_raw + 2 invariants, 96 total in crate now), including 200x8 randomized chunk schedules matching one-shot output exactly and 20,000 random-garbage buffers through both one-shot and 1-byte streaming with zero panics.
 
-### P1-11 — skipped
-SKIPPED: depends on P1-03
-
-### P1-12 — skipped
-SKIPPED: depends on P1-11
-
 ### P2-01 — 84ce62b
 huffman.rs: TableKind{LitLen,Distance,CodeLength(#[allow(dead_code)] until P2-02)}. from_lengths(lengths,kind) now also rejects Incomplete (left>0 after the RFC 1951 S3.2.2 recurrence) except for TableKind::Distance with either total_codes==0 (all-zero/empty table) or total_codes==1 && counts[1]==1 (single length-1 code) -- both taken verbatim from RFC 1951 S3.2.7. No changes needed to decode() itself: an empty table's zero counts at every length and a single-code table's other same-length codes both fall through to Decoded::Invalid naturally via the existing code-first<count loop. Updated call sites: inflate.rs's two fixed-table constructions (LitLen/Distance, both already complete) and P1-07's huffman.rs test file (all TableKind::LitLen, no behavior change since that ABCDEFGH example is a complete code). All 11 new tests pass; one test's own input buffer needed 2 bytes instead of 1 to satisfy br.fill's 15-bit request (test-only sizing bug, not a huffman.rs defect). make ci green (82 cleanflate tests total, up from 71).
 
@@ -143,12 +125,6 @@ config.rs: LITLEN_TABLE_BITS=10, DIST_TABLE_BITS=8 (pub(crate)). huffman.rs: Huf
 
 ### P2-04 — 218104b
 crates/oracle/src/malformed.rs: fully independent DEFLATE builder (own BitWriter, fixed/length/distance RFC tables transcribed fresh, canonical_codes, textbook Huffman-length-from-frequency, stored/fixed/dynamic block emitters, DynBlock/ClSymbol/PayloadSym). cases() returns 21 named Case{name,bytes,expected,rule,sweep} covering: btype3, stored_nlen_mismatch, fixed_litlen_286, fixed_dist_code_30, fixed_distance_at_start, fixed_distance_too_far, fixed_len284_extra31(OK), valid_stored_trailing_byte(TrailingData), dynamic_hlit_287, dynamic_codelength_oversubscribed/incomplete, dynamic_litlen_oversubscribed/incomplete, dynamic_dist_oversubscribed/incomplete_two_codes, dynamic_repeat16_first, dynamic_repeat_overflow, dynamic_missing_eob, dynamic_no_dist_then_length(InvalidSymbol), dynamic_single_dist_code(OK), dynamic_no_dist_literals(OK), plus 3 valid_small_{stored,fixed,dynamic} control streams (OK + sweep:). crates/oracle/src/main.rs (new binary, first for oracle since P1-03's "generate" was skipped) wires `oracle malformed` writing testdata/malformed/rfc1951/*.bin + EXPECTED.tsv. make malformed target wired. crates/oracle/tests/malformed.rs: malformed_raw_cases parses EXPECTED.tsv, runs every row through cleanflate::inflate comparing kind().as_str() (or OK), sweep: rows check every strict prefix is Truncated; malformed_corpus_is_up_to_date regenerates into a temp dir and byte-compares TSV+fixtures against committed. Both tests passed on first run (after one format-string arg-order typo fix) -- 24 generated files (21 cases + 3 sweeps as TSV rows) all agree with the decoder built across P1-08/P1-09/P2-01/P2-02/P2-03, serving as new independent cross-validation. git status --porcelain testdata/malformed empty after commit.
-
-### P2-05 — skipped
-SKIPPED: depends on P1-11
-
-### P2-06 — skipped
-SKIPPED: depends on P2-05
 
 ### P3-01 — 1819a6b
 zlib.rs: ZlibDecoder{state,inflater,adler,dictionary,dict_id_buf,trailer_buf}, State{Cmf,Flg{cmf},DictId{collected},Body,Trailer{collected},Done,Failed}. Checks FCHECK((cmf*256+flg)%31==0) then CM(!=8) then CINFO(>7), matching RFC 1950 S2.2's own order. FDICT set -> read 4-byte big-endian DICTID; None dictionary->PresetDictionaryRequired{dict_id}; mismatched adler32(dict)!=dict_id->DictionaryMismatch; else Inflater::with_dictionary(dict) (new ctor, prefills window via existing Window::prefill) and ->Body. FDICT clear ignores any supplied dictionary (per RFC, no mechanism to use one without FDICT). Body delegates to self.inflater.step(), accumulating Adler32 over exactly the produced-byte slice each call. Trailer reads 4 big-endian bytes, compares to running Adler32, mismatch->ChecksumMismatch{kind:Adler32,...}. stream.rs: Decompressor now holds Backend{Raw(Inflater)|Zlib(ZlibDecoder)} (uniform step/is_done/total_out), so all limit/trailing/stickiness logic is format-agnostic -- Decompressor::new dispatches on Format, using Inflater::with_dictionary for Format::Raw+dictionary too. Format gained Zlib variant. lib.rs exports zlib_decompress. All 14 new tests + all 101 pre-existing tests (115 total) pass with zlib live in production on first attempt. DESIGN.md D-17 (D-16 already taken by P2-03).
@@ -170,9 +146,6 @@ trailing reject/allow, lone-0x1f boundary, 1-byte chunking, truncated
 trailer). Recorded design decision D-19. make ci and foundry_verify
 both pass.
 
-### P3-04 — skipped
-SKIPPED: depends on P1-11
-
 ### P3-05 — 5ad2563
 Extended crates/oracle/src/malformed.rs with a Family enum (Rfc1951/
 Rfc1950/Rfc1952) tagging each Case, plus independent zlib_wrap/
@@ -188,9 +161,6 @@ malformed_wrapper_cases (routes rfc1950 rows through zlib_decompress,
 rfc1952 through gzip_decompress); malformed_corpus_is_up_to_date now
 regenerates and byte-compares all three families. make malformed &&
 make ci both pass; foundry_verify green.
-
-### P3-06 — skipped
-SKIPPED: depends on P3-04
 
 ### P4-01 — 004c4ac
 Documented the Decompressor streaming contract in crate-level rustdoc
@@ -316,27 +286,6 @@ zlib_default_text.bin/zlib_rle_repeat.bin to
 rfc1950_default_text.bin/rfc1950_rle_repeat.bin via git mv.
 make ci (incl. crate-checks, fuzz-check) and foundry_verify both
 green.
-
-### P4-07 — skipped
-SKIPPED: depends on P1-03
-
-### P4-08 — skipped
-SKIPPED: depends on P4-07
-
-### P4-09 — skipped
-SKIPPED: depends on P4-08
-
-### P4-10 — skipped
-SKIPPED: depends on P4-09
-
-### P6-01 — skipped
-SKIPPED: depends on P0-10
-
-### P6-02 — skipped
-SKIPPED: depends on P6-01
-
-### P6-03 — skipped
-SKIPPED: depends on P6-01
 
 ### P0-08 — unblocked (round 1)
 Resolved in commit 361e93c: fetch-corpora.sh --from-file with the operator-supplied Canterbury archive (sha256 verified) and Silesia fetched automatically; both corpora are on disk and make sources-check passes. Re-open so the implementer can verify and close it against the existing commit, which lets the 17 cascade-skipped tasks (P0-09..P0-11, P1-03, P1-11, P1-12, P2-05, P2-06, P3-04, P3-06, P4-07..P4-10, P6-01..P6-03) run.
