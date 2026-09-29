@@ -33,6 +33,17 @@ pub(crate) enum Decoded {
 }
 
 impl Huffman {
+    /// A table with no codes at all: every `decode` call returns
+    /// `Invalid`. Used only as a panic-free fallback in the impossible
+    /// case that building one of the crate's own constant fixed tables
+    /// (RFC 1951 S3.2.6) somehow failed.
+    pub(crate) fn empty() -> Huffman {
+        Huffman {
+            counts: [0u16; 16],
+            symbols: Vec::new(),
+        }
+    }
+
     /// Build a canonical Huffman table from per-symbol code lengths
     /// (RFC 1951 S3.2.2 steps 1-2: count codes per length, then derive
     /// each length's first code value). Lengths are 0-15; a length of 0

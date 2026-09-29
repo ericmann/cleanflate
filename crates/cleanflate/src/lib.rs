@@ -18,14 +18,11 @@ mod bitreader;
 pub mod checksum;
 mod config;
 pub mod error;
-#[allow(dead_code)] // fully consumed starting in P1-09 (fixed Huffman blocks)
 mod huffman;
 #[allow(dead_code)] // driven by the public API, arriving in P1-10
 mod inflate;
 mod options;
-#[allow(dead_code)] // fully consumed starting in P1-09 (fixed Huffman blocks)
 mod tables;
-#[allow(dead_code)] // copy_match/prefill arrive with fixed Huffman blocks (P1-09)
 mod window;
 
 pub use config::{DEFAULT_MAX_GZIP_FIELD, DEFAULT_MAX_OUTPUT};

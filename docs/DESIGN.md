@@ -205,3 +205,28 @@ actually loaded, never a partial bit-level commitment). RFC 1951 S3.2.3's
 "read block header ... otherwise ..." loop and S3.2.4's byte-align-then-
 LEN/NLEN sequence map directly onto the `BlockHeader`/`StoredLen`/
 `StoredCopy` states.
+
+### D-12: Fixed-Huffman symbol pipeline
+
+RFC: RFC 1951 S3.2.5, S3.2.6
+Decision: A fixed-Huffman block is decoded as a small chain of atomic
+states -- `LitLen` (peek a literal/length symbol) -> `LenExtra` (read that
+length code's extra bits) -> `Dist` (peek a distance symbol) ->
+`DistExtra` (read its extra bits, then validate `distance <=
+window.available()`) -> `Copy` (write matched bytes through
+`Window::copy_match`, one output-buffer's worth at a time) -> back to
+`LitLen`. A literal symbol only commits (consumes its Huffman code's
+bits, writes the byte) once `output` is confirmed to have room; if not,
+the call returns `OutputFull` having consumed nothing; the next call
+re-decodes the same still-buffered bits for free, since `Huffman::decode`
+is a pure peek. Length code 284 with all-ones extra bits (31) is accepted
+as length 258 with no special case (DESIGN.md D-06 already covers why the
+table allows this). All base+extra and distance arithmetic uses
+`saturating_add`/`saturating_sub` (CLAUDE.md C15).
+Rationale: RFC 1951 S3.2.5's decoding algorithm is itself exactly this
+five-step loop (decode litlen; if a length, decode distance; copy). The
+"don't consume until room is confirmed" discipline is what keeps the
+whole pipeline resumable at arbitrary chunk boundaries (SPEC S3.3): every
+state transition is only ever taken once its precondition (enough bits,
+or enough output room) is already satisfied, so no state is ever "half
+committed" across a `step` call boundary.

@@ -9,6 +9,7 @@ pub(crate) const WINDOW_SIZE: usize = 32768;
 
 /// Maximum length of a length/distance match (RFC 1951 S3.2.5: "length is
 /// drawn from (3..258)").
+#[allow(dead_code)] // used once dynamic-Huffman decoding needs it (P2-02)
 pub(crate) const MAX_MATCH: usize = 258;
 
 /// The literal/length alphabet's end-of-block symbol (RFC 1951 S3.2.5:
@@ -45,6 +46,7 @@ pub(crate) const DIST_EXTRA: [u8; 30] = [
 /// Order in which HCLEN code-length-alphabet lengths are transmitted
 /// (RFC 1951 S3.2.7: "in the order: 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11,
 /// 4, 12, 3, 13, 2, 14, 1, 15").
+#[allow(dead_code)] // used once dynamic-Huffman decoding needs it (P2-02)
 pub(crate) const CODE_LENGTH_ORDER: [u8; 19] = [
     16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
 ];

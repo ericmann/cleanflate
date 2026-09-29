@@ -50,6 +50,7 @@ impl Window {
 
     /// Seed the window with `data`, keeping only the last `WINDOW_SIZE`
     /// bytes (used for preset dictionaries).
+    #[allow(dead_code)] // used once zlib preset dictionaries arrive (Phase 3)
     pub(crate) fn prefill(&mut self, data: &[u8]) {
         for &byte in data {
             self.push(byte);
