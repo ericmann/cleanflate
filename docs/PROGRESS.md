@@ -24,9 +24,9 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P1-08 Inflater state machine with block headers and stored blocks
 - [x] P1-09 Fixed-Huffman blocks, length/distance decoding and window copies
 - [x] P1-10 Public raw API, Decompressor, output limit, trailing policy and early invariants
-- [ ] P1-11 Conformance harness and M1 conformance test
-- [ ] P1-12 M1 acceptance and push
-- [ ] P2-01 Huffman table validation, including single-code edge cases
+- [-] P1-11 Conformance harness and M1 conformance test
+- [-] P1-12 M1 acceptance and push
+- [x] P2-01 Huffman table validation, including single-code edge cases
 - [ ] P2-02 Dynamic block header and code-length alphabet decoding
 - [ ] P2-03 Table-driven Huffman decode path
 - [ ] P2-04 Malformed corpus builder, raw cases and malformed test
@@ -117,3 +117,12 @@ inflate.rs extended: Inflater gains fixed_litlen/fixed_dist:Huffman (built once 
 
 ### P1-10 — 5b78b7d
 stream.rs (new, public): Status{NeedsInput,OutputFull,Done}, Progress{consumed,produced,status}, Decoded{data,consumed}, Decompressor{inflater,options,total_in,trailing_start,error}::{new(format,options),decompress(input,output)->Result<Progress,Error>,finish()->Result<(),Error>,total_in(),total_out(),trailing_start()}, pub(crate) next_len(len,limit)->usize (grows by max(len,32768), capped at limit, never shrinks), decompress_with(format,input,&options)->Result<Decoded,Error>, inflate(input)->Result<Vec<u8>,Error>. decompress() caps output to max_output-total_out via output.get_mut(..allowance); OutputLimitExceeded only fires when allowance<output.len() or allowance==0 (i.e. the limit was the binding constraint, not a genuine full caller buffer) -- exact-limit streams succeed since EOB needs no output space. Trailing data checked both for leftover unconsumed bytes within the same call that reaches Done and for any input in a later call after Done; Reject errors with absolute offset, Allow sets trailing_start() once. Decompressor has its own sticky-error field (separate from Inflater's internal one) since OutputLimitExceeded/TrailingData originate at this layer. decompress_with grows a Vec via next_len, writes into the resized tail, truncates to what was produced, loops until Done or stuck, then calls finish(). Made inflate_fixed.rs's emit_* helpers pub(crate) for reuse across stream_raw.rs/invariants.rs. DESIGN.md D-13 plus "Update (P1-10)" notes on D-02/D-03. All 25 new tests pass (12 stream_raw + 2 invariants, 96 total in crate now), including 200x8 randomized chunk schedules matching one-shot output exactly and 20,000 random-garbage buffers through both one-shot and 1-byte streaming with zero panics.
+
+### P1-11 — skipped
+SKIPPED: depends on P1-03
+
+### P1-12 — skipped
+SKIPPED: depends on P1-11
+
+### P2-01 — 84ce62b
+huffman.rs: TableKind{LitLen,Distance,CodeLength(#[allow(dead_code)] until P2-02)}. from_lengths(lengths,kind) now also rejects Incomplete (left>0 after the RFC 1951 S3.2.2 recurrence) except for TableKind::Distance with either total_codes==0 (all-zero/empty table) or total_codes==1 && counts[1]==1 (single length-1 code) -- both taken verbatim from RFC 1951 S3.2.7. No changes needed to decode() itself: an empty table's zero counts at every length and a single-code table's other same-length codes both fall through to Decoded::Invalid naturally via the existing code-first<count loop. Updated call sites: inflate.rs's two fixed-table constructions (LitLen/Distance, both already complete) and P1-07's huffman.rs test file (all TableKind::LitLen, no behavior change since that ABCDEFGH example is a complete code). All 11 new tests pass; one test's own input buffer needed 2 bytes instead of 1 to satisfy br.fill's 15-bit request (test-only sizing bug, not a huffman.rs defect). make ci green (82 cleanflate tests total, up from 71).
