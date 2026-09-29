@@ -10,3 +10,5 @@
 /testdata/corpora/silesia/
 /provenance/tool-log.jsonl
 /provenance/*.lock
+__pycache__/
+*.pyc
