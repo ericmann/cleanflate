@@ -59,6 +59,11 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] R1-06 Commit fuzz/Cargo.lock instead of gitignoring it to dodge libz-only-in-oracle
 - [x] R1-07 Multi-member-aware oracle for differential fuzz target (c)
 - [x] R1-08 Complete the provenance record: intervention row, denial notes, bootstrap gaps
+- [ ] R2-01 C5: CRC-32 table without indexing, plus a rule against panic-lint suppression in cleanflate lib
+- [ ] R2-02 Gzip finish(): member-seen test must use member_count, not retained headers
+- [ ] R2-03 decompress_with: exact consumed at a lone trailing 0x1f, and fail instead of spinning when the buffer cannot grow
+- [ ] R2-04 Oracle multi-member gzip: test a 0x1f-not-0x8b trailer
+- [ ] R2-05 Provenance summary: list URLs fetched via Bash, and state the Bash-read gap
 
 ## Log
 (one entry per task, appended by implement)

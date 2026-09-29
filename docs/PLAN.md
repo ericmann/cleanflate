@@ -1561,3 +1561,50 @@ Also, `make design-check` passes.
 **Out of scope:** Generating provenance/SUMMARY.md (P6-01). Changing guard behaviour.
 **Verification:** make tools-check && make sources-check
 **Depends on:** P0-10
+
+## Review fixes (round 2)
+
+### R2-01: C5: CRC-32 table without indexing, plus a rule against panic-lint suppression in cleanflate lib
+**Goal:** Remove the only #[allow(clippy::indexing_slicing)] in cleanflate library code (checksum.rs crc32_table) by building the table without [] indexing, and add a docs/foundry.json rule so a local clippy allow can never again hide a C4/C5 violation.
+**Files touched:** crates/cleanflate/src/checksum.rs, crates/cleanflate/src/tests/checksum.rs, docs/foundry.json, CLAUDE.md
+**Design constraints:** C5: no [] indexing or slicing in cleanflate library code, and no #[allow]/#![allow] of clippy::indexing_slicing, unwrap_used, expect_used or panic anywhere under crates/cleanflate/src/ outside src/tests/. Keep CRC32_TABLE a compile-time const. Acceptable constructions: an array literal expanded by a macro from a `const fn crc32_entry(n: u32) -> u32` (while-loop over the 8 bit steps, RFC 1952 S8), or a const walk using split_first_mut (const-stable on the pinned 1.89 toolchain). C4/C8/C10 apply. New foundry.json rule id `no-panic-lint-allow-in-cleanflate-lib`: paths [crates/cleanflate/src/], exclude [crates/cleanflate/src/tests/], pattern matching `allow(` followed (within the same attribute) by clippy::unwrap_used|expect_used|panic|indexing_slicing, e.g. `allow\s*\([^)]*clippy::(unwrap_used|expect_used|panic|indexing_slicing)\b`. shouldMatch must include this diff's own line `#[allow(clippy::indexing_slicing)]` plus `#![allow(clippy::unwrap_used, clippy::indexing_slicing)]`; shouldNotMatch must include `#[allow(dead_code)]` and `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]`. Tag C5 in CLAUDE.md with [rule:no-panic-lint-allow-in-cleanflate-lib] while keeping the clippy/make lint mention.
+**Acceptance tests:** crates/cleanflate/src/tests/checksum.rs::crc32_table_matches_bitwise_reference: for every n in 0..256, the table entry used by crc32 (exercise via crc32 of a single byte, or expose the table pub(crate)) equals a bit-at-a-time reflected 0xEDB88320 computation written in the test. Existing crc32 tests and crates/oracle/tests/checksums.rs keep passing. foundry_verify shows the new rule ok with 0 hits and its fixtures passing; before the fix the rule would hit checksum.rs:100.
+**Out of scope:** Adler-32. Performance changes to CRC (slice-by-N). The allow(dead_code) attributes in tables.rs.
+**Verification:** make lint && make test && foundry_verify (constraints: no-panic-lint-allow-in-cleanflate-lib ok, 0 hits)
+**Depends on:** none
+
+### R2-02: Gzip finish(): member-seen test must use member_count, not retained headers
+**Goal:** Make GzipDecoder::finish decide 'at least one member completed' from member_count rather than !headers.is_empty(), so Options { max_gzip_headers: 0 } still decodes valid gzip input instead of failing with Truncated.
+**Files touched:** crates/cleanflate/src/gzip.rs, crates/cleanflate/src/tests/gzip.rs
+**Design constraints:** RFC 1952 S2.2 boundary rules unchanged. Audit gzip.rs for any other place that uses headers (len/is_empty) as a proxy for members seen and switch it to member_count. Headers stay capped by max_gzip_headers. C4/C5/C15 apply.
+**Acceptance tests:** crates/cleanflate/src/tests/gzip.rs::gzip_zero_header_cap_still_decodes: with Options { max_gzip_headers: 0, ..Default }, one valid member decodes via decompress_with to its payload with gzip_members empty; two concatenated members decode to the concatenation; a streaming Decompressor over the two members finishes Ok with gzip_headers().len() == 0 and gzip_member_count() == 2. (Currently decompress_with returns Err(Truncated).) A truncated first member with max_gzip_headers 0 still returns Truncated.
+**Out of scope:** Changing the default cap. Output-limit logic. decompress_with's consumed reporting (R2-03).
+**Verification:** make test && make lint
+**Depends on:** none
+
+### R2-03: decompress_with: exact consumed at a lone trailing 0x1f, and fail instead of spinning when the buffer cannot grow
+**Goal:** Make decompress_with's Decoded.consumed equal trailing_start() whenever that is set (including an input ending in a lone 0x1f under TrailingData::Allow), and make its loop return OutputLimitExceeded rather than spin forever if an OutputFull comes back for an empty write region.
+**Files touched:** crates/cleanflate/src/stream.rs, crates/cleanflate/src/tests/gzip.rs, crates/cleanflate/src/tests/stream_raw.rs, docs/DESIGN.md
+**Design constraints:** PLAN R1-03: 'decompress_with's Decoded.consumed equals trailing_start() whenever that is set' -- the lone-0x1f exception in lib.rs/D-19 applies to streaming callers only, since the one-shot API sees the whole input; update the lib.rs/D-19/D-20 wording to say so. In decompress_with, when the write region passed to decompress was empty (buffer already at next_len's cap) and the call returns OutputFull, return Err(Error::OutputLimitExceeded { limit: options.max_output }) instead of continue. No change to Decompressor::decompress's limit logic. C4/C5/C8/C15 apply; the growth step constant is out of scope.
+**Acceptance tests:** crates/cleanflate/src/tests/gzip.rs::gzip_trailing_allow_lone_1f_one_shot: one valid member of length N followed by the single byte 0x1f under Allow: decompress_with(..).consumed == N (currently N+1) and data is the member payload; under Reject the error is TrailingData { offset: N }. Would-have-caught check for the hang: foundry_mutate on crates/cleanflate/src/stream.rs replacing `let remaining_allowance = self.options.max_output.saturating_sub(already_out);` with `let remaining_allowance = self.options.max_output.saturating_add(1).saturating_sub(already_out);` must report killed with timedOut false (today tests::stream_raw::limit_plus_one_err never terminates). Existing limit_exact_ok / limit_plus_one_err / streaming_limit_with_large_buffer keep passing.
+**Out of scope:** Streaming Progress.consumed for a lone 0x1f at the end of a call (documented exception). next_len's growth schedule. Gzip header cap (R2-02).
+**Verification:** make test && make lint && make bomb && make design-check
+**Depends on:** R2-02
+
+### R2-04: Oracle multi-member gzip: test a 0x1f-not-0x8b trailer
+**Goal:** Cover inflate_gzip_members' 1f 8b new-member check so a regression that treats any 0x1f as a new member (reintroducing spurious fuzz target (c) gzip divergences) fails make test.
+**Files touched:** crates/oracle/tests/ffi_roundtrip.rs
+**Design constraints:** Test-only. C9: reach C zlib only through oracle::ffi. Keep every existing assertion in gzip_multi_member_matches_concatenation.
+**Acceptance tests:** crates/oracle/tests/ffi_roundtrip.rs::gzip_multi_member_matches_concatenation (extended) or a new gzip_multi_member_1f_trailer_is_trailing: two oracle gzip members followed by [0x1f, b'Z'] give status StreamEnd, output b"helloworld", consumed == both.len(). Would-have-caught check: foundry_mutate on crates/oracle/src/ffi.rs replacing `let starts_new_member = next.first() == Some(&0x1f) && next.get(1) == Some(&0x8b);` with `let starts_new_member = next.first() == Some(&0x1f);` must report killed (it currently survives).
+**Out of scope:** Changing inflate_gzip_members' behaviour. Fuzz targets. cleanflate.
+**Verification:** make test
+**Depends on:** none
+
+### R2-05: Provenance summary: list URLs fetched via Bash, and state the Bash-read gap
+**Goal:** Make provenance/SUMMARY.md's 'URLs fetched' section include every http(s) URL in allowed Bash tool calls (curl/wget and fetch-script invocations), not only WebFetch, so the summary no longer claims no URL was fetched when the log shows curl fetches (SPEC S5 M6).
+**Files touched:** tools/cleanroom/summarize.py, tools/cleanroom/tests/test_summarize.py, tools/cleanroom/tests/fixtures/tool-log.sample.jsonl, provenance/README.md, provenance/SUMMARY.md
+**Design constraints:** Python 3 stdlib only. Extract URLs with a regex over allowed Bash targets; group the section by tool (WebFetch, Bash). Denied fetches stay in the Denied calls table only. Add a provenance/README.md 'Known gaps' bullet: files read through Bash commands (cat/sed/grep/head) appear in the log as commands, not under 'Files read', which lists Read/Write/Edit targets only. Regenerate provenance/SUMMARY.md with make provenance-summary. Never edit or filter tool-log entries.
+**Acceptance tests:** tools/cleanroom/tests/test_summarize.py::test_urls_listed extended (or test_urls_from_bash_curl): a fixture line with tool Bash, decision allowed, target 'curl -sSfL -o x https://corpus.canterbury.ac.nz/resources/cantrbry.tar.gz' makes that URL appear under URLs fetched; a denied Bash curl URL does not appear there. After regeneration, provenance/SUMMARY.md lists https://corpus.canterbury.ac.nz/resources/cantrbry.tar.gz.
+**Out of scope:** Parsing file paths out of arbitrary Bash commands. build_report.py. Guard behaviour.
+**Verification:** make tools-check && make provenance-summary
+**Depends on:** none
