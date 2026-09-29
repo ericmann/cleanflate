@@ -6,7 +6,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P0-01 Workspace scaffold, toolchain pin and Makefile skeleton
 - [x] P0-02 Crate checks script (zero deps, no unsafe token, forbidden path names)
 - [x] P0-03 Provenance library and PostToolUse logger
-- [ ] P0-04 PreToolUse clean-room guard
+- [x] P0-04 PreToolUse clean-room guard
 - [ ] P0-05 Cleanroom self-test and hook wiring
 - [ ] P0-06 commit-msg hook adding stage and task tags
 - [ ] P0-07 Vendor RFC 1950/1951/1952 texts
@@ -63,3 +63,6 @@ tools/ci/crate-checks.sh implements checks (a) deps via cargo metadata (empty .d
 
 ### P0-03 — 3829bf8
 provenance.py: repo_root/log_path/context/target_of/append/derive_stage/derive_task_id/derive_model/read_hook_input, python3 stdlib only. Entry keys in ENTRY_KEYS order: ts,foundry_stage,task_id,model,tool,target,decision,reason. append() uses O_APPEND|O_CREAT + fcntl.flock, creates provenance/ if missing. log.py reads hook JSON from stdin, appends an allowed entry, always exits 0 (falls back to a logger-error reason entry, then stderr, on any exception). Stage derivation checks agent_type substring match first (planner/implementer/reviewer/summarizer, implementer consults .foundry/state.json round>=1 for fix), then FOUNDRY_STAGE env, then .foundry/implement.lock presence. Task id: FOUNDRY_TASK_ID env for implement/fix, else first "^- \[~\] (\S+)" line under "## Tasks" in docs/PROGRESS.md. Model: hook_input["model"], else CLEANROOM_MODEL, else best-effort transcript tail scan (last 256KiB, newest-first, message.model). All 11 tests pass. Added __pycache__/*.pyc to .gitignore (byproduct of the new python test suite).
+
+### P0-04 — 26b9723
+guard.py: evaluate(hook_input)->(decision,reason) plus main() wiring stdin->evaluate->log-if-denied->stderr/exit. R1 WebSearch always denied. R2 WebFetch: deny if LOCKDOWN exists, else allow only if url in allowlist.txt. R3 Read/Glob/Grep: resolve_variants (expanduser+cwd-join+normpath+realpath) checked against forbidden roots F (~/.cargo/registry|git, $CARGO_HOME/registry, target/**/build, target/doc/src), forbidden words W unless under exempt dirs E (crates/cleanflate, crates/oracle), W+ words outside root; Glob pattern/Grep glob also checked. R4 Bash: (a) git-clone/cargo-vendor always deny, gh always deny, curl/wget deny post-lockdown else require every https URL in allowlist; (b) fetch-rfcs.sh/fetch-corpora.sh/CLEANROOM_ALLOW_CORPUS_FETCH deny post-lockdown; (c) raw substring/regex check for .cargo/registry, .cargo/git, target/doc/src, target/**/build; (d) segment-split (;,&&,||,|,newline) read-family (cat/grep/find/...) check via shlex tokens, path-like vs non-path-like word checks, plus grep -r/-R without --exclude-dir=target at repo root denial. R5: any exception in evaluate() caught in main(), denies with "guard internal error: <exc>", still logs. All 32 tests in tools/cleanroom/tests/test_guard.py pass (subprocess-based logging/fail-closed tests plus direct evaluate() calls for the rest), using temp CLEANROOM_REPO_ROOT/HOME/CLEANROOM_LOG/CLEANROOM_LOCKDOWN_FILE.
