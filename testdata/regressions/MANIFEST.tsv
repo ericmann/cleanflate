@@ -1,0 +1,6 @@
+# Regression fixtures. One row per committed repro; see README.md.
+# path	format	expect	out_len	out_sha256	in_chunks	out_chunks	origin
+rfc1951/fixed-heavy-match-11k.bin	raw	ok	11264	38147d9bdaead98fc0e5144274a40a1e37913056064a371722e883a4439d8e8d	1	1	seed: shape of the lost phase-1 P4-08 repro (Fixed, ~11 KiB, match-heavy), not its bytes
+rfc1950/fixed-heavy-match-11k.bin	zlib	ok	11264	38147d9bdaead98fc0e5144274a40a1e37913056064a371722e883a4439d8e8d	7,1,13	1,258,3	seed: shape of the lost phase-1 P4-08 repro (Fixed, ~11 KiB, match-heavy), not its bytes
+rfc1952/two-members.bin	gzip	ok	5000	9bbef61d7c227ed9b16710d89910156a2e3062219f055f26c6a5ce28c8fc5f61	1	1	seed: two concatenated gzip members with different data
+rfc1951/dynamic-l9-64k.bin	raw	ok	65536	ddab1da9afb487f9c25a46cec494003e1b8993c2b2fec7d127fc8cafb0896801	8,9,15,16,17	257,258,259	seed: 64 KiB text-like data at level 9 (dynamic blocks)

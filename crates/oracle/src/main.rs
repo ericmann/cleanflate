@@ -35,9 +35,23 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some("regress-add") => match oracle::regress::run_add(&args[2..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("oracle regress-add: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Some("regress-seed") => match oracle::regress::run_seed() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("oracle regress-seed: {e}");
+                ExitCode::FAILURE
+            }
+        },
         _ => {
             eprintln!(
-                "usage: oracle malformed | oracle generate --tier quick|full [--write-manifest] [--out DIR] | oracle bench [--corpus silesia|canterbury] [--iters N] [--level L]"
+                "usage: oracle regress-add --input PATH --format raw|zlib|gzip --name NAME [--in-chunks LIST] [--out-chunks LIST] [--expect ok|err:KIND] --origin TEXT | oracle regress-seed | oracle malformed | oracle generate --tier quick|full [--write-manifest] [--out DIR] | oracle bench [--corpus silesia|canterbury] [--iters N] [--level L]"
             );
             ExitCode::FAILURE
         }

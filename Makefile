@@ -1,4 +1,4 @@
-.PHONY: fmt-check lint test corpus corpus-full crate-checks cleanroom-selftest \
+.PHONY: regress-seed fmt-check lint test corpus corpus-full crate-checks cleanroom-selftest \
         tools-check design-check ci proptest-10k proptest-3k fastslow-full bomb heavy \
         fuzz-check fuzz-smoke fuzz-long fuzz-divergences bench \
         provenance-snapshot provenance-summary build-report hooks-install \
@@ -132,3 +132,6 @@ proptest-3k:
 
 fastslow-full: corpus-full
 	CLEANFLATE_TIER=full cargo test --release -p oracle --test fastslow
+
+regress-seed:
+	cargo run --release -q -p oracle -- regress-seed

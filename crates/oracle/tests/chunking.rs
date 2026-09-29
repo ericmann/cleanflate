@@ -10,7 +10,9 @@
 use proptest::prelude::*;
 
 mod common;
-use common::{chunk_schedule_strategy, data_strategy, params_strategy, to_cleanflate_format};
+use common::{
+    chunk_schedule_strategy, data_strategy, dump_candidate, params_strategy, to_cleanflate_format,
+};
 
 use cleanflate::{decompress_with, Decompressor, Error, Format, Options, Status};
 use oracle::ffi::{deflate_bytes, DeflateParams};
@@ -95,13 +97,22 @@ proptest! {
         };
         let format = to_cleanflate_format(framing);
 
-        let one_shot = decompress_with(format, &compressed, &Options::default())
-            .map_err(|e| TestCaseError::fail(format!("one-shot decode failed: {e:?}")))?;
-        prop_assert_eq!(&one_shot.data, &data, "one-shot output must equal the original data");
+        let result = (|| -> Result<(), TestCaseError> {
+            let one_shot = decompress_with(format, &compressed, &Options::default())
+                .map_err(|e| TestCaseError::fail(format!("one-shot decode failed: {e:?}")))?;
+            prop_assert_eq!(&one_shot.data, &data, "one-shot output must equal the original data");
 
-        let streamed = stream_decode(format, &compressed, &in_schedule, &out_schedule)
-            .map_err(|e| TestCaseError::fail(format!("streamed decode failed: {e:?}")))?;
-        prop_assert_eq!(&streamed, &data, "streamed output must equal the original data");
+            let streamed = stream_decode(format, &compressed, &in_schedule, &out_schedule)
+                .map_err(|e| TestCaseError::fail(format!("streamed decode failed: {e:?}")))?;
+            prop_assert_eq!(&streamed, &data, "streamed output must equal the original data");
+            Ok(())
+        })();
+        if let Err(e) = result {
+            // Shrinking calls the test last with the minimal case, so the
+            // final dump is the minimal one.
+            let path = dump_candidate("chunking", format, &compressed, &in_schedule, &out_schedule, &e.to_string());
+            return Err(TestCaseError::fail(format!("{e} (saved {})", path.display())));
+        }
     }
 
     #[test]
@@ -127,26 +138,33 @@ proptest! {
         }
         let format = to_cleanflate_format(framing);
 
-        let one_shot = decompress_with(format, &compressed, &Options::default());
-        let streamed = stream_decode(format, &compressed, &in_schedule, &out_schedule);
+        let result = (|| -> Result<(), TestCaseError> {
+            let one_shot = decompress_with(format, &compressed, &Options::default());
+            let streamed = stream_decode(format, &compressed, &in_schedule, &out_schedule);
 
-        match (&one_shot, &streamed) {
-            (Ok(a), Ok(b)) => {
-                prop_assert_eq!(&a.data, b, "Ok/Ok: streamed and one-shot output must match");
+            match (&one_shot, &streamed) {
+                (Ok(a), Ok(b)) => {
+                    prop_assert_eq!(&a.data, b, "Ok/Ok: streamed and one-shot output must match");
+                }
+                (Err(a), Err(b)) => {
+                    prop_assert_eq!(
+                        a.kind(),
+                        b.kind(),
+                        "Err/Err: streamed and one-shot must fail with the same ErrorKind"
+                    );
+                }
+                _ => {
+                    prop_assert!(
+                        false,
+                        "streamed and one-shot disagree on Ok/Err: one_shot={one_shot:?} streamed={streamed:?}"
+                    );
+                }
             }
-            (Err(a), Err(b)) => {
-                prop_assert_eq!(
-                    a.kind(),
-                    b.kind(),
-                    "Err/Err: streamed and one-shot must fail with the same ErrorKind"
-                );
-            }
-            _ => {
-                prop_assert!(
-                    false,
-                    "streamed and one-shot disagree on Ok/Err: one_shot={one_shot:?} streamed={streamed:?}"
-                );
-            }
+            Ok(())
+        })();
+        if let Err(e) = result {
+            let path = dump_candidate("chunking-corrupt", format, &compressed, &in_schedule, &out_schedule, &e.to_string());
+            return Err(TestCaseError::fail(format!("{e} (saved {})", path.display())));
         }
     }
 }

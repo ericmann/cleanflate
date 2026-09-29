@@ -10,3 +10,4 @@ pub mod malformed;
 pub mod manifest;
 pub mod matrix;
 pub mod prng;
+pub mod regress;
