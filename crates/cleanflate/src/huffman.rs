@@ -2,22 +2,42 @@
 //! (RFC 1951 S3.2.2, S3.1.1).
 
 use crate::bitreader::BitReader;
+use crate::config::{DIST_TABLE_BITS, LITLEN_TABLE_BITS};
 use crate::error::HuffmanError;
+
+/// One entry of the table-driven fast-decode lookup (SPEC S5 M2).
+#[derive(Debug, Clone, Copy)]
+enum TableEntry {
+    /// No code has this prefix (only possible for a table `TableKind`
+    /// allows to stay incomplete).
+    Invalid,
+    /// A code longer than the table's lookahead shares this prefix; fall
+    /// back to the bit-serial walk.
+    Long,
+    /// A code of length `len` (`<=` the table's bit width) matches.
+    Symbol { symbol: u16, len: u32 },
+}
 
 /// A canonical Huffman decode table: how many codes exist at each length
 /// (`counts[len]`, `len` 1..=15), and which symbols they decode to,
 /// ordered by (length, symbol value) as RFC 1951 S3.2.2's canonical rule
 /// requires ("All codes of a given bit length have lexicographically
 /// consecutive values, in the same order as the symbols they
-/// represent").
+/// represent"). Also carries a table-driven fast-decode lookup for codes
+/// up to `table_bits` long (DESIGN.md D-16).
 #[derive(Debug, Clone)]
 pub(crate) struct Huffman {
     counts: [u16; 16],
     symbols: Vec<u16>,
+    table_bits: u32,
+    table: Vec<TableEntry>,
 }
 
-/// Which alphabet a table is for, since the incomplete-set exception
-/// (RFC 1951 S3.2.7) applies only to the distance alphabet.
+/// Which alphabet a table is for: this selects the incomplete-set
+/// exception (RFC 1951 S3.2.7 applies only to the distance alphabet) and
+/// how many bits of fast-decode lookahead to build (the code-length
+/// alphabet is small and decoded only a handful of times per block, so
+/// it gets no fast table and always uses the bit-serial walk).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TableKind {
     /// The literal/length alphabet (0..=287).
@@ -25,8 +45,31 @@ pub(crate) enum TableKind {
     /// The distance alphabet (0..=31).
     Distance,
     /// The code-length alphabet (0..=18) used to transmit dynamic tables.
-    #[allow(dead_code)] // constructed once dynamic-Huffman blocks arrive (P2-02)
     CodeLength,
+}
+
+impl TableKind {
+    fn table_bits(self) -> u32 {
+        match self {
+            TableKind::LitLen => LITLEN_TABLE_BITS,
+            TableKind::Distance => DIST_TABLE_BITS,
+            TableKind::CodeLength => 0,
+        }
+    }
+}
+
+/// Reverse the low `nbits` bits of `value` (the rest must be zero).
+/// Converts between a Huffman code's MSB-first integer value and the
+/// LSB-first bit-index a `BitReader::peek` naturally produces (RFC 1951
+/// S3.1.1: "the first bit of the code in the relative LSB position").
+fn reverse_bits(value: u32, nbits: u32) -> u32 {
+    let mut v = value;
+    let mut r = 0u32;
+    for _ in 0..nbits {
+        r = (r << 1) | (v & 1);
+        v >>= 1;
+    }
+    r
 }
 
 /// The result of one bit-serial decode attempt.
@@ -54,6 +97,8 @@ impl Huffman {
         Huffman {
             counts: [0u16; 16],
             symbols: Vec::new(),
+            table_bits: 0,
+            table: Vec::new(),
         }
     }
 
@@ -118,7 +163,15 @@ impl Huffman {
             }
         }
 
-        Ok(Huffman { counts, symbols })
+        let table_bits = kind.table_bits();
+        let table = build_table(&counts, &symbols, table_bits);
+
+        Ok(Huffman {
+            counts,
+            symbols,
+            table_bits,
+            table,
+        })
     }
 
     /// Decode the next symbol from `br` without consuming any bits.
@@ -153,4 +206,71 @@ impl Huffman {
 
         Decoded::Invalid
     }
+
+    /// Decode the next symbol using the table-driven fast path, falling
+    /// back to the bit-serial walk (`decode`) for codes longer than this
+    /// table's lookahead, or whenever fewer than `table_bits` bits are
+    /// buffered (DESIGN.md D-16 explains why that fallback keeps this
+    /// path correct rather than merely fast). `decode` remains the
+    /// reference implementation the table is checked against.
+    pub(crate) fn decode_table(&self, br: &BitReader) -> Decoded {
+        if self.table_bits == 0 || br.available() < self.table_bits {
+            return self.decode(br);
+        }
+        let idx = br.peek(self.table_bits) as usize;
+        match self.table.get(idx) {
+            Some(TableEntry::Symbol { symbol, len }) => Decoded::Symbol {
+                symbol: *symbol,
+                len: *len,
+            },
+            Some(TableEntry::Long) => self.decode(br),
+            Some(TableEntry::Invalid) | None => Decoded::Invalid,
+        }
+    }
+}
+
+/// Build a `bits`-wide fast-decode table for a canonical code described
+/// by `counts`/`symbols`: every table index whose low `len` bits equal a
+/// symbol's code (reversed, since the table is indexed LSB-first) gets a
+/// `Symbol` entry, for every combination of the remaining `bits - len`
+/// "don't care" high bits; codes longer than `bits` get a `Long` marker
+/// at their `bits`-bit prefix. `bits == 0` (the code-length alphabet)
+/// yields an empty table, forcing the caller to `decode` always.
+fn build_table(counts: &[u16; 16], symbols: &[u16], bits: u32) -> Vec<TableEntry> {
+    if bits == 0 {
+        return Vec::new();
+    }
+    let size = 1usize << bits;
+    let mut table = vec![TableEntry::Invalid; size];
+
+    let mut code: u32 = 0;
+    let mut idx = 0usize;
+    for len in 1..=15u32 {
+        let count = *counts.get(len as usize).unwrap_or(&0) as u32;
+        for _ in 0..count {
+            let symbol = *symbols.get(idx).unwrap_or(&0);
+            if len <= bits {
+                let reversed = reverse_bits(code, len) as usize;
+                let step = 1usize << len;
+                let mut i = reversed;
+                while i < size {
+                    if let Some(slot) = table.get_mut(i) {
+                        *slot = TableEntry::Symbol { symbol, len };
+                    }
+                    i += step;
+                }
+            } else {
+                let prefix = code >> (len - bits);
+                let reversed = reverse_bits(prefix, bits) as usize;
+                if let Some(slot) = table.get_mut(reversed) {
+                    *slot = TableEntry::Long;
+                }
+            }
+            code += 1;
+            idx += 1;
+        }
+        code <<= 1;
+    }
+
+    table
 }

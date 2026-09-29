@@ -154,7 +154,7 @@ impl Inflater {
         pos: &mut usize,
     ) -> Option<SymbolOutcome> {
         loop {
-            match table.decode(br) {
+            match table.decode_table(br) {
                 Decoded::Symbol { symbol, len } => {
                     return Some(SymbolOutcome::Symbol { symbol, len })
                 }

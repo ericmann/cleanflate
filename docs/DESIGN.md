@@ -322,3 +322,34 @@ discipline P1-08/P1-09 established for stored and fixed blocks. Reusing
 the `LitLen`/`Dist`/`Copy` states per block type) means fixed and dynamic
 blocks share one decode pipeline once their tables are built, so a bug
 fix or property proven for one applies to both.
+
+### D-16: Table-driven Huffman fast-decode path
+
+RFC: RFC 1951 S3.2.2, S3.1.1
+Decision: Each `Huffman` table carries a `1 << table_bits`-entry lookup
+table (`LITLEN_TABLE_BITS = 10`, `DIST_TABLE_BITS = 8`, both in
+`config.rs`; the code-length alphabet gets `table_bits = 0`, i.e. no
+table, since it is tiny and decoded only a handful of times per block).
+Every table index whose low `len` bits equal a symbol's canonical code,
+bit-reversed (since the table is indexed by `BitReader::peek`'s
+LSB-first bit order, while codes are constructed MSB-first per RFC 1951
+S3.1.1), gets a `Symbol` entry, written redundantly across every
+combination of the remaining `table_bits - len` "don't care" bits; a
+code longer than `table_bits` gets a single `Long` marker at its
+`table_bits`-bit prefix. `decode_table` only ever consults the table
+when `br.available() >= table_bits`; otherwise it defers to the
+bit-serial `decode` (kept as the reference implementation) exactly as it
+also does for a `Long` entry.
+Rationale: The "peek `bits`, unavailable bits read as 0" framing works
+for a `Symbol` entry once `available() >= len` (the entry does not
+depend on padding beyond its own length, by construction), but it is
+*not* safe for deciding between `Long`, `Invalid` and a different
+`Symbol` at a shorter prefix when `available() < table_bits`: the fake
+zero-padded bits can select a different table index than the true future
+bits would, misidentifying the entry's kind, not just its length. Gating
+the whole table lookup behind `available() >= table_bits` sidesteps that
+case entirely rather than reasoning about which partial-availability
+states are safe to trust, at the cost of an early fallback to the slower
+path only in the (performance-irrelevant, correctness-first) regime near
+a chunk boundary -- P4-08/P4-09 may revisit this once performance is
+being tuned deliberately.

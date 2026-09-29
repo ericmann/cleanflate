@@ -12,6 +12,7 @@ mod checksum;
 mod dynbuilder;
 mod error;
 mod huffman;
+mod huffman_table;
 mod huffman_validation;
 mod inflate_dynamic;
 mod inflate_fixed;
