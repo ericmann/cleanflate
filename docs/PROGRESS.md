@@ -47,7 +47,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P4-07 Benchmark harness and baseline
 - [x] P4-08 Performance pass 1 — bulk refill and fast decode loop
 - [x] P4-09 Performance pass 2 — measured hotspot and table-bits tuning
-- [ ] P4-10 M4 acceptance and push
+- [x] P4-10 M4 acceptance and push
 - [ ] P6-01 Provenance summary generator
 - [ ] P6-02 Build report generator and DESIGN.md audit
 - [ ] P6-03 Freeze and hand-off push
@@ -365,3 +365,11 @@ Table-bits sweep: measured LITLEN_TABLE_BITS {9,10,11} x DIST_TABLE_BITS {7,8,9}
 Did not attempt CRC-32 slice-by-N (Adler-32 is the larger isolated cost per raw-vs-zlib framing gap; slice-by-N's correctness risk wasn't justified this pass) -- noted as future work.
 Measurement: raw 66.5->71.1 MiB/s (+6.9%, noise, Adler-32 doesn't run in raw framing); zlib 57.9->71.9 MiB/s (+24.2%, the real win). Result line in docs/PERF.md: cleanflate/C zlib = 25.6% (raw) / 27.3% (zlib) on Silesia (target 70%): NOT MET -- decode loop remains dominant cost, P4-08's reverted fast path is the real path forward.
 Tests: adler32_bound_worst_case + full checksum suite + oracle checksums cross-check all pass. make ci, make heavy (10000-case proptest, bomb, full-tier conformance) all green.
+
+### P4-10 — a8fed62
+M4 acceptance: make ci exit 0. make heavy: proptest-10k (10000 cases), bomb, conformance-full (1625 entries) all pass. make fuzz-smoke: all 5 targets 60s each, zero crashes, zero artifacts (never_panic_rfc1952 alone hit 166036 execs). make fuzz-divergences: gzip/both_ok_differ:47, gzip/clean_err_oracle_ok:1167 -- confirmed as the same non-bug class P4-05 already documented (cleanflate correctly decodes every concatenated gzip member per RFC 1952 S2.2, the oracle's windowBits=31 inflate stops after the first member); zero raw/zlib divergences. No code fix needed. make provenance-snapshot: 1379 lines. Pushed build/2026-09-29 to origin (c656400..a8fed62).
+Manual check: NOT VERIFIED (human):
+1. Run make fuzz-long, or trigger fuzz-nightly, confirm 1 hour each for (a) x3 and (b) with zero crashes.
+2. Triage divergences.jsonl from (c) -- expect only the documented gzip multi-member class.
+3. Re-run make bench on a quiet machine and confirm the PERF.md result line.
+4. Confirm GitHub CI is green.
