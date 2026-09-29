@@ -48,7 +48,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P4-08 Performance pass 1 — bulk refill and fast decode loop
 - [x] P4-09 Performance pass 2 — measured hotspot and table-bits tuning
 - [x] P4-10 M4 acceptance and push
-- [ ] P6-01 Provenance summary generator
+- [x] P6-01 Provenance summary generator
 - [ ] P6-02 Build report generator and DESIGN.md audit
 - [ ] P6-03 Freeze and hand-off push
 - [ ] R1-01 Independent checksums in cleanflate unit-test fixtures (C16) plus a mechanical rule
@@ -373,3 +373,8 @@ Manual check: NOT VERIFIED (human):
 2. Triage divergences.jsonl from (c) -- expect only the documented gzip multi-member class.
 3. Re-run make bench on a quiet machine and confirm the PERF.md result line.
 4. Confirm GitHub CI is green.
+
+### P6-01 — 4dc61ad
+tools/cleanroom/summarize.py: build_summary(log_path, root) -> markdown string, main() CLI (--log/--out, defaults tool-log.jsonl else snapshot, provenance/SUMMARY.md). Sections: totals by tool/stage, denied calls table, files read (grouped by top-level repo dir, allowed only, Outside repository heading for non-repo paths), URLs fetched (allowed WebFetch only), per-stage wall clock (first/last ts, span, active time = sum of inter-call gaps <15min), models per stage (null -> "unknown"), human-interventions.md embedded verbatim, README.md's Known gaps section extracted verbatim, parse-error count (lines that fail json.loads are counted, never dropped silently).
+Tests: tools/cleanroom/tests/test_summarize.py (8 required names) + tools/cleanroom/tests/fixtures/tool-log.sample.jsonl (9 valid + 1 malformed line, exercises allowed/denied, multiple stages/models incl. null, in-repo/outside-repo reads, a WebFetch URL, and an explicit >15min idle gap case for the active-time exclusion). make provenance-summary ran for real against the actual live log (1400 entries) -- output inspected, all sections render correctly.
+make tools-check (52 python tests, up from 44), make fmt-check/lint/corpus/test/crate-checks/cleanroom-selftest all green.
