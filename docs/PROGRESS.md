@@ -34,7 +34,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [-] P2-06 M2 acceptance and push
 - [x] P3-01 Preset dictionary support and the zlib wrapper
 - [x] P3-02 Gzip member header parser
-- [ ] P3-03 Gzip members, trailer, multi-member streams and gzip API
+- [x] P3-03 Gzip members, trailer, multi-member streams and gzip API
 - [ ] P3-04 Zlib and gzip conformance, dictionary and multi-member tests
 - [ ] P3-05 Malformed zlib and gzip cases
 - [ ] P3-06 M3 acceptance and push
@@ -147,3 +147,17 @@ zlib.rs: ZlibDecoder{state,inflater,adler,dictionary,dict_id_buf,trailer_buf}, S
 
 ### P3-02 — c10d96a
 gzip.rs: pub struct GzipHeader{text,mtime,xfl,os,extra,name,comment,header_crc,truncated_fields} (#[non_exhaustive]). pub(crate) GzipHeaderParser::new(max_field)/feed(input)->Result<(usize,Option<GzipHeader>),Error>, byte-at-a-time resumable states Id1->Id2->Cm->Flg->Mtime{collected}->Xfl->Os->[ExtraLen{collected}->ExtraData]->[Name]->[Comment]->[Hcrc{collected}]->Done, each optional field's presence gated by decide_next(stage) consulting self.flg bits (FEXTRA/FNAME/FCOMMENT/FHCRC). Every header byte except the FHCRC field's own 2 bytes feeds a running Crc32 (crate::checksum::Crc32), including bytes discarded past max_field (truncated_fields=true) and FNAME/FCOMMENT's zero terminator (CRC'd, never stored). MTIME/XLEN/CRC16 are little-endian (RFC 1952 S2.1, opposite of RFC 1950's big-endian Adler-32). Magic/CM/reserved-flags validated before FLG is accepted. pub mod gzip in lib.rs (matches checksum/error's full-module-public pattern), one #[allow(dead_code)] at the mod declaration since nothing drives GzipHeaderParser outside tests until P3-03. All 12 new tests pass on first attempt (one clippy fix: stage<=0 on u8 -> stage==0). 127 cleanflate tests total, make ci green.
+
+### P3-03 — cba7606
+Implemented GzipDecoder (crates/cleanflate/src/gzip.rs): resumable
+multi-member state machine MemberHeader->Body->Trailer->Boundary,
+CRC32+ISIZE trailer verification, and inline trailing-data resolution
+at boundaries (lone 0x1f buffered per NeedsInput-consumes-everything
+invariant, resolved by finish()). Wired into stream.rs as a new
+Backend::Gzip variant with owns_trailing_data()/finish()/trailing_start()
+delegation; added Format::Gzip, Decompressor::gzip_headers(),
+Decoded::gzip_members, gzip_decompress(). Added 14 acceptance tests in
+tests/gzip.rs (multi-member concat, empty members, CRC/ISIZE mismatch,
+trailing reject/allow, lone-0x1f boundary, 1-byte chunking, truncated
+trailer). Recorded design decision D-19. make ci and foundry_verify
+both pass.
