@@ -16,7 +16,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P0-11 M0 acceptance and push
 - [x] P1-01 Oracle FFI wrappers over libz-sys
 - [x] P1-02 Deterministic synthetic inputs and generation matrix
-- [ ] P1-03 Corpus generator CLI and MANIFEST
+- [x] P1-03 Corpus generator CLI and MANIFEST
 - [x] P1-04 Adler-32 and CRC-32 in cleanflate
 - [x] P1-05 Error types, options, config constants, RFC tables, DESIGN.md skeleton
 - [x] P1-06 Resumable bit reader and 32 KiB window
@@ -307,3 +307,8 @@ Manual check: NOT VERIFIED (human):
 3. GitHub Actions ci run for the pushed branch is green.
 4. Spot-check docs/rfc/*.txt against rfc-editor.org.
 5. Record any intervention in provenance/human-interventions.md.
+
+### P1-03 — 4128333
+Added crates/oracle/src/manifest.rs (Manifest/ManifestEntry/DictionaryRecord, serde, format:1, seed hex, sorted-by-id, sha256_hex, framing_token/strategy_token) and generate.rs (write_manifest + check, keyed off matrix::entries/inputs_for_tier; check distinguishes file-present-wrong-hash (reported mismatch, never overwritten, like sources-check.sh) from file-missing (regenerated, accepted only if fresh sha matches manifest)). main.rs: `oracle generate --tier quick|full [--write-manifest] [--out DIR]`, hand-parsed. Cargo.toml: added serde+serde_json (Cargo.lock updated). Input::manifest_source() added to inputs.rs; matrix::tier_token made pub(crate). Makefile corpus/corpus-full now real (cargo run --release -p oracle -- generate --tier quick|full).
+Ran `oracle generate --tier full --write-manifest` for real (Silesia present since P0-08): 2674 entries, testdata/MANIFEST.json committed (1.5MB), testdata/generated/ stays gitignored (1.8GB, git status confirms clean). `make corpus` (quick, check mode) twice: 0 generated/2494 skipped both times.
+Tests: crates/oracle/tests/manifest.rs, 4 cases, all pass (~30s, uses an empty corpora_root so quick-tier reduces to synthetic-only for speed). make lint, make crate-checks, make cleanroom-selftest, full make test all green.
