@@ -30,7 +30,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P2-02 Dynamic block header and code-length alphabet decoding
 - [x] P2-03 Table-driven Huffman decode path
 - [x] P2-04 Malformed corpus builder, raw cases and malformed test
-- [ ] P2-05 Full raw conformance
+- [x] P2-05 Full raw conformance
 - [ ] P2-06 M2 acceptance and push
 - [x] P3-01 Preset dictionary support and the zlib wrapper
 - [x] P3-02 Gzip member header parser
@@ -324,3 +324,8 @@ Manual check: NOT VERIFIED (human):
 1. Read DESIGN.md D-01..D-12 for RFC grounding.
 2. Confirm GitHub CI is green.
 3. Spot-check that provenance/tool-log.snapshot.jsonl shows no forbidden reads.
+
+### P2-05 — 8ad4d5c
+Added conformance::decode_streaming(decompressor, bytes, input_chunk, output_chunk) to crates/oracle/src/conformance.rs: loops Decompressor::decompress calls (incl. empty-input calls to flush already-buffered bits) until Status::Done, with a stuck-detector for a genuinely truncated stream, then finish(). Reusable (not test-inlined) since P3-04 needs the same shape for zlib/gzip.
+New tests in crates/oracle/tests/conformance.rs: conformance_raw_all (every raw, dictionary-free entry, one-shot cleanflate::inflate) and conformance_raw_all_streaming_odd_chunks (same entries via decode_streaming with 1021-byte input / 997-byte output chunks). 1541 entries pass on tier quick (make test), 1625 on tier full (32.59s release) -- no decoder fixes were needed, every entry already decoded byte-identically both ways.
+make fmt-check/lint/corpus/test/crate-checks/cleanroom-selftest all green.
