@@ -189,3 +189,55 @@ fn fixed_match_via_public_api() {
     let out = inflate(&stream).expect("no error");
     assert_eq!(out, b"abcabcab");
 }
+
+#[test]
+fn empty_output_slice_is_output_full_not_limit() {
+    // R1-02: a zero-length `output` slice must be distinguishable from a
+    // zero-length *max_output allowance* -- the former is just the
+    // caller asking for no bytes this call (resumable `OutputFull`), not
+    // the decompression-bomb guard actually having nothing left to give.
+    let stream = stored_stream(true, b"hello");
+    let mut d = Decompressor::new(Format::Raw, Options::default());
+
+    let progress = d
+        .decompress(&stream, &mut [])
+        .expect("no error, not OutputLimitExceeded");
+    assert_eq!(progress.status, Status::OutputFull);
+    assert_eq!(progress.produced, 0);
+
+    let mut out = [0u8; 16];
+    let progress = d
+        .decompress(&stream[progress.consumed..], &mut out)
+        .expect("no error");
+    assert_eq!(progress.status, Status::Done);
+    assert_eq!(out.get(..progress.produced).unwrap_or(&[]), b"hello");
+}
+
+#[test]
+fn streaming_limit_with_large_buffer() {
+    // R1-02: the limit must fire based on the remaining `max_output`
+    // allowance, not on whether the caller's buffer happens to be
+    // larger than what's left -- a 64-byte buffer against a 4-byte
+    // allowance still hits the limit, exactly at total_out() == limit.
+    let stream = stored_stream(true, b"hello");
+
+    let options = Options {
+        max_output: 4,
+        ..Options::default()
+    };
+    let mut d = Decompressor::new(Format::Raw, options);
+    let mut out = [0u8; 64];
+    let err = d.decompress(&stream, &mut out).expect_err("limit exceeded");
+    assert_eq!(err, Error::OutputLimitExceeded { limit: 4 });
+    assert_eq!(d.total_out(), 4);
+
+    let options = Options {
+        max_output: 5,
+        ..Options::default()
+    };
+    let mut d = Decompressor::new(Format::Raw, options);
+    let mut out = [0u8; 64];
+    let progress = d.decompress(&stream, &mut out).expect("exact limit ok");
+    assert_eq!(progress.status, Status::Done);
+    assert_eq!(out.get(..progress.produced).unwrap_or(&[]), b"hello");
+}

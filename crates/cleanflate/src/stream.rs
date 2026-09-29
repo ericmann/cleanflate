@@ -178,8 +178,17 @@ impl Decompressor {
 
         let already_out = self.backend.total_out();
         let remaining_allowance = self.options.max_output.saturating_sub(already_out);
+        // The limit is what bounded this call -- not the caller's own
+        // output slice -- iff there was no allowance left at all, or the
+        // allowance was strictly smaller than what the caller offered.
+        // Comparing directly against `output.len()` (rather than the
+        // already-clamped `allowance` below) is what makes a zero-length
+        // `output` slice distinguishable from a zero-length *allowance*:
+        // the former is just the caller asking for no bytes this call
+        // (resumable `OutputFull`), the latter is the decompression-bomb
+        // guard actually having nothing left to give.
+        let limit_bound = remaining_allowance == 0 || remaining_allowance < output.len() as u64;
         let allowance = remaining_allowance.min(output.len() as u64) as usize;
-        let allowance_bound_output = allowance < output.len();
         let output_slice = output.get_mut(..allowance).unwrap_or(&mut []);
 
         let step_result = self.backend.step(input, output_slice);
@@ -199,7 +208,7 @@ impl Decompressor {
                 status: Status::NeedsInput,
             }),
             InflateStatus::OutputFull => {
-                if allowance_bound_output || allowance == 0 {
+                if limit_bound {
                     let e = Error::OutputLimitExceeded {
                         limit: self.options.max_output,
                     };

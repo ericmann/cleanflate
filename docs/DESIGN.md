@@ -52,6 +52,20 @@ stream that produces exactly `max_output` bytes succeeds (the final
 end-of-block symbol needs no output space); `OutputLimitExceeded` is only
 returned when the inflater reports `OutputFull` *and* that allowance
 (not the caller's raw buffer) was the binding constraint.
+Update (R1-02): P1-10's own implementation of "that allowance was the
+binding constraint" was wrong for a zero-length caller output slice: it
+compared the already-clamped `allowance = min(remaining, output.len())`
+against `output.len()`, so `allowance == 0` fired the error whenever the
+caller passed an empty slice, even with a large remaining allowance --
+indistinguishable from the allowance genuinely being exhausted. Fixed by
+comparing `remaining_allowance` (before clamping) directly against
+`output.len()`: the limit is the binding constraint iff
+`remaining_allowance == 0` or `remaining_allowance < output.len()`,
+which correctly lets `decompress(&input, &mut [])` return `Ok(Progress {
+status: OutputFull, produced: 0, .. })` (resumable -- the same contract
+`zero_length_output_slice_makes_header_progress` already established for
+header-only progress, D-20) rather than `Err(OutputLimitExceeded)` when
+the limit itself was never actually reached.
 
 ### D-03: Trailing-data policy
 
