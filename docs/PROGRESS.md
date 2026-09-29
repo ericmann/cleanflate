@@ -64,6 +64,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] R2-03 decompress_with: exact consumed at a lone trailing 0x1f, and fail instead of spinning when the buffer cannot grow
 - [x] R2-04 Oracle multi-member gzip: test a 0x1f-not-0x8b trailer
 - [x] R2-05 Provenance summary: list URLs fetched via Bash, and state the Bash-read gap
+- [ ] R3-01 Provenance summary: list URLs fetched by the fetch scripts (RFC and corpus manifests)
 
 ## Log
 (one entry per task, appended by implement)
