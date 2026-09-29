@@ -17,6 +17,12 @@ Each decision is one `### D-NN: <title>` block with three lines:
 every `### D-` heading is followed by an `RFC:` line before the next
 heading.
 
+Performance decisions carry a `[perf]` tag right after the id
+(`### D-NN: [perf] <title>`). Per SPEC section 2.1, each such block also
+needs a `Measurement:` line and the exact phrase "general technique; not
+derived from any specific implementation"; `make design-check` fails a
+`[perf]` block missing either.
+
 ## Decisions
 
 ### D-01: Error model

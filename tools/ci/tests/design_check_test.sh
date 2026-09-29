@@ -70,6 +70,53 @@ else
 fi
 rm -rf "$d"
 
+run_case() {
+    # run_case <name> <expect: pass|fail> <needle-or-empty> ; DESIGN text on stdin
+    name="$1"; expect="$2"; needle="$3"
+    d="$(mktemp -d)"
+    cat > "$d/DESIGN.md"
+    out="$(DESIGN_CHECK_FILE="$d/DESIGN.md" bash "$DESIGN_CHECK" 2>&1)"
+    code=$?
+    rm -rf "$d"
+    if [ "$expect" = pass ] && [ "$code" -eq 0 ]; then
+        report "$name" 0
+    elif [ "$expect" = fail ] && [ "$code" -ne 0 ] && echo "$out" | grep -q "$needle"; then
+        report "$name" 0
+    else
+        report "$name" 1 "expect $expect, exit $code: $out"
+    fi
+}
+
+run_case case_perf_block_complete_passes pass "" <<'EOF'
+### D-90: [perf] Fast thing
+
+RFC: RFC 1951 S3.2.4
+Decision: x.
+Measurement: 1 -> 2 MB/s.
+Rationale: general technique; not derived from any specific implementation.
+EOF
+
+run_case case_perf_missing_phrase_fails fail "D-91.*phrase" <<'EOF'
+### D-91: [perf] Fast thing
+
+RFC: RFC 1951 S3.2.4
+Measurement: 1 -> 2 MB/s.
+EOF
+
+run_case case_perf_missing_measurement_fails fail "D-92.*Measurement" <<'EOF'
+### D-92: [perf] Fast thing
+
+RFC: RFC 1951 S3.2.4
+Rationale: general technique; not derived from any specific implementation.
+EOF
+
+run_case case_non_perf_block_unaffected pass "" <<'EOF'
+### D-93: Plain
+
+RFC: n/a (API)
+Decision: y.
+EOF
+
 if [ "$TOTAL_FAIL" -ne 0 ]; then
     exit 1
 fi

@@ -24,15 +24,27 @@ with open(path, encoding="utf-8") as f:
     lines = f.readlines()
 
 heading_re = re.compile(r"^### (D-\S+):")
+perf_re = re.compile(r"^### (D-\S+): \[perf\]")
+PHRASE = "general technique; not derived from any specific implementation"
 ok = True
 current_heading = None
 current_has_rfc = False
+current_perf = False
+has_measurement = False
+has_phrase = False
 
 def check_close(heading, has_rfc):
     global ok
     if heading is not None and not has_rfc:
         print(f"FAIL design-check: {heading} has no RFC: line before the next heading")
         ok = False
+    if heading is not None and current_perf:
+        if not has_measurement:
+            print(f"FAIL design-check: {heading} [perf] block has no Measurement: line")
+            ok = False
+        if not has_phrase:
+            print(f"FAIL design-check: {heading} [perf] block lacks the phrase '{PHRASE}'")
+            ok = False
 
 for line in lines:
     m = heading_re.match(line)
@@ -40,7 +52,15 @@ for line in lines:
         check_close(current_heading, current_has_rfc)
         current_heading = m.group(1)
         current_has_rfc = False
+        current_perf = bool(perf_re.match(line))
+        has_measurement = False
+        has_phrase = False
         continue
+    if current_heading is not None:
+        if line.startswith("Measurement:"):
+            has_measurement = True
+        if PHRASE in line:
+            has_phrase = True
     if current_heading is not None and line.startswith("RFC:"):
         current_has_rfc = True
 
