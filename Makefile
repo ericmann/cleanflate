@@ -112,7 +112,7 @@ provenance-snapshot:
 	bash tools/cleanroom/snapshot-log.sh
 
 provenance-summary:
-	@echo "STUB: provenance-summary arrives in P6"
+	python3 tools/cleanroom/summarize.py
 
 build-report:
 	@echo "STUB: build-report arrives in P6"

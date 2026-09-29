@@ -1,0 +1,10 @@
+{"ts":"2026-01-01T00:00:00.000Z","foundry_stage":"implement","task_id":"P0-01","model":"model-a","tool":"Bash","target":"cargo build","decision":"allowed","reason":null,"session_id":"s1","agent_type":"foundry:implementer"}
+{"ts":"2026-01-01T00:00:05.000Z","foundry_stage":"implement","task_id":"P0-01","model":"model-a","tool":"Read","target":"__ROOT__/crates/cleanflate/src/lib.rs","decision":"allowed","reason":null,"session_id":"s1","agent_type":"foundry:implementer"}
+{"ts":"2026-01-01T00:00:10.000Z","foundry_stage":"implement","task_id":"P0-01","model":"model-a","tool":"Read","target":"__ROOT__/docs/SPEC.md","decision":"allowed","reason":null,"session_id":"s1","agent_type":"foundry:implementer"}
+{"ts":"2026-01-01T00:00:15.000Z","foundry_stage":"implement","task_id":"P0-01","model":null,"tool":"Read","target":"/etc/passwd","decision":"denied","reason":"forbidden root: /etc/passwd","session_id":"s1","agent_type":"foundry:implementer"}
+{"ts":"2026-01-01T00:00:20.000Z","foundry_stage":"implement","task_id":"P0-01","model":"model-a","tool":"WebFetch","target":"https://www.rfc-editor.org/rfc/rfc1951.txt","decision":"allowed","reason":null,"session_id":"s1","agent_type":"foundry:implementer"}
+{"ts":"2026-01-01T00:00:22.000Z","foundry_stage":"implement","task_id":"P0-01","model":"model-a","tool":"Read","target":"/tmp/scratch-notes.txt","decision":"allowed","reason":null,"session_id":"s1","agent_type":"foundry:implementer"}
+{"ts":"2026-01-01T00:00:25.000Z","foundry_stage":"implement","task_id":"P0-01","model":"model-a","tool":"WebSearch","target":"zlib source","decision":"denied","reason":"WebSearch is forbidden (SPEC 2.3)","session_id":"s1","agent_type":"foundry:implementer"}
+this is not valid json
+{"ts":"2026-01-01T01:00:00.000Z","foundry_stage":"review","task_id":null,"model":"model-b","tool":"Bash","target":"make ci","decision":"allowed","reason":null,"session_id":"s2","agent_type":"foundry:reviewer"}
+{"ts":"2026-01-01T01:00:05.000Z","foundry_stage":"review","task_id":null,"model":null,"tool":"Bash","target":"make lint","decision":"allowed","reason":null,"session_id":"s2","agent_type":"foundry:reviewer"}
