@@ -13,7 +13,7 @@ Per phase: distinct `[task:P<n>-...]` ids and total commits naming a task in tha
 | P2 | 6 | 12 |
 | P3 | 6 | 12 |
 | P4 | 10 | 21 |
-| P6 | 2 | 4 |
+| P6 | 3 | 6 |
 
 ## Defects caught
 
@@ -22,6 +22,7 @@ Aggregated from every commit's `Defects-caught:` line, classified by keyword (fu
 | category | count |
 |---|---:|
 | other | 3 |
+| review | 3 |
 | tests | 4 |
 
 | commit | category | defect |
@@ -33,14 +34,20 @@ Aggregated from every commit's `Defects-caught:` line, classified by keyword (fu
 | f92420a8 | tests | two real test-driver bugs found while building fixtures, not decoder bugs: (1) three separate 1-byte-chunking test loops (inflate_stored.rs, inflate_fixed.rs, and this task's own inflate_dynamic.rs) treated "consumed==0 and input exhausted" as stuck regardless of status, which is wrong when status i... |
 | 2ca3c8d5 | tests | one test-construction bug (not a decoder bug) in table_partial_bits_need_more: BitReader::fill always loads whole bytes, so requesting fill(...,2) against a 1-byte buffer actually made 8 bits available, and those 8 bits (2 real + 6 zero-padded) happened to spell a real 3-bit code -- both decode_tabl... |
 | c10d96a1 | other | one clippy::absurd_extreme_comparisons on `stage <= 0` for a u8 (always true) in decide_next's first branch; changed to `stage == 0`, matching the intended one-shot-per-stage meaning (the other three `stage <= N` branches are legitimately meant as "still at or before this point" for N>=1 and were le... |
+| f58b82f6 | review | a real bug (not introduced by this task): Decompressor::decompress raised Err(OutputLimitExceeded) for any decompress(&input, &mut []) call whenever a stored/fixed/dynamic block had bytes ready to emit, even with the full max_output allowance still available -- any caller that legitimately probes wi... |
+| 32400c7b | review | a real bug (not introduced by this task): the old Boundary state advanced pos/total_in for every byte it examined before deciding whether it started a new member, so consumed at Done always overshot trailing_start() by 1 (an ordinary trailing byte) or 2 (a 0x1f not followed by 0x8b) -- exactly the "... |
+| 3176487d | review | a real reproducibility gap (not a bug in decoded output): fuzz builds were never pinned to a committed lockfile, so `cargo fuzz run`/`make fuzz-check`/`make fuzz-smoke` could silently pick up a newer transitive dependency version between runs (including a newer libz-sys), making a fuzz finding or a ... |
 
 ## Review rounds
 
 | commit | subject |
 |---|---|
 | dae4ac0f | review: round 1 |
+| f1f8e787 | review: round 2 |
+| 8bc2ec9e | review: round 3 |
+| 7689af5f | review: round 4 approved |
 
-1 review round(s) recorded.
+4 review round(s) recorded.
 
 ## Known limitations
 
@@ -67,8 +74,26 @@ Aggregated from every commit's `Defects-caught:` line, classified by keyword (fu
   that tags commits with `[stage:...] [task:...]`.
 - `model` can be `null` when none of `derive_model()`'s sources have a
   value (e.g. a hook payload without `model` and no readable transcript).
+- Commits `c1bbaa9`, `4015214`, `8edc633`, `956d6d7`, `44f624e` and
+  `f776879` predate `tools/git-hooks/commit-msg` (installed by P0-06)
+  and so carry no `[stage:...] [task:...]` tags.
+- `tools/cleanroom/LOCKDOWN` (SPEC S2.3: "After M0 completes, WebFetch
+  is denied entirely") was not written before Phases 1-4 ran, because
+  P0-10 (the task that writes it) was initially blocked behind P0-08 and
+  only unblocked and completed in review-fix round 1, well after those
+  phases had already run with WebFetch still allowlist-gated rather than
+  fully locked down.
+- The P0-08 Canterbury retries that hit Cloudflare's bot protection were
+  also tried with a browser-like `User-Agent` header specifically (not
+  just a bare `curl`), and still blocked -- see the row this file's
+  table already has for the human-operator download that resolved it.
+- Files read through a `Bash` command (`cat`, `sed -n`, `grep`, `head`,
+  ...) appear in the log only as that command's `Bash` entry, not under
+  `SUMMARY.md`'s "Files read" section -- that section lists `Read`/
+  `Write`/`Edit`/`NotebookEdit` targets only, so a file inspected purely
+  via a shell command is provenance-visible (it is still logged, in the
+  `Bash` target string) but not enumerated by path there.
 
 - **Open divergence classes** (from `fuzz/artifacts/divergences.jsonl`, if present -- gitignored, so this section only has content in a checkout where fuzzing has actually run):
 
-- gzip/both_ok_differ
-- gzip/clean_err_oracle_ok
+No divergence log present (fuzz-smoke/fuzz-long has not been run in this checkout).
