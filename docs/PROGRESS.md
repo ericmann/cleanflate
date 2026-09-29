@@ -12,7 +12,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P0-07 Vendor RFC 1950/1951/1952 texts
 - [x] P0-08 Download Canterbury and Silesia corpora
 - [x] P0-09 CI entry point and GitHub Actions workflow
-- [ ] P0-10 Lockdown flag, provenance docs and log snapshot
+- [x] P0-10 Lockdown flag, provenance docs and log snapshot
 - [ ] P0-11 M0 acceptance and push
 - [x] P1-01 Oracle FFI wrappers over libz-sys
 - [x] P1-02 Deterministic synthetic inputs and generation matrix
@@ -295,3 +295,6 @@ Reconfirmed: work was already committed (361e93c) and files already present on d
 
 ### P0-09 — aa215e6
 Added .github/workflows/ci.yml (checkout, rustup 1.89.0 install, shellcheck/jq install, Canterbury corpus fetch with CLEANROOM_ALLOW_CORPUS_FETCH=1, make hooks-install, make ci; only actions/checkout used; push+pull_request triggers). Makefile ci target and README "Building and CI" section already existed from an earlier commit. Tests: make ci exits 0 locally; YAML parses via python3 yaml.safe_load.
+
+### P0-10 — 289efa5
+Wrote tools/cleanroom/LOCKDOWN (locked_at + head=542b098, HEAD before this commit) -- WebFetch and fetch scripts now deny post-lockdown for real, not just via CLEANROOM_LOCKDOWN_FILE override. Added tools/cleanroom/snapshot-log.sh + make provenance-snapshot target (wired, was a stub); ran it, committed provenance/tool-log.snapshot.jsonl. Wrote provenance/README.md (entry schema table, live/snapshot arrangement, guard rules summary, all 6 known gaps, Harness status = LIVE) and provenance/human-interventions.md (table template; added the P0-08 Canterbury from-file row as the first real entry, since it's exactly what S5 M6 wants captured). New tests: selftest.sh::deny_webfetch_real_lockdown (unsets CLEANROOM_LOCKDOWN_FILE, uses the real repo LOCKDOWN, logs to a scratch file so it doesn't skew denials_logged); test_guard.py::TestRealLockdownFile (own env, REAL_ROOT = actual repo root, asserts the shipped LOCKDOWN file denies a fetch-corpora.sh Bash command). make cleanroom-selftest, make provenance-snapshot, make ci all green (44 guard unit tests, 22 selftest cases).
