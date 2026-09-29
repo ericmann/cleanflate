@@ -13,6 +13,8 @@ mod error;
 mod huffman;
 mod inflate_fixed;
 mod inflate_stored;
+mod invariants;
+mod stream_raw;
 mod tables;
 mod window;
 

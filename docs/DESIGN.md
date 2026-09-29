@@ -46,6 +46,12 @@ decompression-bomb guard. 1 GiB is larger than any conformance corpus
 member (the largest Silesia file is about 51 MB) so no legitimate
 corpus decode fails, while still bounding memory well below what a
 1:1000+ DEFLATE bomb could otherwise produce.
+Update (P1-10): the limit is enforced by handing the inflater at most
+`max_output - total_out` bytes of the caller's output buffer per call. A
+stream that produces exactly `max_output` bytes succeeds (the final
+end-of-block symbol needs no output space); `OutputLimitExceeded` is only
+returned when the inflater reports `OutputFull` *and* that allowance
+(not the caller's raw buffer) was the binding constraint.
 
 ### D-03: Trailing-data policy
 
@@ -58,6 +64,11 @@ configurable (error vs. return remaining bytes)." Rejecting by default
 matches the "correctness first" priority (SPEC S1): silently accepting
 garbage after a stream is a more common bug source than a legitimate
 use case, so the lenient behavior is opt-in.
+Update (P1-10): trailing bytes are detected both within the call that
+reaches `Done` (leftover, unconsumed bytes in that same `input` slice)
+and in any later call made after `Done`; both cases report the same
+absolute input offset via `Error::TrailingData{offset}` or
+`Decompressor::trailing_start()`.
 
 ### D-04: Single resumable decoder core
 
@@ -230,3 +241,26 @@ whole pipeline resumable at arbitrary chunk boundaries (SPEC S3.3): every
 state transition is only ever taken once its precondition (enough bits,
 or enough output room) is already satisfied, so no state is ever "half
 committed" across a `step` call boundary.
+
+### D-13: Streaming contract, output limit and one-shot growth
+
+RFC: n/a (API)
+Decision: `Decompressor::decompress` wraps `Inflater::step` with three
+additional, orthogonal concerns: (1) the output-limit check described in
+the D-02 update; (2) trailing-data detection per the D-03 update; (3) its
+own error stickiness (`self.error`), separate from `Inflater`'s internal
+stickiness, because `OutputLimitExceeded` and `TrailingData` are
+generated at this layer, not by the inflater. The one-shot
+`decompress_with` drives a `Decompressor` with a `Vec<u8>` grown by
+`pub(crate) fn next_len(len, limit) -> usize` (`max(len, 32768)` growth,
+capped at `limit`, never shrinking), writing into the freshly-resized
+tail and truncating to what was actually produced each round.
+Rationale: SPEC S3.3's streaming rules ("with `NeedsInput`, all input was
+consumed"; "input may be left unconsumed only with `OutputFull` or
+`Done`") are already guaranteed by `Inflater::step` (P1-08's D-11), so
+`Decompressor` only has to preserve them while layering its own concerns
+on top, never contradict them. Capping the one-shot buffer's growth at
+`options.max_output` means a hostile input's forced buffer growth is
+bounded by the same limit that bounds decompressed output, so the
+"decompression bomb guard" (D-02) protects one-shot callers too, not just
+streaming callers who supply their own fixed buffer.

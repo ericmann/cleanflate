@@ -37,21 +37,21 @@ fn distance_symbol_and_extra(dist: u32) -> (u16, u32, u32) {
     panic!("distance {dist} out of range");
 }
 
-fn emit_block_header(w: &mut BitWriter, bfinal: bool, btype: u32) {
+pub(crate) fn emit_block_header(w: &mut BitWriter, bfinal: bool, btype: u32) {
     let value = (bfinal as u32) | (btype << 1);
     w.write_bits(value, 3);
 }
 
-fn emit_literal(w: &mut BitWriter, symbol: u16) {
+pub(crate) fn emit_literal(w: &mut BitWriter, symbol: u16) {
     let (code, bits) = fixed_litlen_code(symbol);
     w.write_code(code, bits);
 }
 
-fn emit_end_of_block(w: &mut BitWriter) {
+pub(crate) fn emit_end_of_block(w: &mut BitWriter) {
     emit_literal(w, 256);
 }
 
-fn emit_match(w: &mut BitWriter, length: u16, dist: u32) {
+pub(crate) fn emit_match(w: &mut BitWriter, length: u16, dist: u32) {
     let (lsym, lextra_bits, lextra_val) = length_symbol_and_extra(length);
     emit_literal(w, lsym);
     w.write_bits(lextra_val, lextra_bits);
