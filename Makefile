@@ -82,7 +82,7 @@ heavy:
 	@echo "STUB: heavy arrives in P4-01"
 
 malformed:
-	@echo "STUB: malformed arrives in P2-04"
+	cargo run -q -p oracle -- malformed
 
 bench:
 	@echo "STUB: bench arrives in P4-09"

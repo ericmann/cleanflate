@@ -3,5 +3,6 @@
 
 pub mod ffi;
 pub mod inputs;
+pub mod malformed;
 pub mod matrix;
 pub mod prng;
