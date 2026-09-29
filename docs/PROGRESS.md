@@ -44,7 +44,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P4-04 Fuzz crate and never-panic targets
 - [x] P4-05 Differential fuzz targets against the oracle
 - [x] P4-06 Nightly fuzz workflow and long-run target
-- [ ] P4-07 Benchmark harness and baseline
+- [x] P4-07 Benchmark harness and baseline
 - [ ] P4-08 Performance pass 1 — bulk refill and fast decode loop
 - [ ] P4-09 Performance pass 2 — measured hotspot and table-bits tuning
 - [ ] P4-10 M4 acceptance and push
@@ -347,3 +347,8 @@ M3 acceptance: make ci exit 0. make conformance-full: 7/7 tests pass, 36.19s rel
 Manual check: NOT VERIFIED (human):
 1. Review DESIGN.md D-16..D-18 against RFC 1950/1952.
 2. Confirm GitHub CI is green.
+
+### P4-07 — 9518a96
+Added crates/oracle/src/bench.rs: BenchArgs{corpus,iters,level} (defaults silesia/5/6), BenchCorpus{Silesia,Canterbury}, run() (refuses in debug build via cfg!(debug_assertions)), bench_one_framing() (oracle-deflates each corpus file, times best-of-N cleanflate::decompress_with vs oracle::ffi::inflate_bytes via Instant, std::hint::black_box on the result), FileResult/FramingReport/BenchReport with mib_per_sec/ratio/aggregate helpers, render_markdown(). main.rs: `oracle bench [--corpus silesia|canterbury] [--iters N] [--level L]` -- falls back Silesia->Canterbury with a printed warning if Silesia's dir is empty, writes docs/PERF.md (method + uname -srm + /proc/cpuinfo model + rustc --version + the rendered tables), fully regenerated each run. Makefile bench target now real (cargo run --release -p oracle -- bench --corpus silesia).
+Test: bench::tests::throughput_math (cfg(test) unit test in oracle, allowed per task text -- C6 only covers cleanflate). make bench ran for real (Silesia, level 6, best-of-5, release, ~61s): raw aggregate cleanflate 67.4 MiB/s vs zlib 279.1 (ratio 0.24), zlib-framed 56.8 vs 250.2 (ratio 0.23) -- both well under SPEC's >=70% M4 target, reported honestly (no optimisation in scope here).
+make fmt-check/lint/corpus/test/crate-checks/cleanroom-selftest all green.
