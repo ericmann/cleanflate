@@ -2,6 +2,7 @@
 //! and the Adler-32 trailer, around a raw DEFLATE [`Inflater`].
 
 use crate::checksum::Adler32;
+use crate::decode_path::DecodePath;
 use crate::error::{ChecksumKind, Error, HeaderError};
 use crate::inflate::{InflateStatus, Inflater};
 
@@ -29,6 +30,7 @@ enum State {
 pub(crate) struct ZlibDecoder {
     state: State,
     inflater: Inflater,
+    path: DecodePath,
     adler: Adler32,
     dictionary: Option<Vec<u8>>,
     dict_id_buf: [u8; 4],
@@ -39,10 +41,11 @@ impl ZlibDecoder {
     /// A fresh decoder, ready to read CMF. `dictionary`, if given, is
     /// used only if the stream's FDICT bit is set (RFC 1950 S2.2); if
     /// FDICT is clear, a supplied dictionary is ignored.
-    pub(crate) fn new(dictionary: Option<Vec<u8>>) -> Self {
+    pub(crate) fn new(dictionary: Option<Vec<u8>>, path: DecodePath) -> Self {
         ZlibDecoder {
             state: State::Cmf,
-            inflater: Inflater::new(),
+            inflater: Inflater::new_with_path(path),
+            path,
             adler: Adler32::new(),
             dictionary,
             dict_id_buf: [0u8; 4],
@@ -138,7 +141,7 @@ impl ZlibDecoder {
                                     self.state = State::Failed(e.clone());
                                     return Err(e);
                                 }
-                                self.inflater = Inflater::with_dictionary(dict);
+                                self.inflater = Inflater::with_dictionary(dict, self.path);
                                 self.state = State::Body;
                             }
                         }

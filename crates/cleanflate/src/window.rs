@@ -1,6 +1,7 @@
 //! The 32 KiB DEFLATE history window (RFC 1951 S2: "distance is drawn
 //! from (1..32,768)"), including overlapping-copy semantics.
 
+use crate::decode_path::DecodePath;
 use crate::tables::WINDOW_SIZE;
 
 /// A ring buffer of the last `WINDOW_SIZE` bytes produced, used to
@@ -71,7 +72,20 @@ impl Window {
     /// SPEC S5 M4 performance pass; the guarded fast decode path in
     /// `inflate.rs` is the main beneficiary, but every caller gets this
     /// for free since it changes nothing observable).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn copy_match(&mut self, distance: usize, len: usize, out: &mut [u8]) -> usize {
+        self.copy_match_path(DecodePath::Fast, distance, len, out)
+    }
+
+    /// [`Self::copy_match`] with an explicit decode path: `Reference`
+    /// always copies byte by byte.
+    pub(crate) fn copy_match_path(
+        &mut self,
+        path: DecodePath,
+        distance: usize,
+        len: usize,
+        out: &mut [u8],
+    ) -> usize {
         let n = len.min(out.len());
         if n == 0 {
             return 0;
@@ -79,9 +93,15 @@ impl Window {
         if distance == 0 || distance > self.available() {
             return 0;
         }
-        if distance >= n {
+        if path == DecodePath::Fast && distance >= n {
             return self.copy_match_bulk(distance, n, out);
         }
+        self.copy_match_bytewise(distance, n, out)
+    }
+
+    /// Byte-by-byte copy, correct for any overlap: each copied byte is
+    /// pushed into the window before the next is read.
+    fn copy_match_bytewise(&mut self, distance: usize, n: usize, out: &mut [u8]) -> usize {
         let mut written = 0;
         for slot in out.iter_mut().take(n) {
             let Some(byte) = self.get_back(distance) else {

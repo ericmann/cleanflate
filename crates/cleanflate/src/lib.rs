@@ -95,6 +95,7 @@
 mod bitreader;
 pub mod checksum;
 mod config;
+mod decode_path;
 pub mod error;
 pub mod gzip;
 mod huffman;
@@ -102,6 +103,8 @@ mod inflate;
 mod options;
 mod stream;
 mod tables;
+#[cfg(feature = "test-hooks")]
+pub mod test_hooks;
 mod window;
 mod zlib;
 

@@ -689,3 +689,26 @@ construction rather than only by the `remaining_allowance` calculation
 in `Decompressor::decompress`) into a defined error the moment the
 buffer genuinely cannot grow further, regardless of which of the two
 independent checks would have caught it.
+
+### D-26: Decode-path switch and a uniform invalid-code rule
+
+RFC: RFC 1951 S3.2.2, S3.2.7
+Decision: Every decoder layer carries a `DecodePath { Fast, Reference }`.
+`Reference` decodes Huffman symbols bit-serially and copies matches byte
+by byte; `Fast` uses the table lookup and the bulk copy. Only the
+`test-hooks` feature exposes a way to request `Reference`, so a default
+build always runs `Fast`. Both decoders share one invalid-code rule: a
+code is `Invalid` as soon as at least one buffered bit shows that it
+matches no code and no longer code can extend it. Per RFC 1951 S3.2.7
+this only happens for the two incomplete distance tables it allows (no
+codes, or one code of length 1), and both are decided after 1 bit. The
+bit-serial walk returns `Invalid` after failing at length `len` when no
+code longer than `len` exists; the table path returns `Invalid` for an
+`Invalid` entry and delegates to the bit-serial walk while fewer than
+`table_bits` bits are buffered.
+Rationale: The differential test needs a path that is simple enough to
+trust. Before this rule the table path could answer `Invalid` while the
+bit-serial path answered `NeedMoreBits` for the same buffer, so the two
+could disagree about the error for a stream that is both truncated and
+invalid. The rule can only turn `Truncated` into `InvalidSymbol` for such
+a stream; whether a stream is accepted or rejected is unchanged.

@@ -202,6 +202,14 @@ impl Huffman {
             }
             index += count as usize;
             first = (first + count) << 1;
+
+            // Uniform invalid-code rule (RFC 1951 S3.2.2, S3.2.7): once no
+            // code of any longer length exists, this prefix can never
+            // become a valid code, so the answer is already known.
+            let longer_exists = self.counts.iter().skip(len as usize + 1).any(|&c| c != 0);
+            if !longer_exists {
+                return Decoded::Invalid;
+            }
         }
 
         Decoded::Invalid
@@ -212,7 +220,10 @@ impl Huffman {
     /// table's lookahead, or whenever fewer than `table_bits` bits are
     /// buffered (DESIGN.md D-16 explains why that fallback keeps this
     /// path correct rather than merely fast). `decode` remains the
-    /// reference implementation the table is checked against.
+    /// reference implementation the table is checked against, and both
+    /// share the uniform invalid-code rule: an `Invalid` table entry is
+    /// `Invalid`, and the bit-serial fallback for a short buffer reports
+    /// `Invalid` after one bit whenever no longer code exists.
     pub(crate) fn decode_table(&self, br: &BitReader) -> Decoded {
         if self.table_bits == 0 || br.available() < self.table_bits {
             return self.decode(br);

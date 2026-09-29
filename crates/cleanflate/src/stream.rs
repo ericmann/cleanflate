@@ -1,6 +1,7 @@
 //! The public streaming (`Decompressor`) and one-shot (`inflate`,
 //! `decompress_with`) APIs (SPEC S3.3).
 
+use crate::decode_path::DecodePath;
 use crate::error::Error;
 use crate::gzip::{GzipDecoder, GzipHeader};
 use crate::inflate::{InflateStatus, Inflater};
@@ -151,16 +152,22 @@ pub struct Decompressor {
 impl Decompressor {
     /// Create a decompressor for `format` with `options`.
     pub fn new(format: Format, options: Options) -> Self {
+        Self::new_with_path(format, options, DecodePath::Fast)
+    }
+
+    /// [`Self::new`] with an explicit decode path.
+    pub(crate) fn new_with_path(format: Format, options: Options, path: DecodePath) -> Self {
         let backend = match format {
             Format::Raw => match &options.dictionary {
-                Some(dict) => Backend::Raw(Inflater::with_dictionary(dict)),
-                None => Backend::Raw(Inflater::new()),
+                Some(dict) => Backend::Raw(Inflater::with_dictionary(dict, path)),
+                None => Backend::Raw(Inflater::new_with_path(path)),
             },
-            Format::Zlib => Backend::Zlib(ZlibDecoder::new(options.dictionary.clone())),
+            Format::Zlib => Backend::Zlib(ZlibDecoder::new(options.dictionary.clone(), path)),
             Format::Gzip => Backend::Gzip(GzipDecoder::new(
                 options.trailing,
                 options.max_gzip_field,
                 options.max_gzip_headers,
+                path,
             )),
         };
         Decompressor {
@@ -347,11 +354,21 @@ pub(crate) fn next_len(len: usize, limit: u64) -> usize {
 /// Decompress `input` as `format` with `options`, growing the output
 /// buffer as needed up to `options.max_output`.
 pub fn decompress_with(format: Format, input: &[u8], options: &Options) -> Result<Decoded, Error> {
+    decompress_with_path(format, input, options, DecodePath::Fast)
+}
+
+/// [`decompress_with`] with an explicit decode path.
+pub(crate) fn decompress_with_path(
+    format: Format,
+    input: &[u8],
+    options: &Options,
+    path: DecodePath,
+) -> Result<Decoded, Error> {
     if input.is_empty() {
         return Err(Error::Truncated);
     }
 
-    let mut decompressor = Decompressor::new(format, options.clone());
+    let mut decompressor = Decompressor::new_with_path(format, options.clone(), path);
     let mut buf: Vec<u8> = Vec::new();
     let mut in_pos = 0usize;
 

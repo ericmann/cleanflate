@@ -3,6 +3,7 @@
 //! Huffman (BTYPE=10) blocks are all implemented.
 
 use crate::bitreader::BitReader;
+use crate::decode_path::DecodePath;
 use crate::error::{Error, HuffmanError};
 use crate::huffman::{Decoded, Huffman, TableKind};
 use crate::tables::{
@@ -68,6 +69,7 @@ enum SymbolOutcome {
 /// one-shot and the streaming public APIs.
 #[derive(Debug, Clone)]
 pub(crate) struct Inflater {
+    path: DecodePath,
     br: BitReader,
     window: Window,
     state: State,
@@ -105,13 +107,21 @@ pub(crate) struct Inflater {
 }
 
 impl Inflater {
-    /// A fresh decoder, ready to read the first block header.
+    /// A fresh production-path decoder, ready to read the first block
+    /// header.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn new() -> Self {
+        Self::new_with_path(DecodePath::Fast)
+    }
+
+    /// A fresh decoder using `path`, ready to read the first block header.
+    pub(crate) fn new_with_path(path: DecodePath) -> Self {
         let fixed_litlen = Huffman::from_lengths(&fixed_litlen_lengths(), TableKind::LitLen)
             .unwrap_or_else(|_| Huffman::empty());
         let fixed_dist = Huffman::from_lengths(&fixed_dist_lengths(), TableKind::Distance)
             .unwrap_or_else(|_| Huffman::empty());
         Inflater {
+            path,
             br: BitReader::new(),
             window: Window::new(),
             state: State::BlockHeader,
@@ -135,10 +145,16 @@ impl Inflater {
     /// only the last 32 KiB), so early back-references can copy from it
     /// (RFC 1950 S2.2's preset dictionary, or a raw-format caller that
     /// supplies one directly).
-    pub(crate) fn with_dictionary(dict: &[u8]) -> Self {
-        let mut inflater = Self::new();
+    pub(crate) fn with_dictionary(dict: &[u8], path: DecodePath) -> Self {
+        let mut inflater = Self::new_with_path(path);
         inflater.window.prefill(dict);
         inflater
+    }
+
+    /// The decode path this decoder was built with.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn path(&self) -> DecodePath {
+        self.path
     }
 
     /// Total bytes produced so far across all calls to `step`.
@@ -158,13 +174,18 @@ impl Inflater {
     /// **not yet consumed** (the caller consumes once it knows the
     /// symbol is actionable).
     fn peek_symbol(
+        path: DecodePath,
         table: &Huffman,
         br: &mut BitReader,
         input: &[u8],
         pos: &mut usize,
     ) -> Option<SymbolOutcome> {
         loop {
-            match table.decode_table(br) {
+            let decoded = match path {
+                DecodePath::Fast => table.decode_table(br),
+                DecodePath::Reference => table.decode(br),
+            };
+            match decoded {
                 Decoded::Symbol { symbol, len } => {
                     return Some(SymbolOutcome::Symbol { symbol, len })
                 }
@@ -378,6 +399,7 @@ impl Inflater {
                     }
 
                     let outcome = match Self::peek_symbol(
+                        self.path,
                         &self.dyn_cl_table,
                         &mut self.br,
                         input,
@@ -457,6 +479,7 @@ impl Inflater {
                 }
                 State::LitLen => {
                     let outcome = match Self::peek_symbol(
+                        self.path,
                         &self.litlen_table,
                         &mut self.br,
                         input,
@@ -520,11 +543,16 @@ impl Inflater {
                     }
                 }
                 State::Dist { len } => {
-                    let outcome =
-                        match Self::peek_symbol(&self.dist_table, &mut self.br, input, &mut pos) {
-                            None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
-                            Some(o) => o,
-                        };
+                    let outcome = match Self::peek_symbol(
+                        self.path,
+                        &self.dist_table,
+                        &mut self.br,
+                        input,
+                        &mut pos,
+                    ) {
+                        None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
+                        Some(o) => o,
+                    };
                     match outcome {
                         SymbolOutcome::Invalid => {
                             let e = Error::InvalidSymbol;
@@ -580,9 +608,12 @@ impl Inflater {
                         return Ok((pos, out_pos, InflateStatus::OutputFull));
                     }
                     let out_slice = output.get_mut(out_pos..).unwrap_or(&mut []);
-                    let written =
-                        self.window
-                            .copy_match(dist as usize, remaining as usize, out_slice);
+                    let written = self.window.copy_match_path(
+                        self.path,
+                        dist as usize,
+                        remaining as usize,
+                        out_slice,
+                    );
                     out_pos += written;
                     self.total_out += written as u64;
                     let new_remaining = remaining.saturating_sub(written as u16);
