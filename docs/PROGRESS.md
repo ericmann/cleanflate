@@ -44,13 +44,13 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P4-04 Fuzz crate and never-panic targets
 - [x] P4-05 Differential fuzz targets against the oracle
 - [x] P4-06 Nightly fuzz workflow and long-run target
-- [ ] P4-07 Benchmark harness and baseline
-- [ ] P4-08 Performance pass 1 — bulk refill and fast decode loop
-- [ ] P4-09 Performance pass 2 — measured hotspot and table-bits tuning
-- [ ] P4-10 M4 acceptance and push
-- [ ] P6-01 Provenance summary generator
-- [ ] P6-02 Build report generator and DESIGN.md audit
-- [ ] P6-03 Freeze and hand-off push
+- [-] P4-07 Benchmark harness and baseline
+- [-] P4-08 Performance pass 1 — bulk refill and fast decode loop
+- [-] P4-09 Performance pass 2 — measured hotspot and table-bits tuning
+- [-] P4-10 M4 acceptance and push
+- [-] P6-01 Provenance summary generator
+- [-] P6-02 Build report generator and DESIGN.md audit
+- [-] P6-03 Freeze and hand-off push
 
 ## Log
 (one entry per task, appended by implement)
@@ -308,3 +308,24 @@ zlib_default_text.bin/zlib_rle_repeat.bin to
 rfc1950_default_text.bin/rfc1950_rle_repeat.bin via git mv.
 make ci (incl. crate-checks, fuzz-check) and foundry_verify both
 green.
+
+### P4-07 — skipped
+SKIPPED: depends on P1-03
+
+### P4-08 — skipped
+SKIPPED: depends on P4-07
+
+### P4-09 — skipped
+SKIPPED: depends on P4-08
+
+### P4-10 — skipped
+SKIPPED: depends on P4-09
+
+### P6-01 — skipped
+SKIPPED: depends on P0-10
+
+### P6-02 — skipped
+SKIPPED: depends on P6-01
+
+### P6-03 — skipped
+SKIPPED: depends on P6-01
