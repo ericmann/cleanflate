@@ -86,7 +86,7 @@ Rules marked [rule:<id>] are enforced by `docs/foundry.json` constraints. The ot
 - C13: Conformance and malformed tests fail, never skip, when files are missing or a selection is empty. The reviewer checks this by reading, since it is a behavioural rule.
 - C14: Every `### D-` block in DESIGN.md has an `RFC:` line. Checked by `make design-check`, a multi-line structural rule.
 - C15: Arithmetic that can overflow on hostile input uses checked, saturating or wrapping ops, because debug builds and fuzzing panic on overflow. The reviewer checks this by reading, and fuzz target (a) checks it too.
-- C16: Checksums used to build test fixtures come from `oracle::ffi`, never from cleanflate, so fixtures stay independent. The reviewer checks this by reading.
+- C16: Checksums used to build test fixtures come from `oracle::ffi`, never from cleanflate, so fixtures stay independent. Enforced for `crates/cleanflate/src/tests/` (except `tests/checksum.rs` itself, which legitimately tests `crate::checksum`) by [rule:no-cleanflate-checksums-in-fixtures]; a value used elsewhere in `crates/oracle/` is checked by the reviewer reading.
 
 ## Commit template
 ```

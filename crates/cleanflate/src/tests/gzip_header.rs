@@ -1,4 +1,3 @@
-use crate::checksum::crc32;
 use crate::error::{ChecksumKind, Error, HeaderError};
 use crate::gzip::GzipHeaderParser;
 
@@ -39,10 +38,16 @@ fn build_header_bytes(
         bytes.push(0);
     }
     if flg & FHCRC != 0 {
-        let hcrc = match hcrc_override {
-            Some(v) => v,
-            None => (crc32(&bytes) & 0xFFFF) as u16,
-        };
+        // C16: never compute this crate's own checksum module's crc32 here
+        // -- every caller that wants a *correct* header CRC (as opposed
+        // to deliberately testing a mismatch) must supply the value as a
+        // literal, computed once with `oracle::ffi::crc32` (see the two
+        // call sites below).
+        let hcrc = hcrc_override.expect(
+            "build_header_bytes: FHCRC is set but no hcrc_override was supplied; \
+             pass the correct header CRC as a literal (computed once with \
+             oracle::ffi::crc32) or an intentionally-wrong one to test a mismatch",
+        );
         bytes.extend_from_slice(&hcrc.to_le_bytes());
     }
     bytes
@@ -77,7 +82,10 @@ fn all_flags_header() {
         Some(b"EXTRA-DATA"),
         Some(b"file.txt"),
         Some(b"a comment"),
-        None,
+        // Computed once with oracle::ffi::crc32 over these exact header
+        // bytes (flg/mtime/xfl/os/extra/name/comment as given above),
+        // masked to the low 16 bits per RFC 1952 S2.3.1's FHCRC field.
+        Some(0x389E),
     );
     let mut parser = GzipHeaderParser::new(65536);
     let (consumed, header) = parser.feed(&bytes).expect("no error");
@@ -127,7 +135,9 @@ fn fname_and_comment_parsed() {
 
 #[test]
 fn fhcrc_ok() {
-    let bytes = build_header_bytes(FHCRC, 0, 0, 0, None, None, None, None);
+    // Computed once with oracle::ffi::crc32 over [0x1f, 0x8b, 8, FHCRC, 0,
+    // 0, 0, 0, 0, 0] (mtime=0, xfl=0, os=0, no extra/name/comment).
+    let bytes = build_header_bytes(FHCRC, 0, 0, 0, None, None, None, Some(0x261D));
     let mut parser = GzipHeaderParser::new(65536);
     let (_consumed, header) = parser.feed(&bytes).expect("no error");
     assert!(header.expect("header complete").header_crc);
@@ -195,7 +205,10 @@ fn byte_by_byte_equals_all_at_once() {
         Some(b"xtra"),
         Some(b"n.txt"),
         Some(b"cmt"),
-        None,
+        // Computed once with oracle::ffi::crc32 over these exact header
+        // bytes (flg/mtime=99/xfl=4/os=3/extra="xtra"/name="n.txt"/
+        // comment="cmt"), masked to the low 16 bits.
+        Some(0x6821),
     );
 
     let mut whole = GzipHeaderParser::new(65536);

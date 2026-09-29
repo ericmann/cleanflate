@@ -1,4 +1,3 @@
-use crate::checksum::adler32;
 use crate::error::{ChecksumKind, Error, HeaderError};
 use crate::options::{Format, Options, TrailingData};
 use crate::stream::{decompress_with, zlib_decompress, Decompressor, Status};
@@ -22,6 +21,28 @@ fn flg_for(cmf: u8, fdict: bool) -> u8 {
     panic!("no valid FCHECK found");
 }
 
+/// C16: never call this crate's own this crate's own checksum module's adler32 in a test
+/// fixture -- that would let a real Adler-32 bug hide (a broken encoder
+/// would satisfy a broken decoder's expectation). Every value here was
+/// computed once with `oracle::ffi::adler32` over the exact bytes named.
+fn known_adler32(data: &[u8]) -> u32 {
+    match data {
+        b"hello" => 0x062C_0215,
+        b"hi" => 0x013B_00D2,
+        b"a" => 0x0062_0062,
+        b"the quick brown fox" => 0x478E_0734,
+        b"a completely different dictionary" => 0xD693_0CED,
+        b"the quick brown fox jumps" => 0x7A06_0983,
+        b"jumps" => 0x0685_0230,
+        b"abc" => 0x024D_0127,
+        b"abcdefgh" => 0x0E00_0325,
+        other => panic!(
+            "known_adler32: no precomputed value for {other:?} -- add one \
+             (compute with oracle::ffi::adler32 once, never this crate's own checksum module)"
+        ),
+    }
+}
+
 /// Wrap a raw DEFLATE `body` (already a valid RFC 1951 stream decoding to
 /// `data`) in a zlib header/trailer (RFC 1950 S2.2), optionally with a
 /// preset dictionary.
@@ -30,10 +51,10 @@ fn zlib_wrap(body: &[u8], data: &[u8], dict: Option<&[u8]>) -> Vec<u8> {
     let flg = flg_for(cmf, dict.is_some());
     let mut out = vec![cmf, flg];
     if let Some(d) = dict {
-        out.extend_from_slice(&adler32(d).to_be_bytes());
+        out.extend_from_slice(&known_adler32(d).to_be_bytes());
     }
     out.extend_from_slice(body);
-    out.extend_from_slice(&adler32(data).to_be_bytes());
+    out.extend_from_slice(&known_adler32(data).to_be_bytes());
     out
 }
 
@@ -109,7 +130,7 @@ fn zlib_fdict_without_dictionary() {
     assert_eq!(
         err,
         Error::PresetDictionaryRequired {
-            dict_id: adler32(dict)
+            dict_id: known_adler32(dict)
         }
     );
 }
@@ -129,8 +150,8 @@ fn zlib_fdict_wrong_dictionary() {
     assert_eq!(
         err,
         Error::DictionaryMismatch {
-            expected: adler32(dict),
-            actual: adler32(wrong_dict),
+            expected: known_adler32(dict),
+            actual: known_adler32(wrong_dict),
         }
     );
 }

@@ -4,7 +4,6 @@
 //! and error stickiness, proven identical across `Format::Raw`,
 //! `Format::Zlib` and `Format::Gzip`.
 
-use crate::checksum::{adler32, crc32};
 use crate::error::Error;
 use crate::options::{Format, Options, TrailingData};
 use crate::stream::{decompress_with, Decompressor, Status};
@@ -21,11 +20,50 @@ fn raw_stream(data: &[u8]) -> Vec<u8> {
     w.finish()
 }
 
+/// C16: never call this crate's own this crate's own checksum module's adler32/crc32 in
+/// a test fixture -- that would let a real checksum bug hide (a broken
+/// encoder would satisfy a broken decoder's expectation). Every value
+/// here was computed once with `oracle::ffi::{adler32,crc32}` over the
+/// exact bytes named.
+fn known_adler32(data: &[u8]) -> u32 {
+    match data {
+        b"the quick brown fox" => 0x478E_0734,
+        b"abcdefghij" => 0x1586_03F8,
+        b"hi" => 0x013B_00D2,
+        b"exact" => 0x063B_0216,
+        b"hello" => 0x062C_0215,
+        b"finish-me" => 0x1204_0381,
+        b"x" => 0x0079_0079,
+        b"one-shot vs streaming" => 0x5804_0821,
+        other => panic!(
+            "known_adler32: no precomputed value for {other:?} -- add one \
+             (compute with oracle::ffi::adler32 once, never this crate's own checksum module)"
+        ),
+    }
+}
+
+fn known_crc32(data: &[u8]) -> u32 {
+    match data {
+        b"the quick brown fox" => 0x91C1_02CA,
+        b"abcdefghij" => 0x3981_703A,
+        b"hi" => 0xD893_2AAC,
+        b"exact" => 0x69D6_AB05,
+        b"hello" => 0x3610_A686,
+        b"finish-me" => 0x6F58_2E47,
+        b"x" => 0x8CDC_1683,
+        b"one-shot vs streaming" => 0xABF8_90B8,
+        other => panic!(
+            "known_crc32: no precomputed value for {other:?} -- add one \
+             (compute with oracle::ffi::crc32 once, never this crate's own checksum module)"
+        ),
+    }
+}
+
 fn zlib_stream(data: &[u8]) -> Vec<u8> {
     let body = raw_stream(data);
     let mut out = vec![0x78u8, 0x9c]; // CM=8/CINFO=7, a valid FCHECK, no FDICT
     out.extend_from_slice(&body);
-    out.extend_from_slice(&adler32(data).to_be_bytes());
+    out.extend_from_slice(&known_adler32(data).to_be_bytes());
     out
 }
 
@@ -33,7 +71,7 @@ fn gzip_stream(data: &[u8]) -> Vec<u8> {
     let body = raw_stream(data);
     let mut out = vec![0x1fu8, 0x8b, 8, 0, 0, 0, 0, 0, 0, 255];
     out.extend_from_slice(&body);
-    out.extend_from_slice(&crc32(data).to_le_bytes());
+    out.extend_from_slice(&known_crc32(data).to_le_bytes());
     out.extend_from_slice(&(data.len() as u32).to_le_bytes());
     out
 }

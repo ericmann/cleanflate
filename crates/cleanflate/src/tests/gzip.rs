@@ -1,4 +1,3 @@
-use crate::checksum::crc32;
 use crate::error::{ChecksumKind, Error};
 use crate::options::{Format, Options, TrailingData};
 use crate::stream::{decompress_with, gzip_decompress, Decompressor, Status};
@@ -24,13 +23,35 @@ fn fixed_literals_body(data: &[u8]) -> Vec<u8> {
     w.finish()
 }
 
+/// C16: never call this crate's own this crate's own checksum module's crc32 in a test
+/// fixture -- that would let a real CRC-32 bug hide (a broken encoder
+/// would satisfy a broken decoder's expectation). Every value here was
+/// computed once with `oracle::ffi::crc32` over the exact bytes named.
+fn known_crc32(data: &[u8]) -> u32 {
+    match data {
+        b"" => 0x0000_0000,
+        b"hello" => 0x3610_A686,
+        b"foo" => 0x8C73_6521,
+        b"bar" => 0x76FF_8CAA,
+        b"hi" => 0xD893_2AAC,
+        b"a" => 0xE8B7_BE43,
+        b"b" => 0x71BE_EFF9,
+        b"ab" => 0x9E83_486D,
+        b"cd" => 0x45D6_8FDA,
+        other => panic!(
+            "known_crc32: no precomputed value for {other:?} -- add one \
+             (compute with oracle::ffi::crc32 once, never this crate's own checksum module)"
+        ),
+    }
+}
+
 /// Wrap raw DEFLATE `body` (already decoding to `data`) as one minimal
 /// gzip member (RFC 1952 S2.3): ID1/ID2/CM/FLG=0/MTIME=0/XFL=0/OS=255,
 /// body, then CRC32+ISIZE (both little-endian).
 fn gzip_member(body: &[u8], data: &[u8]) -> Vec<u8> {
     let mut out = vec![0x1fu8, 0x8b, 8, 0, 0, 0, 0, 0, 0, 255];
     out.extend_from_slice(body);
-    out.extend_from_slice(&crc32(data).to_le_bytes());
+    out.extend_from_slice(&known_crc32(data).to_le_bytes());
     out.extend_from_slice(&(data.len() as u32).to_le_bytes());
     out
 }

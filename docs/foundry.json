@@ -257,6 +257,26 @@
         "pub(crate) struct Inflater {",
         "| cleanflate | 412 MB/s |"
       ]
+    },
+    {
+      "id": "no-cleanflate-checksums-in-fixtures",
+      "description": "C16: cleanflate unit-test fixtures never compute a trailer/header checksum with this crate's own crate::checksum -- that would let a real checksum bug hide (a broken encoder would satisfy a broken decoder's expectation). Every checksum embedded in a fixture is a hard-coded literal computed once with oracle::ffi::{crc32,adler32}, or the test lives in crates/oracle/tests/ instead.",
+      "paths": [
+        "crates/cleanflate/src/tests/"
+      ],
+      "exclude": [
+        "crates/cleanflate/src/tests/checksum.rs"
+      ],
+      "pattern": "\\bcrate::checksum\\b",
+      "shouldMatch": [
+        "use crate::checksum::{adler32, crc32};",
+        "use crate::checksum::crc32;",
+        "use crate::checksum::adler32;"
+      ],
+      "shouldNotMatch": [
+        "use crate::tests::bitwriter::BitWriter;",
+        "use crate::error::Error;"
+      ]
     }
   ]
 }
