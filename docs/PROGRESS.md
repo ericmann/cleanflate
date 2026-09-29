@@ -5,7 +5,7 @@ Started: 2026-09-29T14:33:40.844Z
 ## Tasks
 - [x] P0-01 Workspace scaffold, toolchain pin and Makefile skeleton
 - [x] P0-02 Crate checks script (zero deps, no unsafe token, forbidden path names)
-- [ ] P0-03 Provenance library and PostToolUse logger
+- [x] P0-03 Provenance library and PostToolUse logger
 - [ ] P0-04 PreToolUse clean-room guard
 - [ ] P0-05 Cleanroom self-test and hook wiring
 - [ ] P0-06 commit-msg hook adding stage and task tags
@@ -60,3 +60,6 @@ Workspace scaffold created: Cargo workspace (resolver=3), cleanflate (zero deps,
 
 ### P0-02 — 2c549a6
 tools/ci/crate-checks.sh implements checks (a) deps via cargo metadata (empty .dependencies + no build.rs), (b) unsafe-token via grep -rnw, (c) crate-attrs via literal-line/deny-list grep on lib.rs, (d) forbidden-paths via git ls-files minus crates/cleanflate|oracle grepped case-insensitively. Honors CRATE_CHECKS_ROOT. make tools-check now runs shellcheck on tools/**/*.sh, py_compile + unittest discover (guarded, dirs don't exist yet so no-ops), and every tools/ci/tests/*_test.sh and tools/git-hooks/tests/*_test.sh (also guarded). ci now includes tools-check. Fixture tests use a local path-dependency dummy crate (not crates.io) to keep cargo metadata offline/deterministic.
+
+### P0-03 — 3829bf8
+provenance.py: repo_root/log_path/context/target_of/append/derive_stage/derive_task_id/derive_model/read_hook_input, python3 stdlib only. Entry keys in ENTRY_KEYS order: ts,foundry_stage,task_id,model,tool,target,decision,reason. append() uses O_APPEND|O_CREAT + fcntl.flock, creates provenance/ if missing. log.py reads hook JSON from stdin, appends an allowed entry, always exits 0 (falls back to a logger-error reason entry, then stderr, on any exception). Stage derivation checks agent_type substring match first (planner/implementer/reviewer/summarizer, implementer consults .foundry/state.json round>=1 for fix), then FOUNDRY_STAGE env, then .foundry/implement.lock presence. Task id: FOUNDRY_TASK_ID env for implement/fix, else first "^- \[~\] (\S+)" line under "## Tasks" in docs/PROGRESS.md. Model: hook_input["model"], else CLEANROOM_MODEL, else best-effort transcript tail scan (last 256KiB, newest-first, message.model). All 11 tests pass. Added __pycache__/*.pyc to .gitignore (byproduct of the new python test suite).
