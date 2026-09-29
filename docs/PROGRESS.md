@@ -24,7 +24,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P1-08 Inflater state machine with block headers and stored blocks
 - [x] P1-09 Fixed-Huffman blocks, length/distance decoding and window copies
 - [x] P1-10 Public raw API, Decompressor, output limit, trailing policy and early invariants
-- [ ] P1-11 Conformance harness and M1 conformance test
+- [x] P1-11 Conformance harness and M1 conformance test
 - [ ] P1-12 M1 acceptance and push
 - [x] P2-01 Huffman table validation, including single-code edge cases
 - [x] P2-02 Dynamic block header and code-length alphabet decoding
@@ -312,3 +312,8 @@ Manual check: NOT VERIFIED (human):
 Added crates/oracle/src/manifest.rs (Manifest/ManifestEntry/DictionaryRecord, serde, format:1, seed hex, sorted-by-id, sha256_hex, framing_token/strategy_token) and generate.rs (write_manifest + check, keyed off matrix::entries/inputs_for_tier; check distinguishes file-present-wrong-hash (reported mismatch, never overwritten, like sources-check.sh) from file-missing (regenerated, accepted only if fresh sha matches manifest)). main.rs: `oracle generate --tier quick|full [--write-manifest] [--out DIR]`, hand-parsed. Cargo.toml: added serde+serde_json (Cargo.lock updated). Input::manifest_source() added to inputs.rs; matrix::tier_token made pub(crate). Makefile corpus/corpus-full now real (cargo run --release -p oracle -- generate --tier quick|full).
 Ran `oracle generate --tier full --write-manifest` for real (Silesia present since P0-08): 2674 entries, testdata/MANIFEST.json committed (1.5MB), testdata/generated/ stays gitignored (1.8GB, git status confirms clean). `make corpus` (quick, check mode) twice: 0 generated/2494 skipped both times.
 Tests: crates/oracle/tests/manifest.rs, 4 cases, all pass (~30s, uses an empty corpora_root so quick-tier reduces to synthetic-only for speed). make lint, make crate-checks, make cleanroom-selftest, full make test all green.
+
+### P1-11 — 17faacc
+crates/oracle/src/conformance.rs: testdata_root() (CARGO_MANIFEST_DIR-based, never cwd), load_manifest() (panics naming `make corpus` on missing/unparsable manifest), selected(filter) (tier from CLEANFLATE_TIER env, quick=synthetic+canterbury default, full=+silesia; panics on zero-entry selection), check_entries(entries, decode_fn) -> Report (verifies generated-file sha256 against manifest first -- mismatch/missing says "run make corpus" -- then decodes and compares output sha256 against input_sha256; collects every Failure{id,detail} instead of stopping at the first; on an output mismatch it re-reads/regenerates the original input via the manifest's "input" field to report the first differing byte offset). Report::assert_ok() panics listing every failure.
+Test: crates/oracle/tests/conformance.rs::conformance_raw_stored_and_fixed filters framing=raw, dictionary=None, level==0 or strategy=="fixed", decodes with cleanflate::inflate. 262 entries pass on tier quick (make test), 286 on tier full (make conformance-full, 5.00s release). Makefile: conformance-full now real (corpus-full dep + CLEANFLATE_TIER=full cargo test --release -p oracle --test conformance); heavy now also depends on conformance-full.
+make fmt-check/lint/corpus/test/crate-checks/cleanroom-selftest all green.
