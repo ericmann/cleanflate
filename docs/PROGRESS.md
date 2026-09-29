@@ -5,7 +5,7 @@ Started: 2026-09-29T23:20:38.692Z
 ## Tasks
 - [x] P0-01 Feature flags, Makefile targets and ignore rules
 - [x] P0-02 Guard denies profiling of anything but cleanflate-only binaries
-- [ ] P0-03 design-check enforces the [perf] decision format
+- [x] P0-03 design-check enforces the [perf] decision format
 - [ ] P0-04 Decode-path switch and a uniform invalid-code rule
 - [ ] P0-05 Fast-vs-reference differential test
 - [ ] P0-06 Regression fixture store and repro tooling
@@ -45,3 +45,6 @@ Added features stats/test-hooks (cleanflate), oracle stats feature + dev-dep tes
 
 ### P0-02 — 8860f57
 Guard _check_profile_segment added per-segment; 7 fixtures + selftest lines + unit tests; README section. Interpretation: perf list/--version only as first arg, --help as sole arg. make tools-check and cleanroom-selftest pass.
+
+### P0-03 — 2d7a421
+design-check.sh enforces [perf] blocks (Measurement: line + exact phrase); 4 new test cases; DESIGN.md how-to-read paragraph.
