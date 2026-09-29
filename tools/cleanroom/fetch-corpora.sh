@@ -190,13 +190,13 @@ verify_against_sources() {
         echo "fetch-corpora.sh: $SOURCES_JSON does not exist, nothing to verify" >&2
         return 1
     fi
-    python3 - "$SOURCES_JSON" "$CORPORA_DIR" <<'PYEOF'
+    python3 - "$SOURCES_JSON" "$CORPORA_DIR" "$WHICH" <<'PYEOF'
 import hashlib
 import json
 import os
 import sys
 
-sources_json, corpora_dir = sys.argv[1], sys.argv[2]
+sources_json, corpora_dir, which = sys.argv[1], sys.argv[2], sys.argv[3]
 with open(sources_json) as f:
     data = json.load(f)
 
@@ -211,6 +211,10 @@ def sha256_of(path):
 
 ok = True
 for corpus_name, info in data.items():
+    # Verify only what this run fetched/extracted, so e.g. CI's
+    # `canterbury` step doesn't fail on an absent (never fetched) Silesia.
+    if which != "all" and corpus_name != which:
+        continue
     if info.get("status") != "ok":
         continue
     for entry in info.get("files", []):
