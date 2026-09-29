@@ -13,7 +13,7 @@ Per phase: distinct `[task:P<n>-...]` ids and total commits naming a task in tha
 | P2 | 6 | 12 |
 | P3 | 6 | 12 |
 | P4 | 10 | 21 |
-| P6 | 1 | 2 |
+| P6 | 2 | 4 |
 
 ## Defects caught
 
