@@ -158,10 +158,22 @@ one-shot, level 6:
   bench results.
 
 ### 4.3 Profiling
-- If `perf` (or `cargo flamegraph`) is installed, use it on cleanflate's
-  own symbols (§2.2 applies). At the time of writing, neither is installed
-  on the build machine; the human may install `linux-tools` before the
-  flight (see §8).
+- `perf` 7.1.5 (`/usr/bin/perf`, from Pop!_OS `linux-tools`) and
+  `cargo flamegraph` 0.6.14 are installed on the build machine
+  (`kernel.perf_event_paranoid = 2`: user-space profiling of your own
+  processes works; kernel frames do not, and are not needed). Use them.
+- **Profile cleanflate alone.** M0 adds a cleanflate-only profiling entry
+  point (e.g. `oracle profile --corpus silesia --framing raw --iters N`,
+  or a dedicated example/binary) that decodes pre-compressed inputs with
+  cleanflate only and never calls C zlib in the profiled process, plus a
+  `make profile` target wrapping `perf record`/`cargo flamegraph` around
+  it. Compressed inputs are prepared by a separate, unprofiled step (or
+  read from `testdata/generated/`). Never run `perf` or `cargo flamegraph`
+  on `oracle bench` or anything else that executes C zlib code (§2.2).
+- Build profiled binaries with debug info
+  (`CARGO_PROFILE_RELEASE_DEBUG=true`) so frames name cleanflate's own
+  functions. Profile outputs (`perf.data`, SVGs) are gitignored; the
+  findings they support go into `docs/PERF.md` in words and numbers.
 - Regardless, M0 adds an opt-in cargo feature `stats` to `cleanflate`
   (zero dependencies, compiled out by default, and the default build must
   be bit-for-bit unaffected in behaviour) that counts: symbols decoded via
@@ -239,6 +251,8 @@ to one blocked download).
   one-shot and streaming modes, JSON output, `bench-quick`,
   `bench-compare`).
 - Add the `stats` feature and `oracle bench --stats` (§4.3).
+- Add the cleanflate-only profiling entry point and `make profile`
+  (§4.3), and record a baseline profile's top functions in `docs/PERF.md`.
 - Add the force-slow-path switch and the fast-vs-slow differential test
   (§5), passing trivially until a fast path exists.
 - Measure the baseline twice (noise estimate), record H1–H6 findings in
@@ -316,10 +330,10 @@ to one blocked download).
   this phase starts with fresh state.
 
 ## 8. Human prerequisites (before or during the flight)
-- Optional but recommended: install `perf` (e.g. `linux-tools-generic`
-  plus the kernel-matched package) and allow unprivileged profiling, so
-  §4.3 profiles are available. Record whether it was installed in
-  `provenance/human-interventions.md`.
+- Done 2026-09-30: `perf` 7.1.5 and `cargo flamegraph` 0.6.14 installed
+  by the operator (recorded in `provenance/human-interventions.md`).
+  Agents must not install or upgrade tooling themselves (network is
+  locked down); anything missing is a human request in the handoff.
 - Final `make bench` should run on a quiet machine (no other heavy
   processes; ideally a fixed CPU governor). Record the conditions in
   `docs/PERF.md`.
