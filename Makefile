@@ -66,16 +66,20 @@ fuzz-check:
 FUZZ_SECONDS ?= 60
 FUZZ_TARGETS := never_panic_raw never_panic_rfc1950 never_panic_rfc1952 \
                  diff_oracle_roundtrip diff_oracle_arbitrary
+FUZZ_SMOKE_TARGETS := $(addprefix fuzz-smoke-,$(FUZZ_TARGETS))
 
-fuzz-smoke:
-	@for t in $(FUZZ_TARGETS); do \
-		echo "== fuzz-smoke: $$t =="; \
-		mkdir -p fuzz/corpus/$$t; \
-		cargo +nightly fuzz run $$t fuzz/corpus/$$t fuzz/seeds/$$t -- -max_total_time=$(FUZZ_SECONDS) -rss_limit_mb=2048 || exit 1; \
-	done
+fuzz-smoke-%:
+	@echo "== fuzz-smoke: $* =="
+	@mkdir -p fuzz/corpus/$*
+	cargo +nightly fuzz run $* fuzz/corpus/$* fuzz/seeds/$* -- -max_total_time=$(FUZZ_SECONDS) -rss_limit_mb=2048
 
-fuzz-long:
-	@echo "STUB: fuzz-long arrives in a later phase"
+fuzz-smoke: $(FUZZ_SMOKE_TARGETS)
+
+# Target-specific variable (not a recursive $(MAKE) call) so `make -n
+# fuzz-long` dry-runs all five 3600-second commands instead of make -n's
+# usual "recursive $(MAKE) invocations always execute even under -n" trap.
+fuzz-long: FUZZ_SECONDS := 3600
+fuzz-long: $(FUZZ_SMOKE_TARGETS)
 
 DIVERGENCE_LOG ?= fuzz/artifacts/divergences.jsonl
 
@@ -93,7 +97,7 @@ bomb:
 	cargo test --release -p oracle --test bomb -- --include-ignored
 
 heavy: proptest-10k bomb
-	@echo "STUB: further heavy targets (fuzz-long) arrive in a later phase"
+	@echo "heavy: proptest-10k and bomb passed. fuzz-long (5 x 1h) is not run as part of heavy -- use 'make fuzz-long' or the fuzz-nightly workflow directly."
 
 malformed:
 	cargo run -q -p oracle -- malformed

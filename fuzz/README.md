@@ -73,9 +73,18 @@ every run.
 ```sh
 make fuzz-check   # cargo check --bins (works on stable; no nightly needed)
 make fuzz-smoke   # cargo +nightly fuzz run <target>, FUZZ_SECONDS each (default 60)
+make fuzz-long    # fuzz-smoke with FUZZ_SECONDS=3600 (1 hour per target, 5 hours total)
 ```
 
-`fuzz-smoke` requires a nightly toolchain and `cargo-fuzz`:
+`.github/workflows/fuzz-nightly.yml` runs each of the five targets for
+3600 seconds as a matrix job, on a daily schedule and on manual
+`workflow_dispatch`; it is separate from the regular push/PR CI
+workflow (SPEC S5 M4 acceptance: targets (a) and (b) each need a full
+hour to be a meaningful pass/fail signal, far too slow for per-push
+CI). It uploads `fuzz/artifacts/<target>/` on failure and always
+uploads `diff_oracle_arbitrary`'s divergence log.
+
+`fuzz-smoke`/`fuzz-long` require a nightly toolchain and `cargo-fuzz`:
 
 ```sh
 rustup toolchain install nightly --profile minimal
