@@ -240,6 +240,43 @@ fn gzip_headers_exposed() {
 }
 
 #[test]
+fn gzip_trailing_allow_consumed_exact() {
+    // R1-03: consumed at Done, and trailing_start(), must both land
+    // exactly at the end of the last member -- not overshoot into bytes
+    // that were only peeked while deciding whether a new member follows.
+    for trailer in [&b"XYZ"[..], &[0x1f, b'Z'][..]] {
+        let member = gzip_member(&stored_body(b"hi"), b"hi");
+        let member_len = member.len();
+        let mut bytes = member.clone();
+        bytes.extend_from_slice(trailer);
+
+        let options = Options {
+            trailing: TrailingData::Allow,
+            ..Options::default()
+        };
+        let decoded = decompress_with(Format::Gzip, &bytes, &options).expect("allowed");
+        assert_eq!(
+            decoded.consumed, member_len,
+            "one-shot: trailer={trailer:?}"
+        );
+
+        let mut d = Decompressor::new(Format::Gzip, options);
+        let mut out = [0u8; 64];
+        let progress = d.decompress(&bytes, &mut out).expect("no error");
+        assert_eq!(
+            progress.consumed, member_len,
+            "streaming: trailer={trailer:?}"
+        );
+        assert_eq!(progress.status, Status::Done, "trailer={trailer:?}");
+        assert_eq!(
+            d.trailing_start(),
+            Some(member_len as u64),
+            "trailing_start: trailer={trailer:?}"
+        );
+    }
+}
+
+#[test]
 fn gzip_truncated_in_trailer() {
     let bytes = gzip_member(&stored_body(b"hi"), b"hi");
     // Cut off 2 of the 8 trailer bytes.

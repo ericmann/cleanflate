@@ -190,23 +190,32 @@ fn needs_input_consumes_all_formats() {
 }
 
 #[test]
-fn done_consumed_exact_raw_and_zlib() {
-    // Gzip's own member-boundary lookahead (D-19) makes its exact
-    // `consumed` count at `Done` a format-specific story tested in
-    // tests/gzip.rs; Raw and Zlib have no such ambiguity; `consumed`
-    // must land exactly at the end of the stream with no trailing bytes.
-    for &format in &[Format::Raw, Format::Zlib] {
+fn done_consumed_exact_all_formats() {
+    // R1-03: `consumed` must land exactly at the end of the stream (no
+    // trailing bytes offered) for every format, including Gzip -- whose
+    // own member-boundary lookahead (D-19) must not count a byte it only
+    // peeked while deciding whether another member follows. With no
+    // trailing bytes at all, Gzip's boundary state can never see a
+    // disambiguating byte, so (unlike Raw/Zlib) it only reaches `Done`
+    // via `finish()`, not a `decompress()` call; the loop below handles
+    // both shapes uniformly.
+    for &format in &FORMATS {
         let data = b"exact";
         let bytes = stream_for(format, data);
         let mut d = Decompressor::new(format, Options::default());
         let mut out = [0u8; 64];
         let mut pos = 0usize;
         loop {
+            let input = bytes.get(pos..).unwrap_or(&[]);
+            let input_was_empty = input.is_empty();
             let progress = d
-                .decompress(bytes.get(pos..).unwrap_or(&[]), &mut out)
+                .decompress(input, &mut out)
                 .unwrap_or_else(|e| panic!("{format:?}: decompress failed: {e:?}"));
             pos += progress.consumed;
             if progress.status == Status::Done {
+                break;
+            }
+            if input_was_empty && progress.status == Status::NeedsInput {
                 break;
             }
         }

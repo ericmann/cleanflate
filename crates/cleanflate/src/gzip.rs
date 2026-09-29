@@ -591,27 +591,66 @@ impl GzipDecoder {
                 }
                 GState::Boundary => {
                     if self.boundary_pending.is_empty() {
+                        // R1-03: decide by peeking, not consuming. A
+                        // byte examined here and found not to start a
+                        // new member was never part of any member, so
+                        // it must not be counted as consumed -- only
+                        // `resolve_trailing`'s caller-visible `pos`
+                        // matters, and it must land exactly on
+                        // `boundary_start` for `consumed` to agree with
+                        // `trailing_start()`.
                         self.boundary_start = self.total_in;
-                    }
-                    match input.get(pos) {
-                        None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
-                        Some(&b) => {
-                            pos += 1;
-                            self.total_in += 1;
-                            if self.boundary_pending.is_empty() {
-                                if b == 0x1f {
-                                    self.boundary_pending.push(b);
-                                } else {
-                                    return self.resolve_trailing(pos, out_pos);
-                                }
-                            } else if b == 0x8b {
-                                self.boundary_pending.clear();
+                        let Some(&b) = input.get(pos) else {
+                            return Ok((pos, out_pos, InflateStatus::NeedsInput));
+                        };
+                        if b != 0x1f {
+                            return self.resolve_trailing(pos, out_pos);
+                        }
+                        match input.get(pos + 1) {
+                            Some(&0x8b) => {
+                                pos += 2;
+                                self.total_in += 2;
                                 self.state = GState::MemberHeader(GzipHeaderParser::new_primed(
                                     self.max_gzip_field,
                                 ));
-                            } else {
+                            }
+                            Some(_) => {
+                                // 0x1f not followed by 0x8b: neither
+                                // byte belongs to a member. Leave both
+                                // unconsumed.
                                 return self.resolve_trailing(pos, out_pos);
                             }
+                            None => {
+                                // The one documented exception: a lone
+                                // 0x1f that is the last byte this call
+                                // offers cannot be disambiguated yet, so
+                                // it must be consumed now (the
+                                // NeedsInput-consumes-everything
+                                // invariant) and buffered for the next
+                                // call or `finish()` to resolve.
+                                pos += 1;
+                                self.total_in += 1;
+                                self.boundary_pending.push(b);
+                                return Ok((pos, out_pos, InflateStatus::NeedsInput));
+                            }
+                        }
+                    } else {
+                        let Some(&b) = input.get(pos) else {
+                            return Ok((pos, out_pos, InflateStatus::NeedsInput));
+                        };
+                        if b == 0x8b {
+                            pos += 1;
+                            self.total_in += 1;
+                            self.boundary_pending.clear();
+                            self.state = GState::MemberHeader(GzipHeaderParser::new_primed(
+                                self.max_gzip_field,
+                            ));
+                        } else {
+                            // Not consumed: the buffered 0x1f was
+                            // already counted as consumed by the
+                            // earlier call that had no choice; this new
+                            // byte is only peeked.
+                            return self.resolve_trailing(pos, out_pos);
                         }
                     }
                 }

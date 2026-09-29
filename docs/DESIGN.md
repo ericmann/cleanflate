@@ -460,6 +460,22 @@ clean stop when the boundary is unambiguous and at least one member has
 completed. `GzipHeaderParser::new_primed` skips re-CRCing/re-checking
 the `1f 8b` bytes the boundary logic already consumed and verified
 before committing to a new member.
+Update (R1-03): the original `Boundary` implementation consumed each
+byte it examined (`pos`/`total_in` advanced) before deciding whether it
+started a new member, so `resolve_trailing`'s caller-visible `consumed`
+always overshot `trailing_start()` by however many bytes had been
+examined (1 for an ordinary non-`0x1f` trailing byte, 2 for a `0x1f` not
+followed by `0x8b`). Fixed by deciding at each byte via `input.get(pos)`/
+`input.get(pos + 1)` peeks and only advancing `pos`/`total_in` once a
+byte is confirmed to belong to a member (`0x1f` immediately followed by
+`0x8b`); a byte found not to start a member is left unconsumed entirely,
+so `resolve_trailing` always lands exactly on `boundary_start`. The one
+narrow exception (documented in `lib.rs`'s streaming-contract docs) is a
+lone `0x1f` that is the very last byte a call offers: the
+`NeedsInput`-consumes-everything invariant (D-07) leaves no choice but
+to consume it before a second byte can arrive to disambiguate it, so in
+that specific case a caller's running `consumed` total can end up one
+byte ahead of `trailing_start()`.
 Rationale: Keeping the "is this trailing data" decision inside the
 format that alone has enough information to make it (only gzip's own
 concatenation rule creates the header-magic ambiguity; zlib and raw
@@ -482,7 +498,9 @@ output-limit allowance was exhausted, which is surfaced as
 `Error::OutputLimitExceeded` rather than a `Status`, never both; `Done`
 always means `consumed` stops exactly at the stream's logical end,
 regardless of format-specific trailing-data mechanics (D-19's gzip
-member-boundary lookahead already resolves before `Done` is returned).
+member-boundary lookahead decides by peeking, not consuming, so it
+resolves before `Done` is returned without overshooting -- see D-19's
+R1-03 update for the one lone-`0x1f`-at-end-of-call exception).
 Errors are sticky (checked first, before touching the backend, on every
 call). `finish()` is delegated per backend (`Backend::finish`): Raw/Zlib
 require `is_done()`; Gzip additionally resolves an outstanding
