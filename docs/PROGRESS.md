@@ -37,8 +37,8 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P3-03 Gzip members, trailer, multi-member streams and gzip API
 - [-] P3-04 Zlib and gzip conformance, dictionary and multi-member tests
 - [x] P3-05 Malformed zlib and gzip cases
-- [ ] P3-06 M3 acceptance and push
-- [ ] P4-01 Finalise the streaming contract for all formats
+- [-] P3-06 M3 acceptance and push
+- [x] P4-01 Finalise the streaming contract for all formats
 - [ ] P4-02 Chunking-invariance property test (proptest)
 - [ ] P4-03 Output-limit hardening and zip-bomb fixture
 - [ ] P4-04 Fuzz crate and never-panic targets
@@ -180,3 +180,25 @@ malformed_wrapper_cases (routes rfc1950 rows through zlib_decompress,
 rfc1952 through gzip_decompress); malformed_corpus_is_up_to_date now
 regenerates and byte-compares all three families. make malformed &&
 make ci both pass; foundry_verify green.
+
+### P3-06 — skipped
+SKIPPED: depends on P3-04
+
+### P4-01 — 004c4ac
+Documented the Decompressor streaming contract in crate-level rustdoc
+(Status meanings, sticky errors, finish() semantics per format,
+post-Done trailing-data handling) with a runnable doctest; recorded as
+DESIGN.md D-20 (PLAN.md referenced "D-12" but that id was already
+taken by an earlier decision -- used the next free slot instead).
+Added crates/cleanflate/src/tests/stream_contract.rs: 9 tests proving
+the contract identically across Raw/Zlib/Gzip (1-byte chunking,
+OutputFull/resume, NeedsInput-consumes-all, exact consumed-at-Done for
+Raw/Zlib, trailing-data Reject/Allow, error stickiness, a finish()
+semantics table, zero-length output during header parsing). Found and
+fixed two test-harness bugs while writing these (not decoder bugs):
+loops must not treat NeedsInput-with-no-more-input as terminal for
+Gzip (D-19's boundary lookahead legitimately needs one more byte or a
+finish() call), and must not treat OutputFull-with-no-more-input as
+terminal at all (it just needs a fresh output buffer). Added
+oracle's malformed_one_byte_chunks_same_kind. make ci and
+foundry_verify both green.
