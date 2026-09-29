@@ -1,4 +1,4 @@
-# Hand-built raw-DEFLATE malformed corpus (SPEC S4).
+# Hand-built malformed corpus (SPEC S4): RFC 1951/1950/1952.
 # path	expected	rule
 rfc1951/btype3.bin	BadBlockType	RFC 1951 S3.2.3: BTYPE 11 is reserved
 rfc1951/stored_nlen_mismatch.bin	InvalidStoredLength	RFC 1951 S3.2.4: NLEN must be the one's complement of LEN
@@ -27,3 +27,23 @@ rfc1951/valid_small_fixed.bin	OK	control case: a valid fixed-Huffman block
 sweep:rfc1951/valid_small_fixed.bin	Truncated	every strict prefix of a valid stream is truncated
 rfc1951/valid_small_dynamic.bin	OK	control case: a valid dynamic-Huffman block
 sweep:rfc1951/valid_small_dynamic.bin	Truncated	every strict prefix of a valid stream is truncated
+rfc1950/bad_fcheck.bin	BadHeader	RFC 1950 S2.2: (CMF*256+FLG) must be a multiple of 31
+rfc1950/cm_7.bin	BadHeader	RFC 1950 S2.2: CM must be 8 (deflate)
+rfc1950/cinfo_8.bin	BadHeader	RFC 1950 S2.2: CINFO must not exceed 7
+rfc1950/fdict_no_dictionary.bin	PresetDictionaryRequired	RFC 1950 S2.2: FDICT set requires a preset dictionary
+rfc1950/adler_mismatch.bin	ChecksumMismatch	RFC 1950 S2.3: Adler-32 trailer must match the decoded data
+rfc1950/trailing_byte.bin	TrailingData	SPEC S3.3: trailing data is rejected by default
+rfc1950/valid_small.bin	OK	control case: a valid minimal zlib stream
+sweep:rfc1950/valid_small.bin	Truncated	every strict prefix of a valid stream is truncated
+rfc1952/bad_magic.bin	BadHeader	RFC 1952 S2.3.1: ID1/ID2 must be 1f 8b
+rfc1952/cm_7.bin	BadHeader	RFC 1952 S2.3.1: CM must be 8 (deflate)
+rfc1952/reserved_flag_bit5.bin	BadHeader	RFC 1952 S2.3.1: FLG bits 5-7 are reserved and must be zero
+rfc1952/reserved_flag_bit7.bin	BadHeader	RFC 1952 S2.3.1: FLG bits 5-7 are reserved and must be zero
+rfc1952/fhcrc_mismatch.bin	ChecksumMismatch	RFC 1952 S2.3.1: FHCRC must match the header CRC-32's low 16 bits
+rfc1952/crc32_mismatch.bin	ChecksumMismatch	RFC 1952 S2.3.1: member CRC32 must match the decoded data
+rfc1952/isize_mismatch.bin	ChecksumMismatch	RFC 1952 S2.3.1: ISIZE must match the decoded length mod 2^32
+rfc1952/trailing_garbage.bin	TrailingData	SPEC S3.3: trailing data is rejected by default
+rfc1952/second_member_bad_cm.bin	BadHeader	RFC 1952 S2.2: each concatenated member's header is validated independently
+rfc1952/all_flags_valid.bin	OK	control case: a valid gzip member using every optional header field
+sweep:rfc1952/all_flags_valid.bin	Truncated	every strict prefix of a valid stream is truncated
+rfc1952/two_members_valid.bin	OK	RFC 1952 S2.2: members are simply concatenated

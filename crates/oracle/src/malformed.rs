@@ -9,6 +9,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::ffi;
+
 /// LSB-first resumable-style bit writer (RFC 1951 S3.1.1), the inverse
 /// of the decoder's bit-packing rules.
 pub struct BitWriter {
@@ -447,6 +449,29 @@ pub fn emit_dynamic_header_raw(
     }
 }
 
+/// Which RFC (and therefore which corpus subdirectory and decoder entry
+/// point) a [`Case`] belongs to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Family {
+    /// Raw RFC 1951 DEFLATE, decoded with `cleanflate::inflate`.
+    Rfc1951,
+    /// RFC 1950 zlib, decoded with `cleanflate::zlib_decompress`.
+    Rfc1950,
+    /// RFC 1952 gzip, decoded with `cleanflate::gzip_decompress`.
+    Rfc1952,
+}
+
+impl Family {
+    /// The corpus subdirectory this family's fixtures live under.
+    pub fn dir_name(self) -> &'static str {
+        match self {
+            Family::Rfc1951 => "rfc1951",
+            Family::Rfc1950 => "rfc1950",
+            Family::Rfc1952 => "rfc1952",
+        }
+    }
+}
+
 /// One malformed (or deliberately valid) fixture.
 pub struct Case {
     pub name: &'static str,
@@ -456,6 +481,8 @@ pub struct Case {
     /// Whether this case's file should also get a `sweep:` row asserting
     /// every strict prefix fails with `Truncated`.
     pub sweep: bool,
+    /// Which RFC/decoder this case targets.
+    pub family: Family,
 }
 
 /// Build every named raw-DEFLATE malformed (and control-valid) case.
@@ -472,6 +499,7 @@ pub fn cases() -> Vec<Case> {
             expected: "BadBlockType",
             rule: "RFC 1951 S3.2.3: BTYPE 11 is reserved",
             sweep: false,
+            family: Family::Rfc1951,
         });
     }
 
@@ -490,6 +518,7 @@ pub fn cases() -> Vec<Case> {
             expected: "InvalidStoredLength",
             rule: "RFC 1951 S3.2.4: NLEN must be the one's complement of LEN",
             sweep: false,
+            family: Family::Rfc1951,
         });
     }
 
@@ -504,6 +533,7 @@ pub fn cases() -> Vec<Case> {
             expected: "InvalidSymbol",
             rule: "RFC 1951 S3.2.6: litlen codes 286/287 never occur in real data",
             sweep: false,
+            family: Family::Rfc1951,
         });
     }
 
@@ -522,6 +552,7 @@ pub fn cases() -> Vec<Case> {
             expected: "InvalidSymbol",
             rule: "RFC 1951 S3.2.6: distance codes 30/31 never occur in real data",
             sweep: false,
+            family: Family::Rfc1951,
         });
     }
 
@@ -537,6 +568,7 @@ pub fn cases() -> Vec<Case> {
             expected: "InvalidDistance",
             rule: "RFC 1951 S3.2.5: a distance cannot refer past the start of output",
             sweep: false,
+            family: Family::Rfc1951,
         });
     }
 
@@ -554,6 +586,7 @@ pub fn cases() -> Vec<Case> {
             expected: "InvalidDistance",
             rule: "RFC 1951 S3.2.5: distance exceeds bytes produced so far",
             sweep: false,
+            family: Family::Rfc1951,
         });
     }
 
@@ -570,6 +603,7 @@ pub fn cases() -> Vec<Case> {
             expected: "OK",
             rule: "RFC 1951 S3.2.5: code 284 extra value 31 decodes to length 258",
             sweep: false,
+            family: Family::Rfc1951,
         });
     }
 
@@ -583,6 +617,7 @@ pub fn cases() -> Vec<Case> {
             expected: "TrailingData",
             rule: "SPEC S3.3: trailing data is rejected by default",
             sweep: false,
+            family: Family::Rfc1951,
         });
     }
 
@@ -597,6 +632,7 @@ pub fn cases() -> Vec<Case> {
             expected: "InvalidHuffmanTable",
             rule: "RFC 1951 S3.2.7: HLIT+257 must not exceed 286",
             sweep: false,
+            family: Family::Rfc1951,
         });
     }
 
@@ -615,6 +651,7 @@ pub fn cases() -> Vec<Case> {
             expected: "InvalidHuffmanTable",
             rule: "RFC 1951 S3.2.2: code-length alphabet table is over-subscribed",
             sweep: false,
+            family: Family::Rfc1951,
         });
     }
 
@@ -630,6 +667,7 @@ pub fn cases() -> Vec<Case> {
             expected: "InvalidHuffmanTable",
             rule: "RFC 1951 S3.2.2: code-length alphabet table is incomplete",
             sweep: false,
+            family: Family::Rfc1951,
         });
     }
 
@@ -659,6 +697,7 @@ pub fn cases() -> Vec<Case> {
             expected: "InvalidHuffmanTable",
             rule: "RFC 1951 S3.2.2: literal/length table is over-subscribed",
             sweep: false,
+            family: Family::Rfc1951,
         });
     }
 
@@ -686,6 +725,7 @@ pub fn cases() -> Vec<Case> {
             expected: "InvalidHuffmanTable",
             rule: "RFC 1951 S3.2.2: literal/length table is incomplete (no exception applies)",
             sweep: false,
+            family: Family::Rfc1951,
         });
     }
 
@@ -709,6 +749,7 @@ pub fn cases() -> Vec<Case> {
             expected: "InvalidHuffmanTable",
             rule: "RFC 1951 S3.2.2: distance table is over-subscribed",
             sweep: false,
+            family: Family::Rfc1951,
         });
     }
 
@@ -734,6 +775,7 @@ pub fn cases() -> Vec<Case> {
             expected: "InvalidHuffmanTable",
             rule: "RFC 1951 S3.2.7: two distance codes still must form a complete table",
             sweep: false,
+            family: Family::Rfc1951,
         });
     }
 
@@ -753,6 +795,7 @@ pub fn cases() -> Vec<Case> {
             expected: "InvalidHuffmanTable",
             rule: "RFC 1951 S3.2.7: repeat code 16 with no previous length to repeat",
             sweep: false,
+            family: Family::Rfc1951,
         });
     }
 
@@ -777,6 +820,7 @@ pub fn cases() -> Vec<Case> {
             expected: "InvalidHuffmanTable",
             rule: "RFC 1951 S3.2.7: a repeat run must not exceed HLIT+HDIST lengths",
             sweep: false,
+            family: Family::Rfc1951,
         });
     }
 
@@ -801,6 +845,7 @@ pub fn cases() -> Vec<Case> {
             expected: "InvalidHuffmanTable",
             rule: "RFC 1951 S3.2.3: every block needs an end-of-block code",
             sweep: false,
+            family: Family::Rfc1951,
         });
     }
 
@@ -829,6 +874,7 @@ pub fn cases() -> Vec<Case> {
             expected: "InvalidSymbol",
             rule: "RFC 1951 S3.2.7: a length code with an empty distance table has no valid decode",
             sweep: false,
+            family: Family::Rfc1951,
         });
     }
 
@@ -857,6 +903,7 @@ pub fn cases() -> Vec<Case> {
             expected: "OK",
             rule: "RFC 1951 S3.2.7: a single distance code (length 1) is valid",
             sweep: false,
+            family: Family::Rfc1951,
         });
     }
 
@@ -881,6 +928,7 @@ pub fn cases() -> Vec<Case> {
             expected: "OK",
             rule: "RFC 1951 S3.2.7: no distance codes at all is valid for an all-literal block",
             sweep: false,
+            family: Family::Rfc1951,
         });
     }
 
@@ -893,6 +941,7 @@ pub fn cases() -> Vec<Case> {
             expected: "OK",
             rule: "control case: a valid stored block",
             sweep: true,
+            family: Family::Rfc1951,
         });
     }
 
@@ -911,6 +960,7 @@ pub fn cases() -> Vec<Case> {
             expected: "OK",
             rule: "control case: a valid fixed-Huffman block",
             sweep: true,
+            family: Family::Rfc1951,
         });
     }
 
@@ -940,6 +990,383 @@ pub fn cases() -> Vec<Case> {
             expected: "OK",
             rule: "control case: a valid dynamic-Huffman block",
             sweep: true,
+            family: Family::Rfc1951,
+        });
+    }
+
+    cases
+}
+
+// --- RFC 1950 (zlib) and RFC 1952 (gzip) wrapper fixtures ------------
+//
+// These reuse the RFC-1951-only builders above for the raw DEFLATE body
+// but build the zlib/gzip framing entirely independently, and take every
+// checksum from `oracle::ffi` (C zlib), never from `cleanflate` itself
+// (SPEC S4 / C16).
+
+/// Find an FLG byte (given FDICT) making `(cmf*256 + flg) % 31 == 0`
+/// (RFC 1950 S2.2), with FLEVEL left at 0.
+fn zlib_flg_for(cmf: u8, fdict: bool) -> u8 {
+    for fcheck in 0u8..32 {
+        let flg = fcheck | ((fdict as u8) << 5);
+        if (cmf as u32 * 256 + flg as u32) % 31 == 0 {
+            return flg;
+        }
+    }
+    unreachable!("some FCHECK value always satisfies the mod-31 constraint")
+}
+
+/// Wrap raw DEFLATE `body` (already decoding to `data`) in an RFC 1950
+/// zlib header/trailer: CMF (CM=8, CINFO=7) / FLG / optional DICTID /
+/// body / Adler-32 trailer, all big-endian per RFC 1950 S2.2/S2.3.
+fn zlib_wrap(body: &[u8], data: &[u8], dict: Option<&[u8]>) -> Vec<u8> {
+    let cmf = 0x78u8; // CM=8, CINFO=7
+    let flg = zlib_flg_for(cmf, dict.is_some());
+    let mut out = vec![cmf, flg];
+    if let Some(d) = dict {
+        out.extend_from_slice(&ffi::adler32(d).to_be_bytes());
+    }
+    out.extend_from_slice(body);
+    out.extend_from_slice(&ffi::adler32(data).to_be_bytes());
+    out
+}
+
+const GZ_FTEXT: u8 = 0x01;
+const GZ_FHCRC: u8 = 0x02;
+#[allow(dead_code)]
+const GZ_FEXTRA: u8 = 0x04;
+#[allow(dead_code)]
+const GZ_FNAME: u8 = 0x08;
+#[allow(dead_code)]
+const GZ_FCOMMENT: u8 = 0x10;
+
+/// Build one RFC 1952 gzip member: ID1/ID2/CM/FLG/MTIME/XFL/OS, no
+/// optional fields, `body` (already decoding to `data`), then
+/// CRC32+ISIZE (little-endian, RFC 1952 S2.3/S2.3.1).
+#[allow(clippy::too_many_arguments)]
+fn gzip_member_bytes(
+    cm: u8,
+    flg: u8,
+    mtime: u32,
+    xfl: u8,
+    os: u8,
+    body: &[u8],
+    data: &[u8],
+    hcrc_override: Option<u16>,
+) -> Vec<u8> {
+    let mut header = vec![0x1fu8, 0x8b, cm, flg];
+    header.extend_from_slice(&mtime.to_le_bytes());
+    header.push(xfl);
+    header.push(os);
+    if flg & GZ_FHCRC != 0 {
+        let hcrc = hcrc_override.unwrap_or_else(|| (ffi::crc32(&header) & 0xFFFF) as u16);
+        header.extend_from_slice(&hcrc.to_le_bytes());
+    }
+    let mut out = header;
+    out.extend_from_slice(body);
+    out.extend_from_slice(&ffi::crc32(data).to_le_bytes());
+    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    out
+}
+
+/// A minimal, well-formed gzip member wrapping `body`/`data` (FLG=0,
+/// MTIME=0, XFL=0, OS=255).
+fn gzip_minimal_member(body: &[u8], data: &[u8]) -> Vec<u8> {
+    gzip_member_bytes(8, 0, 0, 0, 255, body, data, None)
+}
+
+/// Build every named RFC 1950 (zlib) malformed (and control-valid) case.
+pub fn rfc1950_cases() -> Vec<Case> {
+    let mut cases = Vec::new();
+
+    // bad_fcheck: flip a FCHECK bit so the mod-31 check fails.
+    {
+        let body = stored_block(true, b"hi");
+        let mut bytes = zlib_wrap(&body, b"hi", None);
+        bytes[1] ^= 0x01;
+        cases.push(Case {
+            name: "bad_fcheck",
+            bytes,
+            expected: "BadHeader",
+            rule: "RFC 1950 S2.2: (CMF*256+FLG) must be a multiple of 31",
+            sweep: false,
+            family: Family::Rfc1950,
+        });
+    }
+
+    // cm_7: CM=7 in the low nibble of CMF (not 8).
+    {
+        let cmf = 0x77u8; // CM=7, CINFO=7
+        let flg = zlib_flg_for(cmf, false);
+        cases.push(Case {
+            name: "cm_7",
+            bytes: vec![cmf, flg],
+            expected: "BadHeader",
+            rule: "RFC 1950 S2.2: CM must be 8 (deflate)",
+            sweep: false,
+            family: Family::Rfc1950,
+        });
+    }
+
+    // cinfo_8: CINFO=8 (> 7) in the high nibble of CMF.
+    {
+        let cmf = 0x88u8; // CM=8, CINFO=8
+        let flg = zlib_flg_for(cmf, false);
+        cases.push(Case {
+            name: "cinfo_8",
+            bytes: vec![cmf, flg],
+            expected: "BadHeader",
+            rule: "RFC 1950 S2.2: CINFO must not exceed 7",
+            sweep: false,
+            family: Family::Rfc1950,
+        });
+    }
+
+    // fdict_no_dictionary: FDICT set, but no dictionary is ever supplied.
+    {
+        let body = stored_block(true, b"hi");
+        let bytes = zlib_wrap(&body, b"hi", Some(b"some dictionary"));
+        cases.push(Case {
+            name: "fdict_no_dictionary",
+            bytes,
+            expected: "PresetDictionaryRequired",
+            rule: "RFC 1950 S2.2: FDICT set requires a preset dictionary",
+            sweep: false,
+            family: Family::Rfc1950,
+        });
+    }
+
+    // adler_mismatch: corrupt the trailer.
+    {
+        let body = stored_block(true, b"hello");
+        let mut bytes = zlib_wrap(&body, b"hello", None);
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xFF;
+        cases.push(Case {
+            name: "adler_mismatch",
+            bytes,
+            expected: "ChecksumMismatch",
+            rule: "RFC 1950 S2.3: Adler-32 trailer must match the decoded data",
+            sweep: false,
+            family: Family::Rfc1950,
+        });
+    }
+
+    // trailing_byte: TrailingData (default Reject).
+    {
+        let body = stored_block(true, b"hi");
+        let mut bytes = zlib_wrap(&body, b"hi", None);
+        bytes.push(b'X');
+        cases.push(Case {
+            name: "trailing_byte",
+            bytes,
+            expected: "TrailingData",
+            rule: "SPEC S3.3: trailing data is rejected by default",
+            sweep: false,
+            family: Family::Rfc1950,
+        });
+    }
+
+    // valid_small: OK, swept for Truncated on every prefix.
+    {
+        let body = stored_block(true, b"the quick fox");
+        let bytes = zlib_wrap(&body, b"the quick fox", None);
+        cases.push(Case {
+            name: "valid_small",
+            bytes,
+            expected: "OK",
+            rule: "control case: a valid minimal zlib stream",
+            sweep: true,
+            family: Family::Rfc1950,
+        });
+    }
+
+    cases
+}
+
+/// Build every named RFC 1952 (gzip) malformed (and control-valid) case.
+pub fn rfc1952_cases() -> Vec<Case> {
+    let mut cases = Vec::new();
+
+    // bad_magic: ID1 wrong.
+    {
+        let body = stored_block(true, b"hi");
+        let mut bytes = gzip_minimal_member(&body, b"hi");
+        bytes[0] = 0x00;
+        cases.push(Case {
+            name: "bad_magic",
+            bytes,
+            expected: "BadHeader",
+            rule: "RFC 1952 S2.3.1: ID1/ID2 must be 1f 8b",
+            sweep: false,
+            family: Family::Rfc1952,
+        });
+    }
+
+    // cm_7: CM=7, not 8.
+    {
+        let body = stored_block(true, b"hi");
+        let bytes = gzip_member_bytes(7, 0, 0, 0, 255, &body, b"hi", None);
+        cases.push(Case {
+            name: "cm_7",
+            bytes,
+            expected: "BadHeader",
+            rule: "RFC 1952 S2.3.1: CM must be 8 (deflate)",
+            sweep: false,
+            family: Family::Rfc1952,
+        });
+    }
+
+    // reserved_flag_bit5.
+    {
+        let body = stored_block(true, b"hi");
+        let bytes = gzip_member_bytes(8, 0x20, 0, 0, 255, &body, b"hi", None);
+        cases.push(Case {
+            name: "reserved_flag_bit5",
+            bytes,
+            expected: "BadHeader",
+            rule: "RFC 1952 S2.3.1: FLG bits 5-7 are reserved and must be zero",
+            sweep: false,
+            family: Family::Rfc1952,
+        });
+    }
+
+    // reserved_flag_bit7.
+    {
+        let body = stored_block(true, b"hi");
+        let bytes = gzip_member_bytes(8, 0x80, 0, 0, 255, &body, b"hi", None);
+        cases.push(Case {
+            name: "reserved_flag_bit7",
+            bytes,
+            expected: "BadHeader",
+            rule: "RFC 1952 S2.3.1: FLG bits 5-7 are reserved and must be zero",
+            sweep: false,
+            family: Family::Rfc1952,
+        });
+    }
+
+    // fhcrc_mismatch: FHCRC set, but the stored CRC16 is wrong.
+    {
+        let body = stored_block(true, b"hi");
+        let bytes = gzip_member_bytes(8, GZ_FHCRC, 0, 0, 255, &body, b"hi", Some(0xFFFF));
+        cases.push(Case {
+            name: "fhcrc_mismatch",
+            bytes,
+            expected: "ChecksumMismatch",
+            rule: "RFC 1952 S2.3.1: FHCRC must match the header CRC-32's low 16 bits",
+            sweep: false,
+            family: Family::Rfc1952,
+        });
+    }
+
+    // crc32_mismatch: corrupt a trailer CRC32 byte.
+    {
+        let body = stored_block(true, b"hi");
+        let mut bytes = gzip_minimal_member(&body, b"hi");
+        let len = bytes.len();
+        bytes[len - 8] ^= 0xFF;
+        cases.push(Case {
+            name: "crc32_mismatch",
+            bytes,
+            expected: "ChecksumMismatch",
+            rule: "RFC 1952 S2.3.1: member CRC32 must match the decoded data",
+            sweep: false,
+            family: Family::Rfc1952,
+        });
+    }
+
+    // isize_mismatch: corrupt a trailer ISIZE byte.
+    {
+        let body = stored_block(true, b"hi");
+        let mut bytes = gzip_minimal_member(&body, b"hi");
+        let len = bytes.len();
+        bytes[len - 1] ^= 0xFF;
+        cases.push(Case {
+            name: "isize_mismatch",
+            bytes,
+            expected: "ChecksumMismatch",
+            rule: "RFC 1952 S2.3.1: ISIZE must match the decoded length mod 2^32",
+            sweep: false,
+            family: Family::Rfc1952,
+        });
+    }
+
+    // trailing_garbage: bytes after a complete member that are not
+    // another member's magic.
+    {
+        let body = stored_block(true, b"hi");
+        let mut bytes = gzip_minimal_member(&body, b"hi");
+        bytes.extend_from_slice(&[0, 0, 0, 0]);
+        cases.push(Case {
+            name: "trailing_garbage",
+            bytes,
+            expected: "TrailingData",
+            rule: "SPEC S3.3: trailing data is rejected by default",
+            sweep: false,
+            family: Family::Rfc1952,
+        });
+    }
+
+    // second_member_bad_cm: a valid first member, then a second member
+    // whose header fails validation (CM=7).
+    {
+        let body = stored_block(true, b"hi");
+        let mut bytes = gzip_minimal_member(&body, b"hi");
+        bytes.extend_from_slice(&gzip_member_bytes(7, 0, 0, 0, 255, &body, b"hi", None));
+        cases.push(Case {
+            name: "second_member_bad_cm",
+            bytes,
+            expected: "BadHeader",
+            rule: "RFC 1952 S2.2: each concatenated member's header is validated independently",
+            sweep: false,
+            family: Family::Rfc1952,
+        });
+    }
+
+    // all_flags_valid: OK, every optional field present, swept.
+    {
+        let body = stored_block(true, b"hi");
+        let flg = GZ_FTEXT | GZ_FHCRC | GZ_FEXTRA | GZ_FNAME | GZ_FCOMMENT;
+        let mut header = vec![0x1fu8, 0x8b, 8, flg];
+        header.extend_from_slice(&123456u32.to_le_bytes());
+        header.push(2);
+        header.push(3);
+        let extra = b"EXTR";
+        header.extend_from_slice(&(extra.len() as u16).to_le_bytes());
+        header.extend_from_slice(extra);
+        header.extend_from_slice(b"file.txt");
+        header.push(0);
+        header.extend_from_slice(b"a comment");
+        header.push(0);
+        let hcrc = (ffi::crc32(&header) & 0xFFFF) as u16;
+        header.extend_from_slice(&hcrc.to_le_bytes());
+        let mut bytes = header;
+        bytes.extend_from_slice(&body);
+        bytes.extend_from_slice(&ffi::crc32(b"hi").to_le_bytes());
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        cases.push(Case {
+            name: "all_flags_valid",
+            bytes,
+            expected: "OK",
+            rule: "control case: a valid gzip member using every optional header field",
+            sweep: true,
+            family: Family::Rfc1952,
+        });
+    }
+
+    // two_members_valid: OK, two concatenated members.
+    {
+        let body_a = stored_block(true, b"foo");
+        let body_b = stored_block(true, b"bar");
+        let mut bytes = gzip_minimal_member(&body_a, b"foo");
+        bytes.extend_from_slice(&gzip_minimal_member(&body_b, b"bar"));
+        cases.push(Case {
+            name: "two_members_valid",
+            bytes,
+            expected: "OK",
+            rule: "RFC 1952 S2.2: members are simply concatenated",
+            sweep: false,
+            family: Family::Rfc1952,
         });
     }
 
