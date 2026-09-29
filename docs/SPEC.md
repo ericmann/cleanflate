@@ -1,144 +1,341 @@
-# SPEC: cleanflate — clean-room DEFLATE/zlib/gzip decompressor in safe Rust
+# SPEC: cleanflate phase 2 — clean-room performance pass
 
-> Drop into `docs/SPEC.md` of a fresh repo. Run with `/go-flight`.
-> Companion spec: `cleanflate-bench-SPEC.md` (runs only after this build is tagged).
+> Phase 2 of cleanflate. Phase 1 (the correct, safe, clean-room decoder)
+> is merged to `main` and archived under `docs/phase-1/` (its SPEC, PLAN,
+> PROGRESS, REVIEW, SUMMARY, HANDOFF, BUILD_REPORT, foundry.json, Foundry
+> state/feedback, and a copy of its PERF.md and provenance summary).
+> Run with `/foundry:go-flight` from the `feature/perf` branch.
 
 ## 1. Purpose
 
-Produce a memory-safe, zero-dependency Rust implementation of DEFLATE decompression (RFC 1951) with zlib (RFC 1950) and gzip (RFC 1952) wrappers, built **clean-room from the RFCs alone** by an AI-assisted pipeline, with a machine-generated provenance record proving what the pipeline did and did not consult.
+Phase 1 shipped a decoder that is byte-identical to C zlib on every
+conformance and fuzz corpus, but runs at **25.6% (raw) / 27.3% (zlib)** of C
+zlib's single-thread decompression throughput on Silesia, against a 70%
+target (`docs/phase-1/PERF.md`). Phase 2 closes that gap **without giving up
+anything phase 1 guaranteed**, and without breaking the clean-room record.
 
-This project is the demonstration artifact for a white paper on AI-assisted clean-room reimplementation of legacy software. The artifact's credibility depends on three properties, in priority order:
+Priorities, unchanged from phase 1 and in this order:
 
-1. **Provenance** — an auditable record that no existing implementation source was read.
-2. **Correctness** — byte-identical output to reference zlib across conformance and fuzz corpora.
-3. **Safety** — `#![forbid(unsafe_code)]`, no panics on any input, bounded memory.
-
-Performance is measured and reported but is a secondary goal.
+1. **Provenance** — the clean-room record stays intact; no existing DEFLATE
+   implementation's source, internals or implementation-specific write-ups
+   are consulted to make it faster (§2).
+2. **Correctness** — byte-identical output, identical accept/reject
+   behaviour, identical streaming semantics. A faster decoder that is wrong
+   on one stream is a regression, not a trade-off.
+3. **Safety** — `#![forbid(unsafe_code)]`, zero runtime dependencies, no
+   reachable panics, bounded memory.
+4. **Performance** — the goal of this phase, but ranked below 1–3. When they
+   conflict, performance loses and the negative result is recorded.
 
 ## 2. Clean-room rules (NON-NEGOTIABLE)
 
-These rules apply to every Foundry stage (plan, implement, review, summarize).
+Phase 1's §2 (`docs/phase-1/SPEC.md` §2) applies **in full**: the permitted
+and forbidden inputs, the mechanical guard and logger in `tools/cleanroom/`,
+the post-M0 lockdown (still in force — no WebFetch, no network), and the
+commit-tag discipline. The guard, logger and lockdown flag are already
+built; phase 2 does not relax them. The provenance log continues from phase
+1 into the same `provenance/tool-log.jsonl`.
 
-### 2.1 Permitted inputs
-- This SPEC and anything under `docs/` authored by the human or produced by M0.
-- RFC 1950, 1951, 1952 plain text, vendored into `docs/rfc/` during M0.
-- Rust std documentation and general Rust language knowledge.
-- The **public API surface** (function signatures, docs) of `libz-sys`, used only inside `crates/oracle` (see §4).
-- Test corpora downloaded in M0 (Canterbury, Silesia) as opaque binary data.
+### 2.1 Permitted inputs for performance work
+- This SPEC, everything under `docs/` (including `docs/phase-1/`, especially
+  `PERF.md`, `DESIGN.md` and the phase-1 REVIEW/SUMMARY), and `docs/rfc/`.
+- cleanflate's own source, tests and history in this repo.
+- **Measurements of cleanflate itself**: benchmarks, profiles (`perf`,
+  `cargo flamegraph` or equivalent, if installed), instruction counts,
+  in-crate counters (§4.3), and generated assembly of cleanflate's own code
+  (`cargo rustc --release -- --emit asm`, or equivalent).
+- **C zlib as a black-box stopwatch only**: the oracle may time C zlib
+  decompressing the same input, to compute the throughput ratio. Nothing
+  about *how* C zlib achieves its speed may be observed.
+- **General, implementation-independent performance knowledge**, applied
+  from first principles to this code base. Examples of what counts:
+  - keep a wide bit buffer topped up in bulk (whole bytes or words at a
+    time) instead of refilling one byte per need;
+  - look up Huffman symbols in tables indexed by the next N bits, with a
+    second-level table for longer codes, instead of walking one bit at a
+    time;
+  - put the common case in a tight inner loop guarded by "enough input and
+    output remain" margins, and fall back to the careful general path near
+    buffer edges;
+  - write output once, and treat already-written output as match history
+    instead of maintaining a second copy;
+  - copy non-overlapping matches as slices, and expand overlapping,
+    short-distance matches by copying the growing pattern in larger steps;
+  - avoid per-byte bounds checks and per-iteration clones in hot loops,
+    within safe Rust (slices, `chunks_exact`, iterators, `copy_within`,
+    hoisted length checks the optimiser can prove);
+  - compute CRCs a word at a time from multiple precomputed tables derived
+    from the polynomial;
+  - size one-shot output buffers from available hints to avoid repeated
+    growth copies.
 
-### 2.2 Forbidden inputs
-Stages MUST NOT read, fetch, search for, or paste source code or implementation-level docs from any existing DEFLATE/zlib implementation, including but not limited to:
-- zlib (madler/zlib, zlib.net source), zlib-ng
-- zlib-rs / libz-rs-sys (Trifecta Tech), miniz, miniz_oxide, flate2 internals
-- libdeflate, Go `compress/flate`, Python `zlib` C source, Java `Inflater` source, Zopfli, puff.c
-- Any blog post or tutorial walking through an existing implementation's code
+  Each technique used must be written up in `docs/DESIGN.md` **in the
+  project's own words**, justified from first principles, the RFC and
+  cleanflate's own measurements, with the statement "general technique;
+  not derived from any specific implementation".
 
-### 2.3 Mechanical enforcement (M0 builds this; later stages depend on it)
-Prose rules are insufficient. M0 MUST implement Claude Code hooks in `.claude/settings.json` plus scripts in `tools/cleanroom/`:
+### 2.2 Forbidden inputs (in addition to phase 1 §2.2)
+- Profiling, disassembling, symbol-annotating, or stepping through **C zlib
+  or any other decoder** (e.g. `perf annotate` or `perf report` on libz
+  symbols, `objdump` of the oracle's static zlib, a debugger in zlib
+  frames). Profiles of oracle runs must be filtered to cleanflate's own
+  symbols, and any view that shows the C library's internals is a
+  violation to log as a human intervention if it happens by accident.
+- Articles, talks, benchmarks write-ups or code walkthroughs describing how
+  a *specific* implementation (zlib, zlib-ng, libdeflate, miniz_oxide,
+  zlib-rs, Go/Java/Python/.NET inflaters, etc.) structures its fast path,
+  tables or bit buffer. Knowing that such libraries exist and are fast is
+  fine; learning their design from sources is not.
+- Reading comparator crates' docs beyond public API pages (phase 1 rule,
+  restated because perf work makes it tempting).
 
-- **PreToolUse guard** (`tools/cleanroom/guard.sh` or equivalent), matched on `Read|Grep|Glob|WebFetch|WebSearch|Bash`:
-  - Deny (exit 2 with a stderr reason) any path under `~/.cargo/registry/src/**`, `~/.cargo/git/**`, `target/**/build/**`, and any path or glob containing `zlib`, `miniz`, `flate2`, `libdeflate`, `libz-sys`, or `zopfli` outside this repo's own `crates/cleanflate` and `crates/oracle` sources.
-  - Deny `WebSearch` entirely.
-  - Deny `WebFetch` except an explicit allowlist, used only in M0: `rfc-editor.org` RFC 1950/1951/1952 text URLs, and the Canterbury and Silesia corpus download URLs. After M0 completes, `WebFetch` is denied entirely. Implement this with a flag file written at M0 completion.
-  - Deny Bash commands invoking `curl`, `wget`, `git clone`, `cargo vendor`, `cargo download`, or `gh`, and any `grep`/`rg`/`find`/`cat`/`less` targeting forbidden paths. The only exception is M0 corpus downloads.
-- **PostToolUse logger** (`tools/cleanroom/log.sh`) appends one JSON line per tool call to `provenance/tool-log.jsonl`:
-  `{ts, foundry_stage, task_id, model, tool, target, decision: "allowed"|"denied", reason}`.
-  `foundry_stage`, `task_id` and `model` come from Foundry's state if exposed. Otherwise record `null` and note the gap in `provenance/README.md`.
-- Denied attempts are logged, never silently dropped. The white paper reports them.
-- M0 includes a self-test (`tools/cleanroom/selftest.sh`) proving the guard blocks a sample of forbidden reads and fetches and allows permitted ones.
+## 3. Hard constraints (all carried over; none may regress)
 
-### 2.4 Commit discipline
-- Every commit message carries `[stage:<plan|implement|review|fix|summarize>] [task:<id>]`.
-- Commits are small and task-scoped so the bench spec can compute per-stage effort from git history.
+- `crates/cleanflate`: `#![forbid(unsafe_code)]`; `[dependencies]` empty;
+  the phase-1 panic lints (`unwrap_used`, `expect_used`, `panic`,
+  `indexing_slicing`) stay denied in library code, and local `#[allow]`s of
+  them stay banned (phase-1 rule `no-panic-lint-allow-in-cleanflate-lib`).
+- No `std::arch`, SIMD intrinsics, `unsafe`-backed crates, multithreading,
+  or nightly features. Auto-vectorisation the compiler does on its own is
+  fine.
+- Stable toolchain pinned in `rust-toolchain.toml` (1.89.0). A toolchain
+  bump is out of scope.
+- Public API: no breaking changes. The one-shot functions, `Decompressor`,
+  `Options`, `Error`/`ErrorKind`, `Status` and `Progress` keep their
+  signatures and documented semantics. Additive, documented changes are
+  allowed only if a measurement shows they are needed.
+- Streaming contract (DESIGN D-11, D-13, D-20, D-25): identical output for
+  any input/output chunking including 1-byte chunks; exact `consumed`
+  accounting; `trailing_start` semantics; output-limit semantics; bounded
+  memory; gzip multi-member behaviour and header caps.
+- Every phase-1 test, the conformance corpus (100%, one-shot and
+  streaming), malformed corpus, bomb test, chunking proptest and fuzz
+  targets keep passing. `make ci` stays green on GitHub Actions.
+- Tunables live only in `crates/cleanflate/src/config.rs` (phase-1 rule
+  C8); new tunables (margins, table sizes, refill widths) go there, with
+  the measurement that chose their value.
 
-## 3. Product requirements (`crates/cleanflate`)
+## 4. Measurement
 
-### 3.1 Crate constraints
-- `#![forbid(unsafe_code)]` at the crate root. Zero `unsafe` anywhere in `crates/cleanflate`.
-- **Zero runtime dependencies.** `[dependencies]` must be empty. Dev-dependencies are allowed only in `crates/oracle` and `fuzz/`.
-- Stable Rust, MSRV pinned in `rust-toolchain.toml`, edition 2021 or later.
-- `std` by default. Optional `no_std` + `alloc` support via feature flag is a stretch goal (M5), not required.
-- No panics reachable from any public API on any input. Enforce with `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]` in library code, using explicit bounds-checked access patterns. Tests are exempt.
+### 4.1 Baseline and targets
+Phase-1 numbers (`docs/phase-1/PERF.md`, Silesia, level 6, one-shot,
+best of 5, AMD Ryzen 5 3400G):
 
-### 3.2 Formats
-- **Raw DEFLATE (RFC 1951):** stored, fixed-Huffman and dynamic-Huffman blocks; 32 KiB window; full length/distance code handling; BFINAL across multiple blocks.
-- **zlib wrapper (RFC 1950):** CMF/FLG validation including the FCHECK mod-31 test, CM=8, CINFO ≤ 7, Adler-32 verification. A stream with FDICT set is rejected with a distinct error unless a preset dictionary is supplied via API.
-- **gzip wrapper (RFC 1952):** magic, CM=8, FLG bits (FTEXT, FHCRC, FEXTRA, FNAME, FCOMMENT), reserved-bit rejection, MTIME/XFL/OS parsed and exposed, CRC-32 and ISIZE verification, and **multi-member** streams (concatenated members decode as one output).
-- Checksums (Adler-32, CRC-32) implemented in-crate, derived from the RFCs' definitions.
+| framing | cleanflate MiB/s | C zlib MiB/s | ratio |
+|---|---|---|---|
+| raw | 71.1 | 277.7 | 25.6% |
+| zlib | 71.9 | 263.0 | 27.3% |
 
-### 3.3 API
-Design freedom is allowed, but these capabilities are required and documented in `docs/DESIGN.md`:
-- **One-shot:** `inflate(input) -> Result<Vec<u8>>`, `zlib_decompress(...)`, `gzip_decompress(...)`.
-- **Streaming:** a decompressor object that accepts arbitrary input chunks, including 1-byte chunks, and writes into caller-provided output buffers, reporting bytes consumed, bytes produced and status (`NeedsInput`, `OutputFull`, `Done`). It must produce identical output regardless of how input and output are chunked.
-- **Limits:** configurable maximum output size (decompression-bomb guard) with a typed error when exceeded; default documented.
-- **Errors:** a typed error enum with distinct variants for bad header, bad block type, invalid Huffman table, invalid distance (too far back), checksum mismatch, truncated input, trailing garbage policy, and output limit exceeded. No stringly-typed errors.
-- Trailing-data behavior is explicit and configurable (error vs. return remaining bytes).
+Targets for phase 2, aggregate over Silesia (total bytes / total time),
+one-shot, level 6:
 
-### 3.4 Design documentation
-`docs/DESIGN.md` records each non-trivial decision, citing the RFC section it implements (e.g. "RFC 1951 §3.2.7"). This document is evidence that design flowed from the spec rather than from a prior implementation.
+- **Primary:** ≥ 70% of C zlib for raw, zlib **and** gzip framing.
+- **Streaming:** ≥ 60% of C zlib when driven through `Decompressor` with
+  64 KiB input and 64 KiB output chunks.
+- **Stretch:** ≥ 90% one-shot.
+- **No per-file regression:** no Silesia or Canterbury file may end up
+  slower than its phase-2 M0 baseline by more than the measured noise.
+- Report the achieved numbers either way. Missing a target is an honest
+  result; shipping incorrect code to hit one is not.
 
-## 4. Test oracle (`crates/oracle`, dev-only)
+### 4.2 Benchmark methodology (M0 hardens the existing `oracle bench`)
+- Re-measure the baseline at M0 on the current machine before any
+  optimisation, and commit it as `docs/perf/baseline.json` plus a table in
+  `docs/PERF.md`. All later comparisons are against this, not the phase-1
+  numbers.
+- Per measurement: warm-up run, then N ≥ 7 timed runs; report median and
+  min. Report per file and aggregate, for raw/zlib/gzip framing, levels 1,
+  6 and 9, one-shot and streaming (64 KiB chunks).
+- Estimate noise at M0 by running the full baseline twice; a change counts
+  as a win only if it beats **twice** the measured noise on the aggregate.
+- Machine-readable results in `docs/perf/<task-id>.json`; a comparison
+  command (`make bench-compare A=... B=...`) prints the per-file and
+  aggregate deltas.
+- `make bench-quick` (Canterbury plus a fixed Silesia subset, fewer runs)
+  for iteration inside a task; `make bench` (full) at milestone ends.
+- Benchmarks are **not** CI gates (shared runners are too noisy); CI stays
+  a correctness gate. Performance acceptance is judged from committed
+  bench results.
 
-- Links reference C zlib via `libz-sys` (C backend) **only through its public API**. Agents may read `libz-sys` docs.rs API pages if needed, but never its source. Prefer the zlib manual's documented function signatures written in the SPEC below.
-  - Oracle functions needed: `compress2`/`deflateInit2`/`deflate`/`deflateEnd` for generating corpora at levels 0–9, strategies (default, filtered, huffman-only, RLE, fixed), windowBits 9–15, memLevel 1–9, and raw/zlib/gzip framing; `uncompress`/`inflate` for reference output.
-- The oracle generates the **conformance corpus** into `testdata/generated/`, deterministically seeded, and records the generation manifest (parameters, input source, SHA-256) in `testdata/MANIFEST.json`.
-- Inputs for generation: Canterbury corpus, Silesia corpus, and synthetic inputs (empty, 1 byte, all-zeros up to 16 MiB, random, highly repetitive, window-boundary patterns at 32767/32768/32769 distances, max-length matches of 258).
-- **Malformed corpus** in `testdata/malformed/`, hand-built from RFC rules: bad headers, reserved block type 3, over-subscribed and incomplete Huffman code sets, distance beyond window or before stream start, truncation at every byte offset of a small valid stream, bad checksums, invalid gzip flags. Each file records its expected error variant.
+### 4.3 Profiling
+- If `perf` (or `cargo flamegraph`) is installed, use it on cleanflate's
+  own symbols (§2.2 applies). At the time of writing, neither is installed
+  on the build machine; the human may install `linux-tools` before the
+  flight (see §8).
+- Regardless, M0 adds an opt-in cargo feature `stats` to `cleanflate`
+  (zero dependencies, compiled out by default, and the default build must
+  be bit-for-bit unaffected in behaviour) that counts: symbols decoded via
+  the table vs. the bit-serial fallback, bit-buffer refills and bytes per
+  refill, state-machine dispatches per output byte, matches by
+  length/distance bucket and overlap/non-overlap, stored bytes, and time
+  or calls spent building tables. `oracle bench --stats` prints them.
+  Every optimisation task states which counter or profile justified it.
 
-## 5. Milestones
+### 4.4 Hypotheses to verify first (from reading phase-1 cleanflate)
+Measure these at M0 before committing to a plan order; confirm or
+discard each in `docs/PERF.md`:
 
-Each milestone ends with a Foundry review stage. A milestone is complete only when its acceptance criteria pass in CI.
+- **H1 — the lookup table is mostly bypassed.** `BitReader` keeps at most
+  7 bits between steps (DESIGN D-07), and `peek_symbol` refills one bit's
+  worth at a time on `NeedMoreBits`, while `decode_table` falls back to the
+  bit-serial walk whenever fewer than `LITLEN_TABLE_BITS` (10) bits are
+  buffered. Most symbols may therefore be decoded bit-by-bit.
+- **H2 — per-symbol dispatch overhead.** `Inflater::step` clones
+  `self.state` every loop iteration and returns to the outer `match` for
+  every literal and match.
+- **H3 — every output byte is written twice.** Once to the output slice
+  and once into the 32 KiB ring `Window` (with a `u64` modulo and a bounds
+  check per byte), including stored blocks.
+- **H4 — overlapping matches are byte-by-byte.** Short-distance repeats
+  (distance < length) are common and take the slow per-byte path.
+- **H5 — per-block setup costs.** Fixed-Huffman blocks clone the fixed
+  tables (`Vec`s); dynamic blocks rebuild full tables every block.
+- **H6 — wrapper and one-shot overheads.** CRC-32 is byte-at-a-time for
+  gzip; one-shot output growth may copy repeatedly.
 
-### M0 — Clean-room harness and scaffolding
-- Cargo workspace: `crates/cleanflate`, `crates/oracle`, `fuzz/`, `tools/cleanroom/`, `provenance/`, `docs/rfc/`, `testdata/`.
-- Vendor the RFC 1950/1951/1952 text into `docs/rfc/`, recording source URL and SHA-256.
-- Download corpora into `testdata/corpora/`, recording URLs and SHA-256.
-- Implement hooks, logger and self-test (§2.3). Write the post-M0 lockdown flag.
-- CI (GitHub Actions or a local `make ci`): fmt, clippy (deny warnings), test, cleanroom self-test, and a check that `crates/cleanflate` has zero dependencies and contains no `unsafe` token.
-- **Acceptance:** the self-test passes, CI is green on an empty crate, the provenance log is populating, and WebFetch is locked after the flag is written.
+## 5. Correctness strategy for performance work
 
-### M1 — Bit reader, stored and fixed-Huffman blocks, checksums
-- LSB-first bit reader per RFC 1951 §3.1.1, with Huffman codes packed MSB-first as specified.
-- Stored blocks (LEN/NLEN validation), fixed Huffman tables (§3.2.6), length/distance decoding (§3.2.5), window copy including overlapping copies.
-- Adler-32 and CRC-32 with unit tests from RFC examples and oracle values.
-- **Acceptance:** all oracle-generated level-0 and fixed-strategy streams decode byte-identically, and checksum unit tests pass.
+Phase 1's attempt (P4-08) at a fast decode loop found a real bug, could not
+root-cause it within one task, reverted everything, and lost the
+reproducing case. Phase 2 must not repeat that.
 
-### M2 — Dynamic Huffman and complete raw inflate
-- Code-length alphabet decoding (§3.2.7), canonical Huffman construction (§3.2.2), validation rejecting over-subscribed and incomplete tables (single-code edge cases documented in DESIGN.md), and a table-driven fast decode path.
-- **Acceptance:** 100% of the raw-DEFLATE conformance corpus decodes byte-identically, and every malformed-corpus file returns its expected error variant with no panic.
+- **Keep a reference path.** The existing resumable state machine stays as
+  the general, obviously-correct slow path. Fast paths are layered on top
+  and entered only when their preconditions (input/output margins, state)
+  hold; at every exit they restore the exact state the slow path expects,
+  including the resumable reader invariant (bytes loaded but not consumed
+  are given back or accounted for exactly — see D-07/D-22).
+- **Differential fast-vs-slow testing.** M0 adds a way to force the slow
+  path (a `cfg(test)`-only or feature-gated switch that the default build
+  cannot reach) and a test that decodes the entire conformance corpus,
+  the malformed corpus and a proptest stream both ways and asserts
+  identical output, errors, `consumed` and status. This runs in
+  `make test`.
+- **Scale up the chunking proptest for decoder changes.** Any task that
+  touches `inflate.rs`, `bitreader.rs`, `huffman.rs`, `window.rs` or
+  `stream.rs` runs the chunking proptest at ≥ 3000 cases (which is what
+  caught P4-08's bug) before it is marked done; milestone acceptance runs
+  10k.
+- **Never lose a repro.** When a fast path produces a wrong result:
+  minimise the case, commit it as a named regression fixture (proptest
+  regressions file and/or a `testdata/regressions/` file with its expected
+  output hash), then root-cause it. If the task must stop, it blocks with
+  the fixture, the hypothesis and what was ruled out, so the next task or
+  review round continues from there instead of starting over. A revert
+  must keep the fixture.
+- **Mutation-check the fast path.** The reviewer's mutation sampling
+  should include fast-path code; a surviving mutation there is a finding.
 
-### M3 — zlib and gzip wrappers
-- Full §3.2 behavior. Preset dictionary support for zlib. Multi-member gzip.
-- **Acceptance:** 100% of the zlib and gzip conformance corpus passes, multi-member tests pass, and wrapper malformed cases match their expected errors.
+## 6. Milestones
 
-### M4 — Streaming, limits, fuzzing, performance pass
-- Streaming API with the chunking-invariance property test (proptest or equivalent in dev-deps): random input and output chunk sizes including 1 must produce output identical to one-shot.
-- Output limit enforcement, verified against a zip-bomb-style fixture (e.g. 1 KiB → >1 GiB of zeros) that fails fast with bounded memory.
-- `cargo-fuzz` targets:
-  - (a) arbitrary bytes into each of the three entry points: must never panic.
-  - (b) differential: oracle-compress random data with random parameters, decompress with both cleanflate and C zlib, assert identical output.
-  - (c) differential on arbitrary bytes: both implementations agree on accept/reject, with divergences logged for triage rather than auto-failed, since trailing-data policy may legitimately differ.
-- A performance pass guided only by profiling (e.g. `cargo flamegraph`) and the RFC, **not** by reference implementations. Target at least 70% of C zlib single-thread decompression throughput on Silesia. Report the actual number either way.
-- **Acceptance:** fuzz targets (a) and (b) run 1 hour each in CI-nightly or locally with zero crashes and zero divergences, and the chunking property test passes 10k cases.
+Each milestone ends with an acceptance task that runs `make ci`,
+`make bench` (full) and the 10k chunking proptest, commits the bench
+results, and pushes. Plan task dependencies narrowly: a blocked
+optimisation must not cascade-skip unrelated work (phase 1 lost 17 tasks
+to one blocked download).
 
-### M5 (optional) — Stretch
-- `no_std` + `alloc` feature.
-- DEFLATE **compression** (stored, fixed, dynamic; greedy then lazy matching; levels 0–9), verified by round-trip and by C zlib successfully inflating its output. Treat this as a separate clean-room scope with the same rules.
+### M0 — Baseline, instrumentation, safety net
+- Harden `oracle bench` per §4.2 (median/min of N, framings, levels,
+  one-shot and streaming modes, JSON output, `bench-quick`,
+  `bench-compare`).
+- Add the `stats` feature and `oracle bench --stats` (§4.3).
+- Add the force-slow-path switch and the fast-vs-slow differential test
+  (§5), passing trivially until a fast path exists.
+- Measure the baseline twice (noise estimate), record H1–H6 findings in
+  `docs/PERF.md` under a new "Phase 2" section, and order the remaining
+  milestones' tasks by measured cost.
+- CI: also build and clippy the `stats` feature.
+- **Acceptance:** baseline JSON and noise estimate committed; the
+  differential test runs in `make test`; H1–H6 each confirmed or discarded
+  with a number.
 
-### M6 — Freeze and hand-off
-- Tag `v0.1.0-cleanroom`.
-- Write `provenance/SUMMARY.md` with: total tool calls, denied calls with reasons, every file and URL read (grouped), per-stage wall clock, models used per stage, and any human interventions (what and why). Human interventions must be logged manually in `provenance/human-interventions.md` as they happen.
-- Write `docs/BUILD_REPORT.md`: milestones, review rounds per milestone, defects caught in review vs. by tests vs. by fuzzing, known limitations.
-- **Acceptance:** tag exists, provenance summary is complete, and the repo is ready for the bench spec.
+### M1 — Bit reader and symbol decoding
+- Keep the bit buffer topped up in bulk when input allows, and redefine
+  the D-07 invariant (in a new DESIGN entry) so it stays exact across
+  resumable calls and block/stream boundaries.
+- Decode every symbol through tables: first-level table for codes up to
+  the table width, second-level tables for longer codes; the bit-serial
+  walk remains only as the reference in tests (and, if needed, for the
+  code-length alphabet).
+- Consider folding length/distance base values and extra-bit counts into
+  table entries if the counters show it matters.
+- Avoid per-block table clones and redundant rebuilds (H5).
+- **Acceptance:** `stats` shows ≥ 99% of literal/length and distance
+  symbols decoded by table lookup on Silesia; aggregate throughput gain
+  measured and committed; all correctness gates green.
 
-## 6. Definition of done
-- `crates/cleanflate`: zero deps, zero `unsafe`, no reachable panics per fuzz target (a).
-- 100% conformance on generated corpora, and the malformed corpus matches expected errors.
-- Differential fuzzing: zero divergences over at least 1 hour per target.
-- Provenance log complete from M0 onward, and the summary is published.
-- DESIGN.md cites RFC sections for all core decisions.
+### M2 — Fast decode loop
+- A tight loop for the literal/length/distance state, entered with
+  input/output margins sufficient for a worst-case symbol sequence
+  without mid-symbol exhaustion checks, exiting to the state machine near
+  buffer edges, at end of block, or on any error.
+- No per-iteration state clone or outer dispatch inside the loop.
+- **Acceptance:** fast-vs-slow differential passes on the whole corpus;
+  chunking proptest passes 10k cases; the repro-preservation rule (§5)
+  was followed for any bug found; aggregate gain measured and committed.
 
-## 7. Out of scope
-- C ABI compatibility (`libz.so` drop-in). This is noted as future work in the white paper.
-- SIMD, multithreading, and bit-exact reproduction of zlib's *compressor* output.
-- Any change to comparator libraries.
+### M3 — Output and match history
+- Write each output byte once. Use the caller's output slice as match
+  history where it is contiguous, and keep the 32 KiB window only for
+  history that must survive across `decompress` calls (refreshed from the
+  output tail on exit). Decide and document how this interacts with
+  small caller output buffers and preset dictionaries.
+- Non-overlapping matches as slice copies; overlapping matches by
+  repeated pattern doubling; stored blocks as single slice copies.
+- One-shot output sizing from hints (e.g. gzip ISIZE when trustworthy,
+  compressed length heuristics), always capped by the output limit.
+- **Acceptance:** as M2, plus streaming-mode throughput reported
+  separately; bomb test and memory bounds unchanged.
+
+### M4 — Checksums, wrappers and tuning
+- CRC-32 computed several bytes at a time from multiple tables derived
+  from the RFC 1952 polynomial (generated in `const fn`, verified against
+  the existing byte-wise implementation and the oracle).
+- Revisit Adler-32 if the profile says so.
+- Re-sweep the table widths and any new tunables (margins, refill width)
+  on the final code, choosing values by measurement (§4.2 noise rule).
+- **Acceptance:** gzip and zlib framing overhead relative to raw is
+  reported; tunables' measurements are in `docs/PERF.md` and cited in
+  `config.rs`.
+
+### M5 — Report and hand-off
+- `docs/PERF.md` "Phase 2" section: final numbers against §4.1 targets,
+  per-milestone gains, every hypothesis's verdict, negative results and
+  reverted attempts with their regression fixtures.
+- Regenerate `docs/BUILD_REPORT.md` and `provenance/SUMMARY.md` for
+  phase 2; update `provenance/human-interventions.md`.
+- The implementer does not tag; the human tags `v0.2.0-cleanroom` after
+  review and merge.
+- **Acceptance:** `make ci` green, full bench committed, report complete.
+
+## 7. Foundry run notes
+- Base branch: `feature/perf` (this branch). Build branches use Foundry's
+  `build/` prefix and PR into `feature/perf`, not `main`.
+- Review depth: up to **6** review rounds (`maxRounds: 6`).
+- Phase-1 Foundry state and feedback are archived in `docs/phase-1/`;
+  this phase starts with fresh state.
+
+## 8. Human prerequisites (before or during the flight)
+- Optional but recommended: install `perf` (e.g. `linux-tools-generic`
+  plus the kernel-matched package) and allow unprivileged profiling, so
+  §4.3 profiles are available. Record whether it was installed in
+  `provenance/human-interventions.md`.
+- Final `make bench` should run on a quiet machine (no other heavy
+  processes; ideally a fixed CPU governor). Record the conditions in
+  `docs/PERF.md`.
+
+## 9. Definition of done
+- All §3 constraints hold and every phase-1 correctness gate is green.
+- The fast-vs-slow differential test exists and passes on the full corpus.
+- §4.1 targets met, or the shortfall is reported with measurements and
+  the next most promising step.
+- Every optimisation is written up in DESIGN.md per §2.1, with the
+  measurement that justified it.
+- The provenance log shows no forbidden reads, and any denials are
+  explained.
+
+## 10. Out of scope
+- `unsafe`, SIMD intrinsics, `std::arch`, multithreading, nightly Rust.
+- Compression (phase-1 M5 stays deferred), `no_std`, C ABI.
+- Changes to the oracle's C zlib usage beyond timing.
+- Toolchain upgrades.
