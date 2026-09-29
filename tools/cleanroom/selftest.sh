@@ -112,6 +112,13 @@ run_guard_case deny_bash_cargo_vendor deny
 run_guard_case deny_bash_gh deny
 run_guard_case deny_bash_find_forbidden_home deny
 run_guard_case allow_bash_cargo_test allow
+run_guard_case deny_bash_perf_record_oracle deny
+run_guard_case deny_bash_flamegraph_oracle deny
+run_guard_case deny_bash_objdump_oracle deny
+run_guard_case deny_bash_gdb_test_binary deny
+run_guard_case allow_bash_perf_record_profile_decode allow
+run_guard_case allow_bash_perf_report_profile_dir allow
+run_guard_case allow_bash_make_profile allow
 
 # denials_logged: exactly one denied line per deny case above, no more,
 # no fewer.

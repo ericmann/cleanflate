@@ -265,6 +265,74 @@ def _check_read_family_segment(segment: str, cwd: str, root: str):
     return None
 
 
+PROFILE_TOOLS = {
+    "perf", "objdump", "gdb", "lldb", "valgrind", "ltrace", "uftrace",
+    "flamegraph", "cargo-flamegraph",
+}
+PROFILE_DENY_REASON = (
+    "SPEC phase-2 \u00a72.2: profile/disassemble/debug only cleanflate-only "
+    "binaries (make profile)"
+)
+
+
+def _profile_tool_word(toks):
+    """Return the profiling tool word of a segment, or None."""
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        if ASSIGNMENT_RE.match(t):
+            i += 1
+            continue
+        base = os.path.basename(t)
+        if base in WRAPPERS:
+            i += 1
+            while i < len(toks) and toks[i].startswith("-"):
+                i += 1
+            continue
+        if base in PROFILE_TOOLS:
+            return base
+        if base == "cargo":
+            for a in toks[i + 1 :]:
+                if a.startswith(("-", "+")):
+                    continue
+                return "cargo-flamegraph" if a == "flamegraph" else None
+        return None
+    return None
+
+
+def _check_profile_segment(segment: str):
+    try:
+        toks = shlex.split(segment)
+    except ValueError:
+        toks = segment.split()
+    tool = _profile_tool_word(toks)
+    if tool is None:
+        return None
+    low = " ".join(toks).lower()
+    if any(w in t.lower() for t in toks for w in ("oracle", "libz", "zlib")):
+        return PROFILE_DENY_REASON
+    if "profile_decode" in low:
+        return None
+    args = toks[1:]
+    if tool == "perf":
+        if any(a in ("--version", "list") for a in args[:1]):
+            return None
+        if args and args[0] in ("report", "annotate", "script", "diff"):
+            inputs = []
+            for j, a in enumerate(args):
+                if a in ("-i", "--input") and j + 1 < len(args):
+                    inputs.append(args[j + 1])
+                elif a.startswith("--input="):
+                    inputs.append(a[len("--input="):])
+            if inputs and all(
+                os.path.normpath(p).startswith("target/profile/") for p in inputs
+            ):
+                return None
+    if len(args) == 1 and args[0] == "--help":
+        return None
+    return PROFILE_DENY_REASON
+
+
 def split_top_level_segments(command: str):
     """Split a shell command into segments on unquoted ; & && | ||  and
     newlines, so a literal '|' inside a quoted regex (e.g. grep -E "a|b")
@@ -380,6 +448,9 @@ def check_bash(command: str, cwd: str, root: str, lockdown_exists: bool, allowli
         if not segment:
             continue
         reason = _check_read_family_segment(segment, cwd, root)
+        if reason:
+            return reason
+        reason = _check_profile_segment(segment)
         if reason:
             return reason
 

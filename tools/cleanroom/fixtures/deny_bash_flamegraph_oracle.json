@@ -1,0 +1,1 @@
+{"tool_name": "Bash", "tool_input": {"command": "cargo flamegraph -p oracle -- bench"}, "cwd": "__ROOT__"}

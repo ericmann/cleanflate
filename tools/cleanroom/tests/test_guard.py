@@ -256,6 +256,33 @@ class TestR4DReadFamily(GuardTestBase):
         self.assertIn("unparseable", reason)
 
 
+class TestProfilingRules(GuardTestBase):
+    def test_deny_profiling_oracle(self):
+        for cmd in (
+            "perf record -g target/release/oracle bench",
+            "cargo flamegraph -p oracle -- bench",
+            "objdump -d target/release/oracle",
+            "gdb target/release/deps/chunking-0123abcd",
+            "valgrind cargo test -p oracle",
+            "perf stat target/release/deps/conformance-89ab",
+        ):
+            decision, _ = self.evaluate("Bash", {"command": cmd})
+            self.assertEqual(decision, "denied", cmd)
+
+    def test_allow_cleanflate_profiling(self):
+        for cmd in (
+            "perf record --call-graph dwarf -o target/profile/perf.data "
+            "target/release/examples/profile_decode --dir testdata/perf-inputs/silesia/rfc1951-l6",
+            "perf report -i target/profile/perf.data --stdio",
+            "cargo flamegraph -p cleanflate --example profile_decode",
+            "make profile",
+            "perf --version",
+            "cargo rustc --release -p cleanflate -- --emit asm",
+        ):
+            decision, reason = self.evaluate("Bash", {"command": cmd})
+            self.assertEqual(decision, "allowed", (cmd, reason))
+
+
 class TestPlainAllowed(GuardTestBase):
     def test_cargo_test_allowed(self):
         decision, _ = self.evaluate("Bash", {"command": "cargo test --workspace"})
