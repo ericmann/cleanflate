@@ -30,9 +30,9 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P2-02 Dynamic block header and code-length alphabet decoding
 - [x] P2-03 Table-driven Huffman decode path
 - [x] P2-04 Malformed corpus builder, raw cases and malformed test
-- [ ] P2-05 Full raw conformance
-- [ ] P2-06 M2 acceptance and push
-- [ ] P3-01 Preset dictionary support and the zlib wrapper
+- [-] P2-05 Full raw conformance
+- [-] P2-06 M2 acceptance and push
+- [x] P3-01 Preset dictionary support and the zlib wrapper
 - [ ] P3-02 Gzip member header parser
 - [ ] P3-03 Gzip members, trailer, multi-member streams and gzip API
 - [ ] P3-04 Zlib and gzip conformance, dictionary and multi-member tests
@@ -135,3 +135,12 @@ config.rs: LITLEN_TABLE_BITS=10, DIST_TABLE_BITS=8 (pub(crate)). huffman.rs: Huf
 
 ### P2-04 — 218104b
 crates/oracle/src/malformed.rs: fully independent DEFLATE builder (own BitWriter, fixed/length/distance RFC tables transcribed fresh, canonical_codes, textbook Huffman-length-from-frequency, stored/fixed/dynamic block emitters, DynBlock/ClSymbol/PayloadSym). cases() returns 21 named Case{name,bytes,expected,rule,sweep} covering: btype3, stored_nlen_mismatch, fixed_litlen_286, fixed_dist_code_30, fixed_distance_at_start, fixed_distance_too_far, fixed_len284_extra31(OK), valid_stored_trailing_byte(TrailingData), dynamic_hlit_287, dynamic_codelength_oversubscribed/incomplete, dynamic_litlen_oversubscribed/incomplete, dynamic_dist_oversubscribed/incomplete_two_codes, dynamic_repeat16_first, dynamic_repeat_overflow, dynamic_missing_eob, dynamic_no_dist_then_length(InvalidSymbol), dynamic_single_dist_code(OK), dynamic_no_dist_literals(OK), plus 3 valid_small_{stored,fixed,dynamic} control streams (OK + sweep:). crates/oracle/src/main.rs (new binary, first for oracle since P1-03's "generate" was skipped) wires `oracle malformed` writing testdata/malformed/rfc1951/*.bin + EXPECTED.tsv. make malformed target wired. crates/oracle/tests/malformed.rs: malformed_raw_cases parses EXPECTED.tsv, runs every row through cleanflate::inflate comparing kind().as_str() (or OK), sweep: rows check every strict prefix is Truncated; malformed_corpus_is_up_to_date regenerates into a temp dir and byte-compares TSV+fixtures against committed. Both tests passed on first run (after one format-string arg-order typo fix) -- 24 generated files (21 cases + 3 sweeps as TSV rows) all agree with the decoder built across P1-08/P1-09/P2-01/P2-02/P2-03, serving as new independent cross-validation. git status --porcelain testdata/malformed empty after commit.
+
+### P2-05 — skipped
+SKIPPED: depends on P1-11
+
+### P2-06 — skipped
+SKIPPED: depends on P2-05
+
+### P3-01 — 1819a6b
+zlib.rs: ZlibDecoder{state,inflater,adler,dictionary,dict_id_buf,trailer_buf}, State{Cmf,Flg{cmf},DictId{collected},Body,Trailer{collected},Done,Failed}. Checks FCHECK((cmf*256+flg)%31==0) then CM(!=8) then CINFO(>7), matching RFC 1950 S2.2's own order. FDICT set -> read 4-byte big-endian DICTID; None dictionary->PresetDictionaryRequired{dict_id}; mismatched adler32(dict)!=dict_id->DictionaryMismatch; else Inflater::with_dictionary(dict) (new ctor, prefills window via existing Window::prefill) and ->Body. FDICT clear ignores any supplied dictionary (per RFC, no mechanism to use one without FDICT). Body delegates to self.inflater.step(), accumulating Adler32 over exactly the produced-byte slice each call. Trailer reads 4 big-endian bytes, compares to running Adler32, mismatch->ChecksumMismatch{kind:Adler32,...}. stream.rs: Decompressor now holds Backend{Raw(Inflater)|Zlib(ZlibDecoder)} (uniform step/is_done/total_out), so all limit/trailing/stickiness logic is format-agnostic -- Decompressor::new dispatches on Format, using Inflater::with_dictionary for Format::Raw+dictionary too. Format gained Zlib variant. lib.rs exports zlib_decompress. All 14 new tests + all 101 pre-existing tests (115 total) pass with zlib live in production on first attempt. DESIGN.md D-17 (D-16 already taken by P2-03).
