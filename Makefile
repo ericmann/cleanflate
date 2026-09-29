@@ -103,7 +103,7 @@ malformed:
 	cargo run -q -p oracle -- malformed
 
 bench:
-	@echo "STUB: bench arrives in P4-09"
+	cargo run --release -q -p oracle -- bench --corpus silesia
 
 sources-check:
 	bash tools/ci/sources-check.sh

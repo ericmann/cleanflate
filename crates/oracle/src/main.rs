@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use oracle::bench::{self, BenchArgs, BenchCorpus};
 use oracle::generate;
 use oracle::malformed;
 use oracle::matrix::CorpusTier;
@@ -27,8 +28,17 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some("bench") => match run_bench(&args[2..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("oracle bench: {e}");
+                ExitCode::FAILURE
+            }
+        },
         _ => {
-            eprintln!("usage: oracle malformed | oracle generate --tier quick|full [--write-manifest] [--out DIR]");
+            eprintln!(
+                "usage: oracle malformed | oracle generate --tier quick|full [--write-manifest] [--out DIR] | oracle bench [--corpus silesia|canterbury] [--iters N] [--level L]"
+            );
             ExitCode::FAILURE
         }
     }
@@ -146,5 +156,109 @@ fn run_malformed() -> Result<(), String> {
         cases.len(),
         root.display()
     );
+    Ok(())
+}
+
+fn parse_bench_args(args: &[String]) -> Result<BenchArgs, String> {
+    let mut result = BenchArgs::default();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--corpus" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--corpus requires a value".to_string())?;
+                result.corpus = match v.as_str() {
+                    "silesia" => BenchCorpus::Silesia,
+                    "canterbury" => BenchCorpus::Canterbury,
+                    other => return Err(format!("unknown --corpus value: {other}")),
+                };
+                i += 2;
+            }
+            "--iters" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--iters requires a value".to_string())?;
+                result.iters = v.parse().map_err(|e| format!("--iters: {e}"))?;
+                i += 2;
+            }
+            "--level" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--level requires a value".to_string())?;
+                result.level = v.parse().map_err(|e| format!("--level: {e}"))?;
+                i += 2;
+            }
+            other => return Err(format!("unknown argument: {other}")),
+        }
+    }
+    Ok(result)
+}
+
+fn command_output(command: &str, args: &[&str]) -> String {
+    std::process::Command::new(command)
+        .args(args)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| format!("<{command} unavailable>"))
+}
+
+fn cpu_model() -> String {
+    fs::read_to_string("/proc/cpuinfo")
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .find(|l| l.starts_with("model name"))
+                .and_then(|l| l.split(':').nth(1))
+                .map(|s| s.trim().to_string())
+        })
+        .unwrap_or_else(|| "<unknown CPU>".to_string())
+}
+
+fn run_bench(args: &[String]) -> Result<(), String> {
+    let mut bench_args = parse_bench_args(args)?;
+    let corpora_root = generate::default_corpora_root();
+
+    if bench_args.corpus == BenchCorpus::Silesia
+        && oracle::inputs::silesia_inputs(&corpora_root).is_empty()
+    {
+        eprintln!(
+            "oracle bench: Silesia corpus missing, falling back to Canterbury \
+             (run tools/cleanroom/fetch-corpora.sh silesia for the SPEC S5 M4 target corpus)"
+        );
+        bench_args.corpus = BenchCorpus::Canterbury;
+    }
+
+    let report = bench::run(&bench_args, &corpora_root)?;
+    let table = bench::render_markdown(&report);
+
+    let uname = command_output("uname", &["-srm"]);
+    let rustc = command_output("rustc", &["--version"]);
+    let cpu = cpu_model();
+
+    let doc = format!(
+        "# PERF.md\n\n\
+         Single-thread decompression throughput, cleanflate vs C zlib \
+         (SPEC S5 M4). Method: `oracle bench` compresses each corpus file \
+         with C zlib at the given level (raw and zlib framing), then times \
+         best-of-{iters} `cleanflate::decompress_with` against \
+         `oracle::ffi::inflate_bytes` with `std::time::Instant`, \
+         single-threaded, release build only. Throughput is uncompressed \
+         MiB/s; ratio is cleanflate / zlib (>= 1.0 means cleanflate is at \
+         least as fast).\n\n\
+         Machine: {uname}\n\
+         CPU: {cpu}\n\
+         Compiler: {rustc}\n\n\
+         ## Baseline (P4-07)\n\n\
+         {table}",
+        iters = bench_args.iters,
+    );
+
+    let path = Path::new("docs/PERF.md");
+    fs::write(path, doc).map_err(|e| format!("writing {}: {e}", path.display()))?;
+
+    println!("oracle bench: wrote {}", path.display());
     Ok(())
 }
