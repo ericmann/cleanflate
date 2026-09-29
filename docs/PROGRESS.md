@@ -3,7 +3,7 @@ Branch: build/2026-09-29-2
 Started: 2026-09-29T23:20:38.692Z
 
 ## Tasks
-- [ ] P0-01 Feature flags, Makefile targets and ignore rules
+- [x] P0-01 Feature flags, Makefile targets and ignore rules
 - [ ] P0-02 Guard denies profiling of anything but cleanflate-only binaries
 - [ ] P0-03 design-check enforces the [perf] decision format
 - [ ] P0-04 Decode-path switch and a uniform invalid-code rule
@@ -39,3 +39,6 @@ Started: 2026-09-29T23:20:38.692Z
 
 ## Log
 (one entry per task, appended by implement)
+
+### P0-01 — c8cf74d
+Added features stats/test-hooks (cleanflate), oracle stats feature + dev-dep test-hooks, Makefile lint/test/proptest-3k, .gitignore, docs/perf/README.md. All verify green.
