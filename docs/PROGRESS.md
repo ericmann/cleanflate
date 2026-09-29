@@ -11,7 +11,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P0-06 commit-msg hook adding stage and task tags
 - [x] P0-07 Vendor RFC 1950/1951/1952 texts
 - [x] P0-08 Download Canterbury and Silesia corpora
-- [ ] P0-09 CI entry point and GitHub Actions workflow
+- [x] P0-09 CI entry point and GitHub Actions workflow
 - [ ] P0-10 Lockdown flag, provenance docs and log snapshot
 - [ ] P0-11 M0 acceptance and push
 - [x] P1-01 Oracle FFI wrappers over libz-sys
@@ -292,3 +292,6 @@ Resolved in commit 361e93c: fetch-corpora.sh --from-file with the operator-suppl
 
 ### P0-08 — b37d8d3
 Reconfirmed: work was already committed (361e93c) and files already present on disk (archives, extracted canterbury/silesia dirs, SOURCES.json). Verified `bash tools/cleanroom/fetch-corpora.sh all` (verify mode) exits 0, `make sources-check` passes, `make tools-check` passes including case_corpus_tamper_fails. No code changes; empty commit made to satisfy HEAD-subject requirement for task closure after operator reopened tasks behind P0-08.
+
+### P0-09 — aa215e6
+Added .github/workflows/ci.yml (checkout, rustup 1.89.0 install, shellcheck/jq install, Canterbury corpus fetch with CLEANROOM_ALLOW_CORPUS_FETCH=1, make hooks-install, make ci; only actions/checkout used; push+pull_request triggers). Makefile ci target and README "Building and CI" section already existed from an earlier commit. Tests: make ci exits 0 locally; YAML parses via python3 yaml.safe_load.
