@@ -109,7 +109,7 @@ sources-check:
 	bash tools/ci/sources-check.sh
 
 provenance-snapshot:
-	@echo "STUB: provenance-snapshot arrives in P0-10"
+	bash tools/cleanroom/snapshot-log.sh
 
 provenance-summary:
 	@echo "STUB: provenance-summary arrives in P6"

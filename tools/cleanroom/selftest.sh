@@ -78,6 +78,21 @@ run_guard_case allow_webfetch_rfc_prelock allow
 run_guard_case deny_webfetch_rfc_postlock deny
 rm -f "$CLEANROOM_LOCKDOWN_FILE"
 
+# deny_webfetch_real_lockdown: uses the real tools/cleanroom/LOCKDOWN
+# flag this task wrote to the repo, not the sandboxed fixture lockdown
+# file, by unsetting CLEANROOM_LOCKDOWN_FILE so guard.py falls back to
+# its default <root>/tools/cleanroom/LOCKDOWN. Logs to a scratch file so
+# it does not perturb the denials_logged count below.
+render_fixture allow_webfetch_rfc_prelock
+real_lockdown_log="$WORK/real-lockdown-log.jsonl"
+out="$(env -u CLEANROOM_LOCKDOWN_FILE CLEANROOM_LOG="$real_lockdown_log" python3 "$CLEANROOM_DIR/guard.py" < "$WORK/rendered.json" 2>&1)"
+code=$?
+if [ "$code" -eq 2 ]; then
+    report deny_webfetch_real_lockdown 0
+else
+    report deny_webfetch_real_lockdown 1 "expected deny (exit 2), got exit $code: $out"
+fi
+
 run_guard_case deny_read_cargo_registry deny
 run_guard_case deny_read_target_build deny
 run_guard_case deny_read_forbidden_word_outside_crates deny

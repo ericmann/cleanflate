@@ -313,5 +313,42 @@ class TestLoggingAndFailClosed(GuardTestBase):
             guard.evaluate = real_evaluate
 
 
+class TestRealLockdownFile(unittest.TestCase):
+    """P0-10: exercises the real tools/cleanroom/LOCKDOWN file this repo
+    ships (not a sandboxed fixture), with CLEANROOM_LOCKDOWN_FILE unset so
+    guard.py falls back to its default <root>/tools/cleanroom/LOCKDOWN
+    path. Requires the real flag file to exist, which P0-10 commits."""
+
+    REAL_ROOT = str(CLEANROOM_DIR.parent.parent)
+
+    def setUp(self):
+        self._env_backup = dict(os.environ)
+        self.log_tmp = tempfile.TemporaryDirectory()
+        os.environ["CLEANROOM_REPO_ROOT"] = self.REAL_ROOT
+        os.environ["CLEANROOM_LOG"] = str(Path(self.log_tmp.name) / "tool-log.jsonl")
+        os.environ.pop("CLEANROOM_LOCKDOWN_FILE", None)
+        os.environ.pop("FOUNDRY_STAGE", None)
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._env_backup)
+        self.log_tmp.cleanup()
+
+    def test_real_lockdown_file_denies_fetch_script(self):
+        real_flag = Path(self.REAL_ROOT) / "tools" / "cleanroom" / "LOCKDOWN"
+        self.assertTrue(
+            real_flag.is_file(),
+            "tools/cleanroom/LOCKDOWN must exist for this test (P0-10)",
+        )
+        hook_input = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "bash tools/cleanroom/fetch-corpora.sh canterbury"},
+            "cwd": self.REAL_ROOT,
+        }
+        decision, reason = guard.evaluate(hook_input)
+        self.assertEqual(decision, "denied")
+        self.assertIn("lockdown", reason)
+
+
 if __name__ == "__main__":
     unittest.main()
