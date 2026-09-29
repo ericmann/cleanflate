@@ -31,7 +31,7 @@ Started: 2026-09-29T14:33:40.844Z
 - [x] P2-03 Table-driven Huffman decode path
 - [x] P2-04 Malformed corpus builder, raw cases and malformed test
 - [x] P2-05 Full raw conformance
-- [ ] P2-06 M2 acceptance and push
+- [x] P2-06 M2 acceptance and push
 - [x] P3-01 Preset dictionary support and the zlib wrapper
 - [x] P3-02 Gzip member header parser
 - [x] P3-03 Gzip members, trailer, multi-member streams and gzip API
@@ -329,3 +329,9 @@ Manual check: NOT VERIFIED (human):
 Added conformance::decode_streaming(decompressor, bytes, input_chunk, output_chunk) to crates/oracle/src/conformance.rs: loops Decompressor::decompress calls (incl. empty-input calls to flush already-buffered bits) until Status::Done, with a stuck-detector for a genuinely truncated stream, then finish(). Reusable (not test-inlined) since P3-04 needs the same shape for zlib/gzip.
 New tests in crates/oracle/tests/conformance.rs: conformance_raw_all (every raw, dictionary-free entry, one-shot cleanflate::inflate) and conformance_raw_all_streaming_odd_chunks (same entries via decode_streaming with 1021-byte input / 997-byte output chunks). 1541 entries pass on tier quick (make test), 1625 on tier full (32.59s release) -- no decoder fixes were needed, every entry already decoded byte-identically both ways.
 make fmt-check/lint/corpus/test/crate-checks/cleanroom-selftest all green.
+
+### P2-06 — 395ae09
+M2 acceptance: make ci exit 0 (incl. design-check green). make conformance-full: 1625 entries (conformance_raw_all + conformance_raw_all_streaming_odd_chunks), 34.51s release. cargo test -p oracle --test malformed: 4/4 pass. No code fix needed -- all green from P2-01..P2-05. DESIGN.md audit: the RFC 1951 S3.2.7 single-code distance-alphabet exceptions are documented under D-14 (not D-13 as the task text names -- D-13 became "Streaming contract" after P1-10 inserted it, shifting numbering after this task's text was written); content present and complete, no edit made. make provenance-snapshot: 1177 lines. Pushed build/2026-09-29 to origin (ce5f469..395ae09).
+Manual check: NOT VERIFIED (human):
+1. Review DESIGN.md D-13/D-14 against RFC 1951 S3.2.7.
+2. Confirm GitHub CI is green.
