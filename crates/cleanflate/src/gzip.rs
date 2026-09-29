@@ -1,9 +1,13 @@
-//! The RFC 1952 gzip member header parser: ID1/ID2/CM/FLG, MTIME/XFL/OS,
-//! the optional FEXTRA/FNAME/FCOMMENT fields (bounded to
-//! `options.max_gzip_field` bytes each), and the optional FHCRC check.
+//! The RFC 1952 gzip member header parser and the resumable multi-member
+//! decoder: ID1/ID2/CM/FLG, MTIME/XFL/OS, the optional
+//! FEXTRA/FNAME/FCOMMENT fields (bounded to `options.max_gzip_field`
+//! bytes each), the optional FHCRC check, and the member body/trailer
+//! and inter-member boundary logic (RFC 1952 S2.2, S2.3, S2.3.1).
 
 use crate::checksum::Crc32;
 use crate::error::{ChecksumKind, Error, HeaderError};
+use crate::inflate::{InflateStatus, Inflater};
+use crate::options::TrailingData;
 
 /// A parsed gzip member header (RFC 1952 S2.3.1). `Zlib`/`Gzip` and
 /// member-body/trailer handling arrive in P3-03.
@@ -101,6 +105,16 @@ impl GzipHeaderParser {
             truncated_fields: false,
             max_field,
         }
+    }
+
+    /// A fresh parser that already consumed and CRC'd a confirmed ID1/ID2
+    /// magic pair (used when a multi-member gzip boundary already
+    /// examined those two bytes to decide "this is a new member").
+    pub(crate) fn new_primed(max_field: usize) -> Self {
+        let mut parser = Self::new(max_field);
+        parser.crc.update(&[0x1f, 0x8b]);
+        parser.state = HState::Cm;
+        parser
     }
 
     /// After OS (stage 0), after FEXTRA (stage 1), after FNAME (stage 2),
@@ -358,6 +372,312 @@ impl GzipHeaderParser {
 
     fn fail(&mut self, e: Error) -> Result<(usize, Option<GzipHeader>), Error> {
         self.state = HState::Failed(e.clone());
+        Err(e)
+    }
+}
+
+#[derive(Debug, Clone)]
+enum GState {
+    /// Parsing one member's header.
+    MemberHeader(GzipHeaderParser),
+    /// Decoding one member's raw DEFLATE body; `inflater`/`member_crc`/
+    /// `member_len` on [`GzipDecoder`] carry the per-member state (kept
+    /// out of this variant to avoid an oversized enum).
+    Body,
+    /// Reading one member's 8-byte trailer (CRC32 then ISIZE, both
+    /// little-endian).
+    Trailer { collected: usize, buf: [u8; 8] },
+    /// Between members: deciding whether a new member follows or the
+    /// stream has ended (RFC 1952 S2.2: members are simply concatenated,
+    /// "with no additional information before, between, or after them").
+    Boundary,
+    /// The stream ended cleanly (no trailing data, or trailing data was
+    /// allowed).
+    Done,
+    /// A previous step failed; sticky, like the other backends.
+    Failed(Error),
+}
+
+/// The resumable RFC 1952 gzip decoder: one or more concatenated
+/// members, each with its own header/body/trailer, followed by gzip's
+/// own trailing-data resolution at each inter-member boundary.
+#[derive(Debug, Clone)]
+pub(crate) struct GzipDecoder {
+    state: GState,
+    inflater: Inflater,
+    member_crc: Crc32,
+    member_len: u64,
+    headers: Vec<GzipHeader>,
+    trailing: TrailingData,
+    max_gzip_field: usize,
+    total_in: u64,
+    total_out: u64,
+    trailing_start: Option<u64>,
+    /// Bytes consumed so far while disambiguating the current boundary
+    /// (0 or 1: a lone `0x1f` awaiting a second byte).
+    boundary_pending: Vec<u8>,
+    /// `total_in` at the moment the current boundary examination began,
+    /// used as the trailing-data offset if it turns out not to be a new
+    /// member.
+    boundary_start: u64,
+}
+
+impl GzipDecoder {
+    pub(crate) fn new(trailing: TrailingData, max_gzip_field: usize) -> Self {
+        GzipDecoder {
+            state: GState::MemberHeader(GzipHeaderParser::new(max_gzip_field)),
+            inflater: Inflater::new(),
+            member_crc: Crc32::new(),
+            member_len: 0,
+            headers: Vec::new(),
+            trailing,
+            max_gzip_field,
+            total_in: 0,
+            total_out: 0,
+            trailing_start: None,
+            boundary_pending: Vec::new(),
+            boundary_start: 0,
+        }
+    }
+
+    pub(crate) fn total_out(&self) -> u64 {
+        self.total_out
+    }
+
+    pub(crate) fn is_done(&self) -> bool {
+        matches!(self.state, GState::Done)
+    }
+
+    pub(crate) fn headers(&self) -> &[GzipHeader] {
+        &self.headers
+    }
+
+    pub(crate) fn trailing_start(&self) -> Option<u64> {
+        self.trailing_start
+    }
+
+    fn fail(&mut self, e: Error) -> Result<(usize, usize, InflateStatus), Error> {
+        self.state = GState::Failed(e.clone());
+        Err(e)
+    }
+
+    pub(crate) fn step(
+        &mut self,
+        input: &[u8],
+        output: &mut [u8],
+    ) -> Result<(usize, usize, InflateStatus), Error> {
+        if let GState::Failed(e) = &self.state {
+            return Err(e.clone());
+        }
+
+        let mut pos = 0usize;
+        let mut out_pos = 0usize;
+
+        loop {
+            match &self.state {
+                GState::Done => return Ok((pos, out_pos, InflateStatus::Done)),
+                GState::Failed(e) => return Err(e.clone()),
+                _ => {}
+            }
+
+            match self.state.clone() {
+                GState::MemberHeader(mut parser) => {
+                    let remaining = input.get(pos..).unwrap_or(&[]);
+                    match parser.feed(remaining) {
+                        Err(e) => return self.fail(e),
+                        Ok((consumed, header_opt)) => {
+                            pos += consumed;
+                            self.total_in += consumed as u64;
+                            match header_opt {
+                                None => {
+                                    self.state = GState::MemberHeader(parser);
+                                    return Ok((pos, out_pos, InflateStatus::NeedsInput));
+                                }
+                                Some(header) => {
+                                    self.headers.push(header);
+                                    self.inflater = Inflater::new();
+                                    self.member_crc = Crc32::new();
+                                    self.member_len = 0;
+                                    self.state = GState::Body;
+                                }
+                            }
+                        }
+                    }
+                }
+                GState::Body => {
+                    let remaining_input = input.get(pos..).unwrap_or(&[]);
+                    let remaining_output = output.get_mut(out_pos..).unwrap_or(&mut []);
+                    match self.inflater.step(remaining_input, remaining_output) {
+                        Err(e) => return self.fail(e),
+                        Ok((consumed, produced, status)) => {
+                            let produced_slice =
+                                output.get(out_pos..out_pos + produced).unwrap_or(&[]);
+                            self.member_crc.update(produced_slice);
+                            self.member_len += produced as u64;
+                            pos += consumed;
+                            self.total_in += consumed as u64;
+                            out_pos += produced;
+                            self.total_out += produced as u64;
+                            match status {
+                                InflateStatus::NeedsInput => {
+                                    return Ok((pos, out_pos, InflateStatus::NeedsInput));
+                                }
+                                InflateStatus::OutputFull => {
+                                    return Ok((pos, out_pos, InflateStatus::OutputFull));
+                                }
+                                InflateStatus::Done => {
+                                    self.state = GState::Trailer {
+                                        collected: 0,
+                                        buf: [0u8; 8],
+                                    };
+                                }
+                            }
+                        }
+                    }
+                }
+                GState::Trailer { collected, mut buf } => {
+                    if collected >= 8 {
+                        let crc_bytes: [u8; 4] = [
+                            *buf.first().unwrap_or(&0),
+                            *buf.get(1).unwrap_or(&0),
+                            *buf.get(2).unwrap_or(&0),
+                            *buf.get(3).unwrap_or(&0),
+                        ];
+                        let isize_bytes: [u8; 4] = [
+                            *buf.get(4).unwrap_or(&0),
+                            *buf.get(5).unwrap_or(&0),
+                            *buf.get(6).unwrap_or(&0),
+                            *buf.get(7).unwrap_or(&0),
+                        ];
+                        let expected_crc = u32::from_le_bytes(crc_bytes);
+                        let expected_isize = u32::from_le_bytes(isize_bytes);
+                        let crc32_accum = self.member_crc.finish();
+                        if expected_crc != crc32_accum {
+                            return self.fail(Error::ChecksumMismatch {
+                                kind: ChecksumKind::Crc32,
+                                expected: expected_crc,
+                                actual: crc32_accum,
+                            });
+                        }
+                        let actual_isize = (self.member_len % (1u64 << 32)) as u32;
+                        if expected_isize != actual_isize {
+                            return self.fail(Error::ChecksumMismatch {
+                                kind: ChecksumKind::Isize,
+                                expected: expected_isize,
+                                actual: actual_isize,
+                            });
+                        }
+                        self.state = GState::Boundary;
+                        self.boundary_pending.clear();
+                        continue;
+                    }
+                    match input.get(pos) {
+                        None => {
+                            self.state = GState::Trailer { collected, buf };
+                            return Ok((pos, out_pos, InflateStatus::NeedsInput));
+                        }
+                        Some(&b) => {
+                            pos += 1;
+                            self.total_in += 1;
+                            if let Some(slot) = buf.get_mut(collected) {
+                                *slot = b;
+                            }
+                            self.state = GState::Trailer {
+                                collected: collected + 1,
+                                buf,
+                            };
+                        }
+                    }
+                }
+                GState::Boundary => {
+                    if self.boundary_pending.is_empty() {
+                        self.boundary_start = self.total_in;
+                    }
+                    match input.get(pos) {
+                        None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
+                        Some(&b) => {
+                            pos += 1;
+                            self.total_in += 1;
+                            if self.boundary_pending.is_empty() {
+                                if b == 0x1f {
+                                    self.boundary_pending.push(b);
+                                } else {
+                                    return self.resolve_trailing(pos, out_pos);
+                                }
+                            } else if b == 0x8b {
+                                self.boundary_pending.clear();
+                                self.state = GState::MemberHeader(GzipHeaderParser::new_primed(
+                                    self.max_gzip_field,
+                                ));
+                            } else {
+                                return self.resolve_trailing(pos, out_pos);
+                            }
+                        }
+                    }
+                }
+                GState::Done | GState::Failed(_) => {}
+            }
+        }
+    }
+
+    /// The boundary examination concluded this is not a new member:
+    /// apply the trailing-data policy (RFC 1952 S2.2 concatenation ends
+    /// here; SPEC S3.3 trailing-data policy applies to what follows).
+    fn resolve_trailing(
+        &mut self,
+        pos: usize,
+        out_pos: usize,
+    ) -> Result<(usize, usize, InflateStatus), Error> {
+        self.boundary_pending.clear();
+        match self.trailing {
+            TrailingData::Reject => {
+                let offset = self.boundary_start;
+                self.fail(Error::TrailingData { offset })
+            }
+            TrailingData::Allow => {
+                self.trailing_start = Some(self.boundary_start);
+                self.state = GState::Done;
+                Ok((pos, out_pos, InflateStatus::Done))
+            }
+        }
+    }
+
+    /// Called by `Decompressor::finish`: gzip's own notion of "cleanly
+    /// stoppable" (SPEC S3.3, RFC 1952 S2.2's Boundary rules), which
+    /// differs from `is_done()` because a stream can stop exactly at a
+    /// member boundary (no pending disambiguation) once at least one
+    /// member is complete, or resolve a still-ambiguous lone `0x1f` via
+    /// the trailing-data policy.
+    pub(crate) fn finish(&mut self) -> Result<(), Error> {
+        if let GState::Failed(e) = &self.state {
+            return Err(e.clone());
+        }
+        if matches!(self.state, GState::Done) {
+            return Ok(());
+        }
+        if matches!(self.state, GState::Boundary) && !self.headers.is_empty() {
+            if self.boundary_pending.is_empty() {
+                return Ok(());
+            }
+            // A lone buffered 0x1f: the stream ended before a second
+            // byte could disambiguate it. RFC 1952 gives no meaning to
+            // a stray byte here, so it is trailing data either way.
+            return match self.trailing {
+                TrailingData::Reject => {
+                    let offset = self.boundary_start;
+                    let e = Error::TrailingData { offset };
+                    self.state = GState::Failed(e.clone());
+                    Err(e)
+                }
+                TrailingData::Allow => {
+                    self.trailing_start = Some(self.boundary_start);
+                    self.state = GState::Done;
+                    Ok(())
+                }
+            };
+        }
+        let e = Error::Truncated;
+        self.state = GState::Failed(e.clone());
         Err(e)
     }
 }

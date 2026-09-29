@@ -2,8 +2,8 @@
 
 use crate::config::{DEFAULT_MAX_GZIP_FIELD, DEFAULT_MAX_OUTPUT};
 
-/// Which framing to decode. `Zlib` and `Gzip` are added in Phase 3;
-/// `#[non_exhaustive]` keeps that a non-breaking addition.
+/// Which framing to decode. `#[non_exhaustive]` keeps future additions
+/// non-breaking.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -11,6 +11,8 @@ pub enum Format {
     Raw,
     /// RFC 1950 zlib wrapper.
     Zlib,
+    /// RFC 1952 gzip wrapper (one or more concatenated members).
+    Gzip,
 }
 
 /// What to do with bytes remaining after the logical end of a stream

@@ -18,7 +18,6 @@ mod bitreader;
 pub mod checksum;
 mod config;
 pub mod error;
-#[allow(dead_code)] // GzipHeaderParser is driven by the gzip backend, arriving in P3-03
 pub mod gzip;
 mod huffman;
 mod inflate;
@@ -30,9 +29,11 @@ mod zlib;
 
 pub use config::{DEFAULT_MAX_GZIP_FIELD, DEFAULT_MAX_OUTPUT};
 pub use error::{ChecksumKind, Error, ErrorKind, HeaderError, HuffmanError};
+pub use gzip::GzipHeader;
 pub use options::{Format, Options, TrailingData};
 pub use stream::{
-    decompress_with, inflate, zlib_decompress, Decoded, Decompressor, Progress, Status,
+    decompress_with, gzip_decompress, inflate, zlib_decompress, Decoded, Decompressor, Progress,
+    Status,
 };
 
 #[cfg(test)]

@@ -2,18 +2,21 @@
 //! `decompress_with`) APIs (SPEC S3.3).
 
 use crate::error::Error;
+use crate::gzip::{GzipDecoder, GzipHeader};
 use crate::inflate::{InflateStatus, Inflater};
 use crate::options::{Format, Options, TrailingData};
 use crate::zlib::ZlibDecoder;
 
-/// The format-specific decoder a [`Decompressor`] drives. Both variants
+/// The format-specific decoder a [`Decompressor`] drives. All variants
 /// expose the same `step`/`is_done`/`total_out` shape as [`Inflater`]
 /// itself, so `Decompressor`'s own logic (limits, trailing data,
-/// stickiness) stays format-agnostic.
+/// stickiness) stays format-agnostic; gzip additionally owns its own
+/// trailing-data resolution (see `finish_ok`/`skips_generic_trailing`).
 #[derive(Debug, Clone)]
 enum Backend {
     Raw(Inflater),
     Zlib(ZlibDecoder),
+    Gzip(GzipDecoder),
 }
 
 impl Backend {
@@ -25,6 +28,7 @@ impl Backend {
         match self {
             Backend::Raw(i) => i.step(input, output),
             Backend::Zlib(z) => z.step(input, output),
+            Backend::Gzip(g) => g.step(input, output),
         }
     }
 
@@ -32,6 +36,7 @@ impl Backend {
         match self {
             Backend::Raw(i) => i.is_done(),
             Backend::Zlib(z) => z.is_done(),
+            Backend::Gzip(g) => g.is_done(),
         }
     }
 
@@ -39,6 +44,51 @@ impl Backend {
         match self {
             Backend::Raw(i) => i.total_out(),
             Backend::Zlib(z) => z.total_out(),
+            Backend::Gzip(g) => g.total_out(),
+        }
+    }
+
+    /// Gzip resolves its own trailing-data policy inline (it must
+    /// consume disambiguating bytes at each member boundary to tell "new
+    /// member" from "trailing garbage"), so `Decompressor`'s generic
+    /// post-`Done` leftover check must not also apply to it.
+    fn owns_trailing_data(&self) -> bool {
+        matches!(self, Backend::Gzip(_))
+    }
+
+    /// Backend-specific "is this a valid stopping point" check used by
+    /// `Decompressor::finish`.
+    fn finish(&mut self) -> Result<(), Error> {
+        match self {
+            Backend::Raw(i) => {
+                if i.is_done() {
+                    Ok(())
+                } else {
+                    Err(Error::Truncated)
+                }
+            }
+            Backend::Zlib(z) => {
+                if z.is_done() {
+                    Ok(())
+                } else {
+                    Err(Error::Truncated)
+                }
+            }
+            Backend::Gzip(g) => g.finish(),
+        }
+    }
+
+    fn trailing_start(&self) -> Option<u64> {
+        match self {
+            Backend::Gzip(g) => g.trailing_start(),
+            _ => None,
+        }
+    }
+
+    fn gzip_headers(&self) -> &[GzipHeader] {
+        match self {
+            Backend::Gzip(g) => g.headers(),
+            _ => &[],
         }
     }
 }
@@ -72,6 +122,9 @@ pub struct Decoded {
     pub data: Vec<u8>,
     /// Bytes consumed from the input.
     pub consumed: usize,
+    /// Parsed headers of every gzip member seen (empty for non-gzip
+    /// formats).
+    pub gzip_members: Vec<GzipHeader>,
 }
 
 /// A resumable decompressor: feed it arbitrarily chunked input and
@@ -87,8 +140,7 @@ pub struct Decompressor {
 }
 
 impl Decompressor {
-    /// Create a decompressor for `format` with `options`. Gzip arrives
-    /// in Phase 3.
+    /// Create a decompressor for `format` with `options`.
     pub fn new(format: Format, options: Options) -> Self {
         let backend = match format {
             Format::Raw => match &options.dictionary {
@@ -96,6 +148,9 @@ impl Decompressor {
                 None => Backend::Raw(Inflater::new()),
             },
             Format::Zlib => Backend::Zlib(ZlibDecoder::new(options.dictionary.clone())),
+            Format::Gzip => {
+                Backend::Gzip(GzipDecoder::new(options.trailing, options.max_gzip_field))
+            }
         };
         Decompressor {
             backend,
@@ -161,7 +216,7 @@ impl Decompressor {
             InflateStatus::Done => {
                 let leftover = input.len().saturating_sub(consumed);
                 let mut status = Status::Done;
-                if leftover > 0 {
+                if leftover > 0 && !self.backend.owns_trailing_data() {
                     match self.options.trailing {
                         TrailingData::Reject => {
                             let offset = self.total_in;
@@ -211,19 +266,26 @@ impl Decompressor {
         })
     }
 
-    /// Confirm the stream finished cleanly. `Ok(())` if [`Status::Done`]
-    /// was reached, else `Err(Error::Truncated)`.
+    /// Confirm the stream finished cleanly. `Ok(())` if the backend
+    /// reached a valid stopping point (for gzip, this may resolve a
+    /// still-pending trailing-data decision), else `Err`.
     pub fn finish(&mut self) -> Result<(), Error> {
         if let Some(e) = &self.error {
             return Err(e.clone());
         }
-        if self.backend.is_done() {
-            Ok(())
-        } else {
-            let e = Error::Truncated;
-            self.error = Some(e.clone());
-            Err(e)
+        match self.backend.finish() {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.error = Some(e.clone());
+                Err(e)
+            }
         }
+    }
+
+    /// Parsed headers of every gzip member seen so far (empty for
+    /// non-gzip formats).
+    pub fn gzip_headers(&self) -> &[GzipHeader] {
+        self.backend.gzip_headers()
     }
 
     /// Total input bytes consumed so far.
@@ -239,7 +301,7 @@ impl Decompressor {
     /// The input offset where trailing data was first observed, if any
     /// (only ever set under [`TrailingData::Allow`]).
     pub fn trailing_start(&self) -> Option<u64> {
-        self.trailing_start
+        self.backend.trailing_start().or(self.trailing_start)
     }
 }
 
@@ -290,6 +352,7 @@ pub fn decompress_with(format: Format, input: &[u8], options: &Options) -> Resul
     Ok(Decoded {
         data: buf,
         consumed: in_pos,
+        gzip_members: decompressor.gzip_headers().to_vec(),
     })
 }
 
@@ -304,4 +367,10 @@ pub fn inflate(input: &[u8]) -> Result<Vec<u8>, Error> {
 /// [`Options::dictionary`] set to supply one.
 pub fn zlib_decompress(input: &[u8]) -> Result<Vec<u8>, Error> {
     decompress_with(Format::Zlib, input, &Options::default()).map(|d| d.data)
+}
+
+/// Decompress an RFC 1952 gzip stream (one or more concatenated
+/// members) with default options.
+pub fn gzip_decompress(input: &[u8]) -> Result<Vec<u8>, Error> {
+    decompress_with(Format::Gzip, input, &Options::default()).map(|d| d.data)
 }

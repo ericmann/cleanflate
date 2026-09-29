@@ -408,3 +408,49 @@ whole header before parsing) keeps this parser resumable under
 arbitrary chunking with no separate code path for the "enough bytes
 arrived in one call" case, consistent with every other resumable state
 machine in this crate (D-07, D-11, D-15, D-17).
+
+### D-19: Gzip members, trailer, and multi-member boundary
+
+RFC: RFC 1952 S2.2, S2.3, S2.3.1
+Decision: `GzipDecoder` chains `MemberHeader(GzipHeaderParser)` ->
+`Body` -> `Trailer` -> `Boundary` -> (`MemberHeader` again, or `Done`)
+per member, with the running `Inflater`/CRC-32/byte-count for the
+in-progress member kept as plain `GzipDecoder` fields rather than inside
+the state enum (an enum variant embedding a whole `Inflater` -- which
+carries the 32 KiB window -- would make every other, tiny, variant pay
+for its size; `ZlibDecoder`, D-17, already does the same). The CRC-32
+and ISIZE trailer fields are read as raw little-endian bytes (S2.3,
+matching D-18's endianness note) and compared only once both are fully
+buffered, so a truncated trailer is reported as `Error::Truncated`
+rather than a checksum error. At a member boundary, RFC 1952 S2.2 says
+members are "simply concatenated, with no additional information before,
+between, or after them", which means the *only* way to know whether the
+stream continues is to look for the next member's own `1f 8b` magic;
+anything else at a boundary is trailing data under SPEC S3.3's
+trailing-data policy. Because that decision requires consuming
+disambiguating bytes before it can be made, `GzipDecoder` resolves its
+own trailing-data policy internally (via `TrailingData` passed into its
+constructor) rather than letting `Decompressor`'s generic post-`Done`
+leftover check handle it as for Raw/Zlib; `Backend::owns_trailing_data`
+tells `Decompressor` to skip its own leftover check for the `Gzip`
+variant, and `Backend::trailing_start`/`GzipDecoder::trailing_start`
+expose the offset so both paths report through the same
+`Decompressor::trailing_start()` accessor. A lone `0x1f` at true
+end-of-input (matching the resumable "a `NeedsInput` call must consume
+everything offered" invariant used throughout this crate, e.g. D-07)
+is buffered in `boundary_pending` rather than left unconsumed, since a
+second byte might still arrive; `GzipDecoder::finish` (called from
+`Decompressor::finish`, via the new `Backend::finish` delegation) applies
+the trailing-data policy to that still-ambiguous byte, or confirms a
+clean stop when the boundary is unambiguous and at least one member has
+completed. `GzipHeaderParser::new_primed` skips re-CRCing/re-checking
+the `1f 8b` bytes the boundary logic already consumed and verified
+before committing to a new member.
+Rationale: Keeping the "is this trailing data" decision inside the
+format that alone has enough information to make it (only gzip's own
+concatenation rule creates the header-magic ambiguity; zlib and raw
+streams have no equivalent "maybe another one follows" question) avoids
+threading gzip-specific lookahead logic into `Decompressor`'s otherwise
+format-agnostic core, matching the "backend owns its own protocol rules,
+`Decompressor` owns cross-cutting policy" split already established by
+D-17.
