@@ -214,10 +214,13 @@
     },
     {
       "id": "libz-only-in-oracle",
-      "description": "SPEC 2.1/4: libz-sys is linked and named only inside crates/oracle. cleanflate and the fuzz crate reach C zlib only through oracle's safe wrappers.",
+      "description": "SPEC 2.1/4: libz-sys is linked and named only inside crates/oracle. cleanflate and the fuzz crate reach C zlib only through oracle's safe wrappers. fuzz/Cargo.lock is exempt: it is a lockfile, not fuzz's own source/Cargo.toml, and necessarily lists oracle's transitive libz-sys pin like every other transitive dependency.",
       "paths": [
         "crates/cleanflate/",
         "fuzz/"
+      ],
+      "exclude": [
+        "fuzz/Cargo.lock"
       ],
       "pattern": "libz[-_]sys",
       "shouldMatch": [

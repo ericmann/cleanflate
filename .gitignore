@@ -4,12 +4,6 @@
 /fuzz/corpus
 /fuzz/artifacts
 /fuzz/coverage
-# Not committed: recording oracle's transitive libz-sys pin here would trip
-# the libz-only-in-oracle constraint, which scans fuzz/ for "libz-sys" (it
-# means fuzz's own source/Cargo.toml, but Cargo.lock necessarily lists every
-# transitive dependency oracle pulls in). Regenerate with `cargo check
-# --manifest-path fuzz/Cargo.toml` or `cargo fuzz run`.
-/fuzz/Cargo.lock
 /testdata/generated/
 /testdata/corpora/archives/
 /testdata/corpora/canterbury/
