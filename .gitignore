@@ -1,1 +1,12 @@
 .foundry/implement.lock
+/target
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+/fuzz/coverage
+/testdata/generated/
+/testdata/corpora/archives/
+/testdata/corpora/canterbury/
+/testdata/corpora/silesia/
+/provenance/tool-log.jsonl
+/provenance/*.lock
