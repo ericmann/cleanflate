@@ -1,5 +1,5 @@
 .PHONY: fmt-check lint test corpus corpus-full crate-checks cleanroom-selftest \
-        tools-check design-check ci proptest-10k proptest-3k bomb heavy \
+        tools-check design-check ci proptest-10k proptest-3k fastslow-full bomb heavy \
         fuzz-check fuzz-smoke fuzz-long fuzz-divergences bench \
         provenance-snapshot provenance-summary build-report hooks-install \
         sources-check conformance-full malformed
@@ -96,12 +96,12 @@ fuzz-divergences:
 	fi
 
 proptest-10k:
-	CLEANFLATE_CHUNKING_CASES=10000 cargo test --release -p oracle --test chunking
+	CLEANFLATE_CHUNKING_CASES=10000 CLEANFLATE_FASTSLOW_CASES=10000 cargo test --release -p oracle --test chunking --test fastslow
 
 bomb:
 	cargo test --release -p oracle --test bomb -- --include-ignored
 
-heavy: proptest-10k bomb conformance-full
+heavy: proptest-10k bomb conformance-full fastslow-full
 	@echo "heavy: proptest-10k, bomb and conformance-full passed. fuzz-long (5 x 1h) is not run as part of heavy -- use 'make fuzz-long' or the fuzz-nightly workflow directly."
 
 malformed:
@@ -128,4 +128,7 @@ hooks-install:
 ci: fmt-check lint corpus test crate-checks cleanroom-selftest tools-check design-check
 
 proptest-3k:
-	CLEANFLATE_CHUNKING_CASES=3000 cargo test --release -p oracle --test chunking
+	CLEANFLATE_CHUNKING_CASES=3000 CLEANFLATE_FASTSLOW_CASES=3000 cargo test --release -p oracle --test chunking --test fastslow
+
+fastslow-full: corpus-full
+	CLEANFLATE_TIER=full cargo test --release -p oracle --test fastslow

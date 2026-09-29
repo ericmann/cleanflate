@@ -9,8 +9,11 @@
 
 use proptest::prelude::*;
 
+mod common;
+use common::{chunk_schedule_strategy, data_strategy, params_strategy, to_cleanflate_format};
+
 use cleanflate::{decompress_with, Decompressor, Error, Format, Options, Status};
-use oracle::ffi::{deflate_bytes, DeflateParams, Framing, Strategy as ZlibStrategy};
+use oracle::ffi::{deflate_bytes, DeflateParams};
 
 /// Case count, overridable for the heavy `make proptest-10k` target;
 /// falls back to a small default for ordinary `make test` runs.
@@ -28,63 +31,6 @@ fn config() -> ProptestConfig {
         cases: case_count(),
         ..ProptestConfig::default()
     }
-}
-
-fn to_cleanflate_format(framing: Framing) -> Format {
-    match framing {
-        Framing::Raw => Format::Raw,
-        Framing::Zlib => Format::Zlib,
-        Framing::Gzip => Format::Gzip,
-    }
-}
-
-fn framing_strategy() -> impl Strategy<Value = Framing> {
-    prop_oneof![Just(Framing::Raw), Just(Framing::Zlib), Just(Framing::Gzip),]
-}
-
-fn zlib_strategy_strategy() -> impl Strategy<Value = ZlibStrategy> {
-    prop_oneof![
-        Just(ZlibStrategy::Default),
-        Just(ZlibStrategy::Filtered),
-        Just(ZlibStrategy::HuffmanOnly),
-        Just(ZlibStrategy::Rle),
-        Just(ZlibStrategy::Fixed),
-    ]
-}
-
-/// 0..=16384 bytes, a mix of fully random data and short repeated
-/// patterns (which exercise DEFLATE's match-copying much harder than
-/// uniform random noise would).
-fn data_strategy() -> impl Strategy<Value = Vec<u8>> {
-    prop_oneof![
-        proptest::collection::vec(any::<u8>(), 0..=16384),
-        (
-            proptest::collection::vec(any::<u8>(), 1..=64),
-            0..=16384usize
-        )
-            .prop_map(|(pattern, len)| pattern.iter().cycle().take(len).copied().collect()),
-    ]
-}
-
-/// A chunk-size schedule: elements 1..=64, cycled as needed; a 1-in-10
-/// chance of an all-1s schedule (the harshest case -- every call moves
-/// exactly one byte).
-fn chunk_schedule_strategy() -> impl Strategy<Value = Vec<usize>> {
-    prop_oneof![
-        1 => proptest::collection::vec(Just(1usize), 1..=32),
-        9 => proptest::collection::vec(1usize..=64, 1..=32),
-    ]
-}
-
-#[allow(clippy::too_many_arguments)]
-fn params_strategy() -> impl Strategy<Value = (Framing, u8, ZlibStrategy, u8, u8)> {
-    (
-        framing_strategy(),
-        0u8..=9,
-        zlib_strategy_strategy(),
-        9u8..=15,
-        1u8..=9,
-    )
 }
 
 /// Feed `compressed` to a fresh `Decompressor` using `in_schedule`
