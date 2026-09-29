@@ -102,6 +102,39 @@ one place and effectively extends to 258 arithmetically
 special-case this, so the arithmetic decode is accepted as specified
 rather than patched to avoid the overlap.
 
+### D-07: Bit order and the resumable reader's buffer invariant
+
+RFC: RFC 1951 S3.1.1
+Decision: `BitReader` buffers bits LSB-first in a `u64`: each loaded byte
+is OR'd in shifted left by the current bit count, and reads take the low
+`n` bits. `fill` loads whole bytes only while fewer than `need` bits are
+buffered, so decode steps consume exactly the bytes the stream format
+requires -- after any completed step the buffer holds at most 7 bits
+(whatever remainder is left over from the most recently loaded byte).
+Rationale: RFC 1951 S3.1.1: "Data elements are packed into bytes...
+starting with the least-significant bit of the byte." Buffering in a
+`u64` (up to 8 bytes) rather than byte-at-a-time lets one `fill` call
+satisfy a multi-byte read (e.g. a 32-bit stored-block length) without
+looping per bit, while `fill`'s "only while count < need" rule keeps the
+resumable contract exact: a caller that stops feeding input mid-symbol
+gets `None` back with the reader's byte position advanced by exactly the
+whole bytes it was able to load, never more.
+
+### D-08: Window ring buffer and overlap semantics
+
+RFC: RFC 1951 S2, S3.2.5
+Decision: `Window` is a fixed 32,768-byte ring plus a `total: u64`
+counter of all bytes ever pushed. `copy_match` writes the requested match
+byte by byte, pushing each copied byte into the ring before reading the
+next one, so a distance shorter than the match length (e.g. distance 3,
+length 7) correctly repeats the pattern that copy is itself producing.
+Rationale: RFC 1951 S2 draws distances from `(1..32,768)`, and S3.2.5's
+length/distance pairs are explicit about a match being able to copy from
+data the match itself is still writing (the classic `distance < length`
+overlap, e.g. run-length patterns). Interleaving the push with the copy
+(rather than copying from a snapshot of the window) is what makes that
+overlap correct without special-casing it.
+
 ### D-10: Checksums
 
 RFC: RFC 1950 S2.2, RFC 1950 S8.2, RFC 1952 S2.3.1, RFC 1952 S8

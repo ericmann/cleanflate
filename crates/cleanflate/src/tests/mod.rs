@@ -5,9 +5,11 @@
     clippy::indexing_slicing
 )]
 
+mod bitreader;
 mod checksum;
 mod error;
 mod tables;
+mod window;
 
 #[test]
 fn crate_builds() {
