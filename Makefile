@@ -19,8 +19,8 @@ corpus:
 corpus-full:
 	cargo run --release -q -p oracle -- generate --tier full
 
-conformance-full:
-	@echo "STUB: conformance-full arrives in P1-03"
+conformance-full: corpus-full
+	CLEANFLATE_TIER=full cargo test --release -p oracle --test conformance
 
 crate-checks:
 	bash tools/ci/crate-checks.sh
@@ -96,8 +96,8 @@ proptest-10k:
 bomb:
 	cargo test --release -p oracle --test bomb -- --include-ignored
 
-heavy: proptest-10k bomb
-	@echo "heavy: proptest-10k and bomb passed. fuzz-long (5 x 1h) is not run as part of heavy -- use 'make fuzz-long' or the fuzz-nightly workflow directly."
+heavy: proptest-10k bomb conformance-full
+	@echo "heavy: proptest-10k, bomb and conformance-full passed. fuzz-long (5 x 1h) is not run as part of heavy -- use 'make fuzz-long' or the fuzz-nightly workflow directly."
 
 malformed:
 	cargo run -q -p oracle -- malformed
