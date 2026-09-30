@@ -82,3 +82,13 @@ The first iteration verifies length and CRC-32 against the index. Findings go in
 - `flamegraphs/`: `<slug>-<before|after>.svg`, written only by `make flamegraph-save`.
 - `PHASE3.md`: the phase-3 performance report; every task appends a `### <ID>` entry.
 - `phase3-profile.md`: the phase-3 profile of the phase-2 decoder (P1-02).
+
+## Assembly evidence (cleanflate only)
+
+`make asm` runs `cargo rustc --release -p cleanflate --lib -- --emit asm` (the release profile, no extra `-C` flags) and copies the freshly emitted `cleanflate-*.s` files from `target/release/deps/` to `target/asm/`. Only cleanflate's own generated assembly is ever read (no disassembler, nothing from C code).
+
+`make asm-count [ASM_FUNCS=a,b] [ASM_SRCS=f.rs,g.rs] [ASM_OUT=path.json]` runs `tools/perf/asm_branches.py` over `target/asm/*.s` and prints a table and a JSON report (`{schema: 1, kind: "asm", git_head, rustc, functions: [...]}`). Per row: `instructions`, `cond_branches` (jump mnemonics other than an unconditional `jmp`), `panic_calls` (call or jump instructions to panic or bounds-failure routines: names containing `panic`, `panic_bounds_check`, `slice_start_index_len_fail`, `slice_end_index_len_fail`, `slice_index_order_fail`, `unwrap_failed`, `expect_failed`, `len_mismatch`) and `panic_sites` (distinct target and source-location pairs, the location being the last `.Lanon` operand loaded just before the call).
+
+- `ASM_FUNCS` (default `fast_loop`) selects function symbols by substring of the mangled or demangled name.
+- `ASM_SRCS` (default `fast_loop.rs`) reports by source file instead: every instruction is attributed to the file of the most recent `.loc` directive. This is how to measure a function the optimiser inlined into another. In the library build the fast loop is inlined into `Inflater::step_into`, which has no `fast_loop` symbol; the `src:` row for `fast_loop.rs` counts its own instructions and the `huffman.rs`, `bitreader.rs` and `window.rs` rows count what was inlined from those files.
+

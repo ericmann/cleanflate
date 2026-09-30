@@ -1,6 +1,6 @@
 .PHONY: regress-seed fmt-check lint test corpus corpus-full crate-checks cleanroom-selftest \
         tools-check design-check ci proptest-10k proptest-3k fastslow-full bomb heavy \
-        fuzz-check fuzz-smoke fuzz-long fuzz-divergences bench bench-quick bench-compare bench-noise bench-md bench-targets bench-stats bench-checksum profile-prep profile-build profile profile-stat flamegraph flamegraph-save profile-required tag-required \
+        fuzz-check fuzz-smoke fuzz-long fuzz-divergences bench bench-quick bench-compare bench-noise bench-md bench-targets bench-stats bench-checksum asm asm-count profile-prep profile-build profile profile-stat flamegraph flamegraph-save profile-required tag-required \
         provenance-snapshot provenance-summary build-report hooks-install \
         sources-check conformance-full malformed fuzz-smoke-decoder fuzz-milestone
 
@@ -254,3 +254,22 @@ profile-required: tag-required
 	$(MAKE) profile profile-stat flamegraph-save PROFILE_KEY=silesia/rfc1951/l1/oneshot PROFILE_ITERS=3 TAG=$(TAG)
 	$(MAKE) profile profile-stat flamegraph-save PROFILE_KEY=silesia/rfc1951/l1/streaming PROFILE_ITERS=3 TAG=$(TAG)
 	$(MAKE) profile profile-stat flamegraph-save PROFILE_KEY=canterbury/rfc1952/l1/oneshot PROFILE_ITERS=300 TAG=$(TAG)
+
+# Cleanflate's own generated assembly (SPEC 4.3): the release build, no extra -C flags.
+comma := ,
+ASM_FUNCS ?= fast_loop
+ASM_SRCS ?= fast_loop.rs
+ASM_OUT ?= target/asm/count.json
+
+asm:
+	mkdir -p target/asm
+	rm -f target/asm/*.s target/asm/.stamp
+	touch target/asm/.stamp
+	cargo rustc --release -p cleanflate --lib -- --emit asm
+	find target/release/deps -name 'cleanflate-*.s' -newer target/asm/.stamp -exec cp {} target/asm/ \;
+	@ls target/asm/*.s >/dev/null 2>&1 || { echo "make asm: no cleanflate-*.s was emitted under target/release/deps"; exit 1; }
+	@ls -l target/asm/*.s
+
+asm-count:
+	@test -d target/asm || { echo "run `make asm` first"; exit 2; }
+	python3 tools/perf/asm_branches.py $(foreach f,$(subst $(comma), ,$(ASM_FUNCS)),--func $(f)) $(foreach f,$(subst $(comma), ,$(ASM_SRCS)),--src $(f)) --json $(ASM_OUT) target/asm/*.s

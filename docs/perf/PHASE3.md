@@ -1093,6 +1093,26 @@ Targets (`make bench-targets J=docs/perf/phase3/P3-05.json`), reported, not gate
 - T5 (Silesia level-6 one-shot >= 0.70x C zlib): NOT MET; worst: silesia/raw/l6/oneshot ratio 0.680 (threshold >= 0.70)
 - T6 (no row slower than the phase-2 baseline beyond noise): NOT MET; worst: canterbury/zlib/l9/streaming -7.83% vs baseline
 
+### P4-01
+Assembly evidence tool: `make asm` and `make asm-count` (`tools/perf/asm_branches.py`, documented in `docs/perf/README.md`, tests in `tools/perf/tests/test_asm_branches.py`). Baseline on the current code (`docs/perf/phase3/P4-01-asm.json`, `rustc 1.89.0 (29483883e 2025-08-04)`):
+
+| row | instructions | cond branches | panic calls | panic sites |
+|---|---:|---:|---:|---:|
+| `cleanflate::inflate::Inflater::step_into` | 2259 | 167 | 0 | 0 |
+| `src:crates/cleanflate/src/inflate.rs` | 1380 | 83 | 0 | 0 |
+| `src:crates/cleanflate/src/bitreader.rs` | 582 | 39 | 0 | 0 |
+| `src:crates/cleanflate/src/huffman.rs` | 507 | 40 | 0 | 0 |
+| `cleanflate::window::Window::copy_match_sink` | 241 | 24 | 2 | 2 |
+| `cleanflate::huffman::Huffman::decode_table` | 182 | 22 | 0 | 0 |
+| `src:crates/cleanflate/src/window.rs` | 169 | 21 | 0 | 0 |
+| `src:crates/cleanflate/src/fast_loop.rs` | 79 | 11 | 0 | 0 |
+
+Findings for P4-02 and P4-03:
+
+- The fast loop has no symbol of its own in the library assembly: it is inlined into `Inflater::step_into` (the build that `perf` profiles keeps `fast_loop::run_loop` as a separate function, so the assembly build and the profile build inline differently; the `src:` rows are the stable measure). Hence the `src:` rows for the files that make up the loop.
+- The fast loop itself, `Inflater::step_into` and `Huffman::decode_table` contain **no** panic or bounds-failure call sites at all (0 and 0 above). The only two such sites anywhere in the decode path are in `Window::copy_match_sink` (2 calls at 2 sites). So the SPEC's bounds-check hypothesis (bounds checks hiding in the hot loop) does not hold for this code: its table and slice accesses already compile to branch-and-fallback code through `get`, which is the conditional-branch count, not a panic call. What remains is branch volume: `step_into` has 167 conditional branches over 2,259 instructions, `decode_table` 22 over 182, and `fast_loop.rs` alone 11 over 79.
+- P4-03's measure should therefore be conditional branches and instructions per fast-loop iteration, with panic sites expected to stay 0 (and the two in `copy_match_sink` as the only ones to try to remove).
+
 ## Targets
 Filled by P5-02 (acceptance tasks).
 
