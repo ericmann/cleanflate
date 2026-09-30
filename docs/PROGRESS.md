@@ -23,7 +23,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P1-05 M1 acceptance and push
 - [x] P2-01 Fast literal/length/distance decode loop
 - [x] P2-02 Differential fuzz target: fast vs reference
-- [ ] P2-03 Copyable state in the slow path (gated)
+- [~] P2-03 Copyable state in the slow path (gated)
 - [ ] P2-04 M2 acceptance and push
 - [ ] P3-01 Output as match history; window carried only across calls
 - [ ] P3-02 Overlapping matches by pattern doubling

@@ -606,3 +606,17 @@ Fast literal/length/distance decode loop (D-29). `make bench-quick` before (`doc
 | canterbury/gzip/l6/oneshot | 86.9 | 115.7 | +33.2 | 6.0 | WIN |
 
 All twelve aggregates are WIN and there is no per-file REGRESSION. The gain is far beyond the noise: the loop removes the per-symbol `State` clone and dispatch (the two costs that together were about 31% of samples at the M0 profile). gzip gains least because its CRC-32 is untouched (P4-01).
+
+### P2-03 (gated, negative result)
+
+Gate (PT2): `make profile PROFILE_FRAMING=rfc1951` (Silesia level 6, 3 iterations, cleanflate-only) after the fast loop (P2-01). Threshold: max(2%, 2x aggregate noise), so at least 2%.
+
+| item | before the fast loop (M0 profile) | after P2-01 |
+|---|---:|---:|
+| `Inflater::step` self time | 35.9% | 0.49% |
+| `clone (inlined)` (the per-iteration `self.state.clone()`) inclusive | 7.5% | 0.15% |
+| `match &self.state` dispatch and `derive(Clone)` of `State` (source lines) | 16.5% + 15.1% | not among the source lines above 0.3% |
+| `fast_loop::run` self | - | 38.4% |
+| decode rate under `perf` | 60 MiB/s | 138 MiB/s |
+
+The slow path's `Inflater::step` self time plus the State clone frame is about 0.6% of samples, far below the 2% floor: the fast loop already took the per-symbol state handling out of the hot path, and the state machine now only runs at block boundaries, near buffer edges and for stored blocks. **Negative result: no code was changed.** Making `State` `Copy` and moving the sticky error into its own field would touch every error path for a saving that cannot be measured. Revisit only if a workload dominated by tiny blocks or by very small output buffers (where the loop's margins never hold) is added; the streaming target with 64 KiB windows keeps the loop active.
