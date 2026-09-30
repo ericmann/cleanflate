@@ -48,6 +48,10 @@ pub struct ResultRow {
     pub best_ns: f64,
 }
 
+fn default_c_zlib_mode() -> String {
+    "oneshot".to_string()
+}
+
 /// One aggregate over the files of a (corpus, framing, level, mode).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Aggregate {
@@ -65,7 +69,11 @@ pub struct Aggregate {
     /// C zlib MiB/s from best times.
     #[serde(alias = "c_zlib_mib_s_min")]
     pub c_zlib_mib_s_best: f64,
-    /// cleanflate median MiB/s / C zlib median MiB/s.
+    /// The mode of the C zlib rows used as the denominator (`oneshot` or
+    /// `streaming`); schema-1 files lack it and default to `oneshot`.
+    #[serde(default = "default_c_zlib_mode")]
+    pub c_zlib_mode: String,
+    /// cleanflate median MiB/s / C zlib median MiB/s of the same mode.
     pub ratio: f64,
 }
 
@@ -202,6 +210,7 @@ mod tests {
                 cleanflate_mib_s_best: 2.0,
                 c_zlib_mib_s_median: 3.0,
                 c_zlib_mib_s_best: 4.0,
+                c_zlib_mode: "oneshot".into(),
                 ratio: 0.5,
             }],
             stats: Vec::new(),

@@ -15,9 +15,9 @@ Definitions:
 
 Top-level fields: `schema` (2), `kind` (`full|quick|custom`), `task`, `git_head`, `git_dirty`, `timestamp` (UTC), `machine` (`uname`, `cpu_model`, `governor`, `loadavg`, `rustc`), `c_zlib_version`, `iters` (timed samples per measurement), `min_sample_ms` (each sample lasts at least this long), `stats_build`, `results[]`, `aggregates[]`, and `stats[]` (only `--stats` runs).
 
-`results[]` row fields: `corpus`, `file`, `framing` (`raw|zlib|gzip`), `level`, `mode` (`oneshot|streaming`), `impl` (`cleanflate|c_zlib`), `bytes` (uncompressed), `reps` (decodes per sample), `median_ns` (median ns per decode), `best_ns` (fastest sample, ns per decode). C zlib is timed one-shot only.
+`results[]` row fields: `corpus`, `file`, `framing` (`raw|zlib|gzip`), `level`, `mode` (`oneshot|streaming`), `impl` (`cleanflate|c_zlib`), `bytes` (uncompressed), `reps` (decodes per sample), `median_ns` (median ns per decode), `best_ns` (fastest sample, ns per decode). C zlib rows exist for both modes (`impl: c_zlib`, `mode: oneshot|streaming`).
 
-`aggregates[]` fields: `key` (`<corpus>/<framing>/l<level>/<mode>`), `total_bytes`, `cleanflate_mib_s_median`, `cleanflate_mib_s_best`, `c_zlib_mib_s_median`, `c_zlib_mib_s_best`, `ratio`. The C zlib figures are the one-shot denominator for both modes.
+`aggregates[]` fields: `key` (`<corpus>/<framing>/l<level>/<mode>`), `total_bytes`, `cleanflate_mib_s_median`, `cleanflate_mib_s_best`, `c_zlib_mib_s_median`, `c_zlib_mib_s_best`, `c_zlib_mode` (mode of the C zlib rows used as denominator; schema-1 files default to `oneshot`), `ratio` (like for like: cleanflate median / C zlib median of the same mode). C zlib is timed one-shot and streaming (64 KiB input and output chunks, same as cleanflate's streaming mode), each only when that mode is selected. Per sample, the order is cleanflate one-shot, cleanflate streaming, C zlib one-shot, C zlib streaming.
 
 Output columns:
 

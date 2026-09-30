@@ -290,7 +290,7 @@ pub fn render_md(j: &BenchJson, files: bool, filter: Option<&str>) -> String {
         j.c_zlib_version,
         j.iters
     ));
-    out.push_str("| key | cleanflate MiB/s (median) | cleanflate MiB/s (best) | C zlib MiB/s (median) | ratio |\n");
+    out.push_str("| key | cleanflate MiB/s (median) | cleanflate MiB/s (best) | C zlib MiB/s (median) | ratio (like for like) |\n");
     out.push_str("|---|---:|---:|---:|---:|\n");
     for a in j.aggregates.iter().filter(|a| keep(&a.key)) {
         out.push_str(&format!(
@@ -310,16 +310,16 @@ pub fn render_md(j: &BenchJson, files: bool, filter: Option<&str>) -> String {
             .results
             .iter()
             .filter(|r| r.implementation == "c_zlib")
-            .map(|r| {
-                let mut k = file_key(r);
-                // C zlib rows are one-shot; key them without the mode.
-                k.truncate(k.rfind('/').unwrap_or(k.len()));
-                (k, mib_per_sec(r.bytes, r.median_ns / 1e9))
-            })
+            .map(|r| (file_key(r), mib_per_sec(r.bytes, r.median_ns / 1e9)))
             .collect();
         for (key, cf) in per_file_throughput(j).iter().filter(|(k, _)| keep(k)) {
-            let base = key.rsplit_once('/').map_or(key.as_str(), |(b, _)| b);
-            let cz = zlib.get(base).copied().unwrap_or(0.0);
+            // Same-mode C zlib row; schema-1 files only have one-shot rows.
+            let oneshot = key.rsplit_once('/').map(|(b, _)| format!("{b}/oneshot"));
+            let cz = zlib
+                .get(key)
+                .or_else(|| oneshot.as_ref().and_then(|k| zlib.get(k)))
+                .copied()
+                .unwrap_or(0.0);
             let ratio = if cz > 0.0 { cf / cz } else { f64::NAN };
             out.push_str(&format!("| {key} | {cf:.1} | {cz:.1} | {ratio:.3} |\n"));
         }
@@ -400,6 +400,7 @@ mod tests {
                 cleanflate_mib_s_best: agg,
                 c_zlib_mib_s_median: 100.0,
                 c_zlib_mib_s_best: 100.0,
+                c_zlib_mode: "oneshot".into(),
                 ratio: agg / 100.0,
             }],
             stats: Vec::new(),
