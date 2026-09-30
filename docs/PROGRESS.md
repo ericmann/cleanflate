@@ -12,7 +12,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P0-07 Reports: delta vs the phase-2 baseline, drift-corrected verdicts, per-file sizes
 - [x] P0-08 `oracle bench-targets`: T1–T6 verdicts from a bench JSON
 - [x] P0-09 Phase-3 starting baseline and noise
-- [ ] P0-10 M0 acceptance and push
+- [x] P0-10 M0 acceptance and push
 - [ ] P1-01 Profile any key: per-key outputs, perf stat and saved flamegraphs
 - [ ] P1-02 Before-profiles, flamegraphs and phase3-profile.md
 - [ ] P1-03 M1 acceptance and push
@@ -74,3 +74,7 @@ bench_targets.rs (evaluate/render), `oracle bench-targets J [--baseline] [--nois
 
 ### P0-09 — 66b9d12
 Baselines committed under docs/perf/baselines (phase3-start[-rerun], quick pair, two noise files). All schema 2, stats_build false, streaming c_zlib_mode streaming. Noise: aggregate_max_pct 8.22% full / 8.82% quick (>3%, manual check); ratio noise max 12.63% / 7.08%. Reruns show no WIN/LOSS/REGRESSION. Targets at start: all T1-T6 NOT MET (T1 worst silesia/gzip/l1/streaming 0.543; T5 worst silesia/raw/l6/oneshot 0.649). This machine ~5-10% below phase-2 record. PHASE3.md Method/Machine/Baselines filled, task log started. Manual check: NOT VERIFIED (human): noise >3%.
+
+### P0-10 — 587b9ed
+make ci, make heavy, make fuzz-milestone all pass. fuzz: diff_oracle_roundtrip seconds=1826 execs=1205957 exit=0 artifacts=0; diff_fast_reference seconds=1826 execs=894969 exit=0 artifacts=0. P0-10.json committed (207/207 streaming rows). Compare vs phase3-start: 14 WIN/LOSS lines with no code change (drift). Provenance snapshot committed, pushed origin build/2026-09-30.
+Manual check: NOT VERIFIED (human): 1) GitHub Actions ci green on branch; 2) noise 8.2%/8.8% >3% -> rerun baseline pair on quiet machine, pinned governor; 3) spot-check Environment (compile_flags 0xa9, libz_sys_features default,libc,static,stock-zlib); 4) provenance log has no unexplained denials.
