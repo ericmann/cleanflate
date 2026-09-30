@@ -20,7 +20,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P1-02 Two-level lookup tables for every symbol
 - [x] P1-03 Per-block table reuse (gated)
 - [x] P1-04 Length/distance payload in table entries (gated)
-- [~] P1-05 M1 acceptance and push
+- [x] P1-05 M1 acceptance and push
 - [ ] P2-01 Fast literal/length/distance decode loop
 - [ ] P2-02 Differential fuzz target: fast vs reference
 - [ ] P2-03 Copyable state in the slow path (gated)
@@ -91,3 +91,7 @@ GATED OUT (negative result), no code change. PERF.md '### P1-03 (gated, negative
 
 ### P1-04 — 8e8a235
 GATED OUT (negative result), no code change. Profile by source line (perf report --sort srcline on the cleanflate-only profile): LenExtra arm 0.63% + DistExtra arm 0.73% = 1.4% < 2%; whole bitreader.rs ~5.5% upper bound. Real cost is dispatch (`match &self.state` 16.5%) and State clone (9.5+5.6%), for P2-01/P2-03. Interpretation: srcline attribution used instead of annotate output.
+
+### P1-05 — bb3a2c6
+make ci and make heavy green; P1-05.json and P1-05-stats.json committed; PERF.md M1 acceptance. Table-decode 100.0%/100.0% (>=99% MET). Silesia l6 vs baseline: one-shot raw 62.3->98.9, zlib 61.3->94.5, gzip 51.8->75.3 MiB/s; streaming raw 65.0->107.8; all WIN, no REGRESSION. Push: pushed to origin.
+Manual check: NOT VERIFIED (human): (1) GitHub Actions ci green on the pushed branch. (2) Review D-27/D-28 [perf] entries for clean-room wording (SPEC 2.1). (3) Sanity-check the M1 gain on a quiet machine (noise was high, single-pair noise 6.1%).
