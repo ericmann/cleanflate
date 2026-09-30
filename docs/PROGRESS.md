@@ -37,7 +37,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P4-05 Re-tune table widths on the final loop
 - [x] P4-06 M4 acceptance and push
 - [x] P5-01 After-profiles and flamegraphs
-- [~] P5-02 Final bench, PHASE3.md report and PERF.md phase-3 section
+- [x] P5-02 Final bench, PHASE3.md report and PERF.md phase-3 section
 - [ ] P5-03 Provenance, build report and hand-off push
 
 ## Log
@@ -150,3 +150,6 @@ make ci, heavy, fuzz-milestone pass: diff_oracle_roundtrip seconds=1802 execs=15
 
 ### P5-01 — b850150
 After flamegraphs (3, checked) + After section of phase3-profile.md (9 keys, hotspot before/after table, pattern final states). Findings for P5-02: fast_loop::run 79% one function; instructions/MiB 60M->42.5M (l1 oneshot); fixed costs now larger shares: Crc32::update 12.4% (gate 5.1%), adler_fold 6.7% (gate 7.0%), from_lengths 5.64% Canterbury (gate 4.84%) -> next-step candidates: CRC-32 slicing-16 (~2% of gzip), table build.
+
+### P5-02 — adc0f97
+P5-02.json (quiet machine, load 1.8) + PHASE3.md Summary/Final tables/Targets/Flamegraphs/Attribution/Tried and reverted/Conditions + PERF.md Phase 3 section with Result line. Silesia l6 like-for-like: oneshot 84.1/85.7/85.4% raw/zlib/gzip (phase 2: 66.9/68.8/68.8), streaming 81.8/83.9/78.0%. Targets: T5 MET; T1 (worst gzip l1 streaming 0.710), T2 (0.88-0.94), T3 (0.636), T4 (22%), T6 (5 canterbury/ptt5 per-file rows; all aggregates +7.3..+25.8% vs phase 2) NOT MET, with next steps. design-check passes.
