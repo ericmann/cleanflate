@@ -13,7 +13,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P0-08 Bench harness: medians, framings, levels, modes, JSON
 - [x] P0-09 bench-compare, bench-noise, bench-md and `bench --stats`
 - [x] P0-10 Cleanflate-only profiling entry point and `make profile`
-- [ ] P0-11 Baseline and noise measurement
+- [x] P0-11 Baseline and noise measurement
 - [ ] P0-12 Hypotheses H1–H6 and baseline profile
 - [ ] P0-13 M0 acceptance and push
 - [ ] P1-01 Bulk bit refill with an exact give-back invariant
@@ -69,3 +69,6 @@ bench_compare.rs (Noise, compare, verdicts, render_md, exit_code), bench.rs --st
 
 ### P0-10 — e3826e8
 perf_prep.rs (2 tests), examples/profile_decode.rs (cleanflate+std only; verifies len+CRC on iter 0; prints Stats with --features stats), Makefile profile-prep/profile/flamegraph + PROFILE_* vars, README profiling section. make profile PROFILE_ITERS=1 (silesia rfc1951 l6, 52.6 MiB/s) top: decode_table 30.2%+6.4%, Inflater::step 27.2%+5.0%, checksum::crc32 12.8% (example's first-iteration verify; dilutes with more iters), peek_symbol 6.7%+1.0%, Huffman::from_lengths 0.5%. flamegraph SVG written. Interpretation: -g none on perf report; flamegraph recipe moves stray perf.data into target/profile.
+
+### P0-11 — 8b15626
+Six JSONs in docs/perf/ (full pair 7 samples, quick pair 5 samples, both noise files), PERF.md ## Phase 2 (Method, Machine, Baseline, Noise, Targets). Baseline Silesia l6 one-shot ratios: raw 22.5%, zlib 24.0%, gzip 20.7%; streaming 23.4/24.9/22.2%. Noise: aggregate_max_pct 6.08% full, 6.52% quick -- EXCEEDS 5%, so a win must beat ~12-13% on the noisiest aggregates (Canterbury keys). Governor schedutil, load ~3 at start, 8 CPUs, Ryzen 5 3400G. Also fixed a P0-09 defect in a separate chore commit (FP epsilon in compare). Manual check: NOT VERIFIED (human): noise > 5%; try a pinned performance governor.
