@@ -1,6 +1,8 @@
 //! The public streaming (`Decompressor`) and one-shot (`inflate`,
 //! `decompress_with`) APIs (SPEC S3.3).
 
+use crate::config::{ONESHOT_GROWTH_FLOOR, ONESHOT_INITIAL_RATIO, ONESHOT_MAX_PREALLOC};
+use crate::decode_path::DecodePath;
 use crate::error::Error;
 use crate::gzip::{GzipDecoder, GzipHeader};
 use crate::inflate::{InflateStatus, Inflater};
@@ -78,6 +80,15 @@ impl Backend {
         }
     }
 
+    #[cfg(feature = "stats")]
+    fn stats(&self) -> crate::stats::Stats {
+        match self {
+            Backend::Raw(i) => i.stats(),
+            Backend::Zlib(z) => z.stats(),
+            Backend::Gzip(g) => g.stats(),
+        }
+    }
+
     fn trailing_start(&self) -> Option<u64> {
         match self {
             Backend::Gzip(g) => g.trailing_start(),
@@ -151,16 +162,22 @@ pub struct Decompressor {
 impl Decompressor {
     /// Create a decompressor for `format` with `options`.
     pub fn new(format: Format, options: Options) -> Self {
+        Self::new_with_path(format, options, DecodePath::Fast)
+    }
+
+    /// [`Self::new`] with an explicit decode path.
+    pub(crate) fn new_with_path(format: Format, options: Options, path: DecodePath) -> Self {
         let backend = match format {
             Format::Raw => match &options.dictionary {
-                Some(dict) => Backend::Raw(Inflater::with_dictionary(dict)),
-                None => Backend::Raw(Inflater::new()),
+                Some(dict) => Backend::Raw(Inflater::with_dictionary(dict, path)),
+                None => Backend::Raw(Inflater::new_with_path(path)),
             },
-            Format::Zlib => Backend::Zlib(ZlibDecoder::new(options.dictionary.clone())),
+            Format::Zlib => Backend::Zlib(ZlibDecoder::new(options.dictionary.clone(), path)),
             Format::Gzip => Backend::Gzip(GzipDecoder::new(
                 options.trailing,
                 options.max_gzip_field,
                 options.max_gzip_headers,
+                path,
             )),
         };
         Decompressor {
@@ -169,6 +186,16 @@ impl Decompressor {
             total_in: 0,
             trailing_start: None,
             error: None,
+        }
+    }
+
+    /// The decode path of the current backend inflater.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn inflater_path(&self) -> DecodePath {
+        match &self.backend {
+            Backend::Raw(i) => i.path(),
+            Backend::Zlib(z) => z.inflater_path(),
+            Backend::Gzip(g) => g.inflater_path(),
         }
     }
 
@@ -318,6 +345,13 @@ impl Decompressor {
         self.backend.gzip_member_count()
     }
 
+    /// A snapshot of this decoder's counters (feature `stats`). Gzip
+    /// accumulates across members.
+    #[cfg(feature = "stats")]
+    pub fn stats(&self) -> crate::stats::Stats {
+        self.backend.stats()
+    }
+
     /// Total input bytes consumed so far.
     pub fn total_in(&self) -> u64 {
         self.total_in
@@ -336,55 +370,131 @@ impl Decompressor {
 }
 
 /// Growth schedule for the one-shot decompressor's output buffer: grow by
-/// `max(len, 32768)`, never past `limit`, never below `len`.
+/// `max(len, ONESHOT_GROWTH_FLOOR)`, never past `limit`, never below `len`.
 pub(crate) fn next_len(len: usize, limit: u64) -> usize {
-    let growth = (len.max(32768)) as u64;
+    let growth = (len.max(ONESHOT_GROWTH_FLOOR)) as u64;
     let grown = (len as u64).saturating_add(growth);
     let capped = grown.min(limit).min(usize::MAX as u64);
     capped.max(len as u64) as usize
 }
 
+/// Size of the first output allocation of a one-shot decode, from hints
+/// only (DESIGN.md D-31): for gzip, the last four bytes read as a
+/// little-endian ISIZE (the last member's uncompressed length modulo 2^32,
+/// RFC 1952 S2.3.1, unreliable for multi-member streams and trailing data);
+/// otherwise `ONESHOT_INITIAL_RATIO` output bytes per input byte. The
+/// result never exceeds `max_output` or `ONESHOT_MAX_PREALLOC`, and only
+/// sets the first allocation: geometric growth continues from there and the
+/// output never depends on it.
+pub(crate) fn initial_len(format: Format, input: &[u8], max_output: u64) -> usize {
+    let isize_hint = match format {
+        Format::Gzip if input.len() >= 18 => input
+            .len()
+            .checked_sub(4)
+            .and_then(|start| input.get(start..))
+            .and_then(|tail| <[u8; 4]>::try_from(tail).ok())
+            .map(|bytes| u32::from_le_bytes(bytes) as usize),
+        _ => None,
+    };
+    let hint = isize_hint.unwrap_or_else(|| input.len().saturating_mul(ONESHOT_INITIAL_RATIO));
+    let cap = max_output.min(usize::MAX as u64) as usize;
+    hint.min(cap).min(ONESHOT_MAX_PREALLOC)
+}
+
 /// Decompress `input` as `format` with `options`, growing the output
 /// buffer as needed up to `options.max_output`.
 pub fn decompress_with(format: Format, input: &[u8], options: &Options) -> Result<Decoded, Error> {
+    decompress_with_path(format, input, options, DecodePath::Fast)
+}
+
+/// [`decompress_with`] with an explicit decode path.
+pub(crate) fn decompress_with_path(
+    format: Format,
+    input: &[u8],
+    options: &Options,
+    path: DecodePath,
+) -> Result<Decoded, Error> {
+    decompress_core(format, input, options, path).map(|core| core.decoded)
+}
+
+/// [`decompress_with`], also returning the decoder's counters plus the
+/// output-buffer growth this one-shot call performed (feature `stats`).
+#[cfg(feature = "stats")]
+pub fn decompress_with_stats(
+    format: Format,
+    input: &[u8],
+    options: &Options,
+) -> Result<(Decoded, crate::stats::Stats), Error> {
+    decompress_core(format, input, options, DecodePath::Fast).map(|core| (core.decoded, core.stats))
+}
+
+/// What the shared one-shot implementation produces.
+struct Core {
+    decoded: Decoded,
+    #[cfg(feature = "stats")]
+    stats: crate::stats::Stats,
+}
+
+/// The one implementation behind every one-shot entry point.
+fn decompress_core(
+    format: Format,
+    input: &[u8],
+    options: &Options,
+    path: DecodePath,
+) -> Result<Core, Error> {
     if input.is_empty() {
         return Err(Error::Truncated);
     }
+    #[cfg(feature = "stats")]
+    let mut resizes = 0u64;
+    #[cfg(feature = "stats")]
+    let mut allocated = 0u64;
 
-    let mut decompressor = Decompressor::new(format, options.clone());
+    let mut decompressor = Decompressor::new_with_path(format, options.clone(), path);
     let mut buf: Vec<u8> = Vec::new();
+    // Bytes of `buf` holding output; the rest is room still to be filled.
+    let mut filled = 0usize;
     let mut in_pos = 0usize;
 
+    // The first allocation comes from the size hints; every later one is a
+    // geometric growth step, taken only when the decoder reports that it
+    // has run out of room (`OutputFull`), so a decode that ends with room
+    // to spare -- or exactly full, as a gzip stream does at a member
+    // boundary -- never pays for a buffer it does not need.
+    let first = next_len(0, options.max_output).max(initial_len(format, input, options.max_output));
+    if first > 0 {
+        stat!(resizes, 1);
+        stat!(allocated, first);
+        buf.resize(first, 0);
+    }
+
     loop {
-        let cur_len = buf.len();
-        let target_len = next_len(cur_len, options.max_output);
-        if target_len > cur_len {
-            buf.resize(target_len, 0);
-        }
         let remaining_input = input.get(in_pos..).unwrap_or(&[]);
-        let write_region = buf.get_mut(cur_len..).unwrap_or(&mut []);
-        // The buffer cannot grow past `options.max_output` (`next_len`'s
-        // cap), so once it is already there, `write_region` is
-        // permanently empty and every further call would return
-        // `OutputFull` again with nothing consumed or produced: `continue`
-        // would spin forever instead of terminating. Decide this from the
-        // region actually offered, not from re-deriving the limit
-        // arithmetic `decompress` already did, so a bug in that
-        // arithmetic cannot reintroduce the hang here too.
-        let write_region_was_empty = write_region.is_empty();
+        let write_region = buf.get_mut(filled..).unwrap_or(&mut []);
         let progress = decompressor.decompress(remaining_input, write_region)?;
         in_pos += progress.consumed;
-        buf.truncate(cur_len + progress.produced);
+        filled += progress.produced;
 
         match progress.status {
             Status::Done => break,
             Status::OutputFull => {
-                if write_region_was_empty {
+                // The room ran out. Grow, unless the buffer is already at
+                // the output limit: it cannot grow past `next_len`'s cap,
+                // so the next call would offer an empty region, get
+                // `OutputFull` again with nothing consumed or produced, and
+                // `continue` would spin forever. Decide this from the
+                // buffer itself, not from re-deriving the limit arithmetic
+                // `decompress` already did, so a bug in that arithmetic
+                // cannot reintroduce the hang here too.
+                let target_len = next_len(buf.len(), options.max_output);
+                if target_len <= buf.len() {
                     return Err(Error::OutputLimitExceeded {
                         limit: options.max_output,
                     });
                 }
-                continue;
+                stat!(resizes, 1);
+                stat!(allocated, target_len - buf.len());
+                buf.resize(target_len, 0);
             }
             Status::NeedsInput => {
                 if progress.consumed == 0 {
@@ -394,6 +504,7 @@ pub fn decompress_with(format: Format, input: &[u8], options: &Options) -> Resul
         }
     }
 
+    buf.truncate(filled);
     decompressor.finish()?;
     // `trailing_start()`, when set, is the exact offset where the member
     // stream ended -- gzip may have had to consume one more byte than
@@ -406,10 +517,21 @@ pub fn decompress_with(format: Format, input: &[u8], options: &Options) -> Resul
         .trailing_start()
         .map(|offset| offset as usize)
         .unwrap_or(in_pos);
-    Ok(Decoded {
-        data: buf,
-        consumed,
-        gzip_members: decompressor.gzip_headers().to_vec(),
+    #[cfg(feature = "stats")]
+    let stats = {
+        let mut s = decompressor.stats();
+        s.oneshot_resizes = resizes;
+        s.oneshot_bytes_allocated = allocated;
+        s
+    };
+    Ok(Core {
+        decoded: Decoded {
+            data: buf,
+            consumed,
+            gzip_members: decompressor.gzip_headers().to_vec(),
+        },
+        #[cfg(feature = "stats")]
+        stats,
     })
 }
 

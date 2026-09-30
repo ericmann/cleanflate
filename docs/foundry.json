@@ -3,7 +3,7 @@
     "make fmt-check",
     {
       "cmd": "make lint",
-      "timeoutMs": 1200000
+      "timeoutMs": 1800000
     },
     {
       "cmd": "make corpus",
@@ -11,7 +11,7 @@
     },
     {
       "cmd": "make test",
-      "timeoutMs": 1800000
+      "timeoutMs": 2700000
     },
     "make crate-checks",
     "make cleanroom-selftest"
@@ -28,19 +28,25 @@
         "cmd": "make fuzz-check",
         "timeoutMs": 1800000
       }
+    ],
+    "crates/cleanflate/src/": [
+      {
+        "cmd": "make proptest-3k",
+        "timeoutMs": 3600000
+      }
     ]
   },
   "build": [
     "cargo build --workspace --release"
   ],
-  "baseBranch": "main",
+  "baseBranch": "feature/perf",
   "branchPrefix": "build/",
   "maxRounds": 6,
   "maxRoundsHard": 6,
   "constraints": [
     {
       "id": "no-unsafe-token-in-cleanflate",
-      "description": "SPEC 3.1: zero unsafe anywhere in crates/cleanflate. The bare word is banned in code, comments and docs alike so the CI grep and this rule agree.",
+      "description": "SPEC §3 / C1: zero unsafe anywhere in crates/cleanflate. The bare word is banned in code, comments and docs alike so the CI grep and this rule agree.",
       "paths": [
         "crates/cleanflate/"
       ],
@@ -59,7 +65,7 @@
     },
     {
       "id": "no-panicking-calls-in-cleanflate-lib",
-      "description": "SPEC 3.1: no panics reachable from the public API. Library code (everything under crates/cleanflate/src/ except the src/tests/ unit-test tree) never calls unwrap/expect or the panicking macros, including assert!/assert_eq!/assert_ne!. debug_assert! is allowed.",
+      "description": "SPEC §3 / C4: no panics reachable from the public API. Library code (crates/cleanflate/src/ except src/tests/) never calls unwrap/expect or the panicking macros, including assert!/assert_eq!/assert_ne!. debug_assert! is allowed.",
       "paths": [
         "crates/cleanflate/src/"
       ],
@@ -77,7 +83,8 @@
         "assert!(n < 16);",
         "assert_eq!(a, b);",
         "assert_ne!(a, b);",
-        "panic! {\"x\"}"
+        "panic! {\"x\"}",
+        "const _: () = assert!(FAST_LOOP_MIN_OUTPUT >= 258);"
       ],
       "shouldNotMatch": [
         "let v = x.unwrap_or(0);",
@@ -90,7 +97,7 @@
     },
     {
       "id": "no-inline-tests-in-cleanflate-src",
-      "description": "Unit tests for crates/cleanflate live only under crates/cleanflate/src/tests/ (declared once in lib.rs), so the panic-call rule above can exclude them by path.",
+      "description": "C6: unit tests for crates/cleanflate live only under crates/cleanflate/src/tests/ (declared once in lib.rs), so the panic-call rule above can exclude them by path.",
       "paths": [
         "crates/cleanflate/src/"
       ],
@@ -106,25 +113,27 @@
         "    #[test]"
       ],
       "shouldNotMatch": [
-        "#[cfg(feature = \"std\")]",
+        "#[cfg(feature = \"stats\")]",
+        "#[cfg_attr(not(any(test, feature = \"test-hooks\")), allow(dead_code))]",
         "#[inline]",
         "// unit tests live in src/tests/"
       ]
     },
     {
       "id": "no-io-or-nondeterminism-in-cleanflate",
-      "description": "The library is a pure function of its input bytes and options: no clocks, no hashing randomness, no filesystem, network, process or environment access under crates/cleanflate/src/ (unit-test tree excluded).",
+      "description": "C7: the library is a pure function of its input bytes and options: no clocks (stats count calls, never time), no hashing randomness, no filesystem, network, process or environment access under crates/cleanflate/src/ (unit-test tree excluded).",
       "paths": [
         "crates/cleanflate/src/"
       ],
       "exclude": [
         "crates/cleanflate/src/tests/"
       ],
-      "pattern": "\\b(SystemTime|Instant|HashMap|HashSet|RandomState|thread_rng)\\b|\\bstd::(net|process|env|fs|thread)\\b",
+      "pattern": "\\b(SystemTime|Instant|HashMap|HashSet|RandomState|thread_rng)\\b|\\bstd::(net|process|env|fs|thread|time)\\b",
       "shouldMatch": [
         "use std::collections::HashMap;",
         "let t = std::time::Instant::now();",
         "use std::time::SystemTime;",
+        "use std::time::Duration;",
         "use std::fs::File;",
         "let v = std::env::var(\"X\");",
         "use std::net::TcpStream;",
@@ -134,12 +143,38 @@
         "use std::io::Write;",
         "use core::cmp::min;",
         "let histogram = [0u16; 16];",
-        "use std::error::Error as StdError;"
+        "use std::error::Error as StdError;",
+        "pub table_builds: u64,"
+      ]
+    },
+    {
+      "id": "no-global-state-in-cleanflate",
+      "description": "C7: no global mutable or lazily-initialised state in cleanflate library code. Stats counters live in the decoder instance; constant tables are const/static data built by const fn.",
+      "paths": [
+        "crates/cleanflate/src/"
+      ],
+      "exclude": [
+        "crates/cleanflate/src/tests/"
+      ],
+      "pattern": "\\bthread_local!|\\bstd::sync::atomic\\b|\\bAtomic(U|I)(8|16|32|64|size)\\b|\\bstatic\\s+mut\\b|\\b(OnceLock|LazyLock|OnceCell|Mutex|RwLock)\\b",
+      "shouldMatch": [
+        "thread_local! { static HITS: Cell<u64> = Cell::new(0); }",
+        "use std::sync::atomic::{AtomicU64, Ordering};",
+        "static COUNTER: AtomicU64 = AtomicU64::new(0);",
+        "static mut HITS: u64 = 0;",
+        "static TABLE: OnceLock<Vec<u32>> = OnceLock::new();",
+        "static STATS: Mutex<Stats> = Mutex::new(Stats::new());"
+      ],
+      "shouldNotMatch": [
+        "static CRC32_TABLES: [[u32; 256]; CRC32_SLICES] = build_crc32_tables();",
+        "const FIXED_LITLEN_LENGTHS: [u8; 288] = fixed_litlen_lengths();",
+        "pub struct Stats {",
+        "self.stats.literals = self.stats.literals.saturating_add(1);"
       ]
     },
     {
       "id": "tunables-defined-only-in-config",
-      "description": "Every tunable number (DEFAULT_MAX_OUTPUT, DEFAULT_MAX_GZIP_FIELD, DEFAULT_MAX_GZIP_HEADERS, LITLEN_TABLE_BITS, DIST_TABLE_BITS) is given a value only in crates/cleanflate/src/config.rs; everywhere else refers to the constant by name.",
+      "description": "C8 / SPEC §3: every tunable number (the phase-1 limits and table widths plus the phase-2 fast-loop margins, one-shot sizing and CRC slicing) is given a value only in crates/cleanflate/src/config.rs; everywhere else refers to the constant by name.",
       "paths": [
         "crates/",
         "fuzz/"
@@ -147,24 +182,34 @@
       "exclude": [
         "crates/cleanflate/src/config.rs"
       ],
-      "pattern": "\\b(DEFAULT_MAX_OUTPUT|DEFAULT_MAX_GZIP_FIELD|DEFAULT_MAX_GZIP_HEADERS|LITLEN_TABLE_BITS|DIST_TABLE_BITS)\\b\\s*(:\\s*[A-Za-z0-9_:<>]+\\s*)?=\\s*[-0-9(]",
+      "pattern": "\\b(DEFAULT_MAX_OUTPUT|DEFAULT_MAX_GZIP_FIELD|DEFAULT_MAX_GZIP_HEADERS|LITLEN_TABLE_BITS|DIST_TABLE_BITS|FAST_LOOP_MIN_INPUT|FAST_LOOP_MIN_OUTPUT|ONESHOT_GROWTH_FLOOR|ONESHOT_INITIAL_RATIO|ONESHOT_MAX_PREALLOC|CRC32_SLICES)\\b\\s*(:\\s*[A-Za-z0-9_:<>]+\\s*)?=\\s*[-0-9(]",
       "shouldMatch": [
         "pub const DEFAULT_MAX_OUTPUT: u64 = 1 << 30;",
         "const LITLEN_TABLE_BITS: u32 = 10;",
         "let DIST_TABLE_BITS = 8;",
         "pub(crate) const DEFAULT_MAX_GZIP_FIELD: usize = (64 * 1024);",
-        "pub const DEFAULT_MAX_GZIP_HEADERS: usize = 1024;"
+        "pub const DEFAULT_MAX_GZIP_HEADERS: usize = 1024;",
+        "pub(crate) const FAST_LOOP_MIN_INPUT: usize = 16;",
+        "const FAST_LOOP_MIN_OUTPUT: usize = 258;",
+        "let ONESHOT_GROWTH_FLOOR = 32768;",
+        "pub(crate) const ONESHOT_INITIAL_RATIO: usize = 4;",
+        "const ONESHOT_MAX_PREALLOC: usize = 64 << 20;",
+        "pub(crate) const CRC32_SLICES: usize = 8;"
       ],
       "shouldNotMatch": [
         "let bits = config::LITLEN_TABLE_BITS;",
         "if produced == DEFAULT_MAX_OUTPUT {",
         "max_output: DEFAULT_MAX_OUTPUT,",
-        "pub use config::{DEFAULT_MAX_OUTPUT, DEFAULT_MAX_GZIP_FIELD};"
+        "pub use config::{DEFAULT_MAX_OUTPUT, DEFAULT_MAX_GZIP_FIELD};",
+        "if input.len() - pos >= FAST_LOOP_MIN_INPUT {",
+        "let min_out = FAST_LOOP_MIN_OUTPUT.max(MAX_MATCH_LEN);",
+        "if CRC32_SLICES == 8 {",
+        "const MIN_OUT: usize = FAST_LOOP_MIN_OUTPUT;"
       ]
     },
     {
       "id": "option-defaults-not-literal",
-      "description": "Options fields that carry a tunable default are initialised from the config.rs constant, never from a literal.",
+      "description": "C8: Options fields that carry a tunable default are initialised from the config.rs constant, never from a literal.",
       "paths": [
         "crates/cleanflate/src/"
       ],
@@ -190,7 +235,7 @@
     },
     {
       "id": "no-output-limit-literal",
-      "description": "The 1 GiB default output limit appears as a number only in crates/cleanflate/src/config.rs; tests, fuzz targets and the oracle use cleanflate::DEFAULT_MAX_OUTPUT.",
+      "description": "C8: the 1 GiB default output limit appears as a number only in crates/cleanflate/src/config.rs; tests, fuzz targets, examples and the oracle use cleanflate::DEFAULT_MAX_OUTPUT.",
       "paths": [
         "crates/",
         "fuzz/"
@@ -214,7 +259,7 @@
     },
     {
       "id": "libz-only-in-oracle",
-      "description": "SPEC 2.1/4: libz-sys is linked and named only inside crates/oracle. cleanflate and the fuzz crate reach C zlib only through oracle's safe wrappers. fuzz/Cargo.lock is exempt: it is a lockfile, not fuzz's own source/Cargo.toml, and necessarily lists oracle's transitive libz-sys pin like every other transitive dependency.",
+      "description": "C9: libz-sys is linked and named only inside crates/oracle. cleanflate (including its profiling example) and the fuzz crate reach C zlib only through oracle's safe wrappers. fuzz/Cargo.lock is exempt: it is a lockfile and necessarily lists oracle's transitive libz-sys pin.",
       "paths": [
         "crates/cleanflate/",
         "fuzz/"
@@ -230,18 +275,19 @@
       ],
       "shouldNotMatch": [
         "use oracle::ffi::deflate_bytes;",
-        "cleanflate = { path = \"../crates/cleanflate\" }"
+        "cleanflate = { path = \"../crates/cleanflate\", features = [\"test-hooks\"] }"
       ]
     },
     {
       "id": "no-reference-implementation-names",
-      "description": "SPEC 2.2/3.4: library code and design docs cite RFC sections, never an existing implementation's files or projects. A mention is evidence of a forbidden input.",
+      "description": "SPEC §2 / C10: library code, design docs and performance write-ups cite RFC sections and cleanflate's own measurements, never an existing implementation's files or projects. A mention is evidence of a forbidden input.",
       "paths": [
         "crates/cleanflate/",
         "docs/DESIGN.md",
-        "docs/PERF.md"
+        "docs/PERF.md",
+        "docs/perf/"
       ],
-      "pattern": "inffast|inftrees|inflate\\.c|puff(\\.c)?\\b|miniz|libdeflate|zopfli|zlib-ng|zlib-rs|flate2|compress/flate",
+      "pattern": "inffast|inftrees|inflate\\.c|puff(\\.c)?\\b|miniz|libdeflate|zopfli|zlib-ng|zlib-rs|flate2|compress/flate|isa-l|igzip",
       "flags": "i",
       "shouldMatch": [
         "// same approach as inffast.c",
@@ -254,19 +300,21 @@
         "// zlib-rs handles this by",
         "// flate2 exposes a similar type",
         "// Zopfli-style parsing",
-        "// see inftrees.c"
+        "// see inftrees.c",
+        "// igzip's multi-symbol decode"
       ],
       "shouldNotMatch": [
         "// RFC 1951 §3.2.7: code length alphabet",
         "pub fn zlib_decompress(input: &[u8]) -> Result<Vec<u8>, Error> {",
         "// compared against the C zlib oracle",
         "pub(crate) struct Inflater {",
-        "| cleanflate | 412 MB/s |"
+        "| cleanflate | 412 MB/s |",
+        "\"c_zlib_median_ns\": 1234567,"
       ]
     },
     {
       "id": "no-cleanflate-checksums-in-fixtures",
-      "description": "C16: cleanflate unit-test fixtures never compute a trailer/header checksum with this crate's own crate::checksum -- that would let a real checksum bug hide (a broken encoder would satisfy a broken decoder's expectation). Every checksum embedded in a fixture is a hard-coded literal computed once with oracle::ffi::{crc32,adler32}, or the test lives in crates/oracle/tests/ instead.",
+      "description": "C16: cleanflate unit-test fixtures never compute a trailer/header checksum with this crate's own crate::checksum -- a broken encoder would satisfy a broken decoder. Every checksum embedded in a fixture is a literal computed once with oracle::ffi::{crc32,adler32}, or the test lives in crates/oracle/tests/ instead.",
       "paths": [
         "crates/cleanflate/src/tests/"
       ],
@@ -286,7 +334,7 @@
     },
     {
       "id": "no-panic-lint-allow-in-cleanflate-lib",
-      "description": "C4/C5/C8/C10: a local clippy allow of unwrap_used/expect_used/panic/indexing_slicing could silently reintroduce a panic or an [] index the C4/C5 rules exist to ban, so no such allow is permitted anywhere in library code (unit-test tree excluded).",
+      "description": "C5: a local clippy allow of unwrap_used/expect_used/panic/indexing_slicing could silently reintroduce a panic or an [] index, so no such allow is permitted anywhere in library code (unit-test tree excluded). allow(dead_code) for reference-path items is fine.",
       "paths": [
         "crates/cleanflate/src/"
       ],
@@ -296,11 +344,77 @@
       "pattern": "allow\\s*\\([^)]*clippy::(unwrap_used|expect_used|panic|indexing_slicing)\\b",
       "shouldMatch": [
         "#[allow(clippy::indexing_slicing)]",
-        "#![allow(clippy::unwrap_used, clippy::indexing_slicing)]"
+        "#![allow(clippy::unwrap_used, clippy::indexing_slicing)]",
+        "#[cfg_attr(feature = \"stats\", allow(clippy::indexing_slicing))]"
       ],
       "shouldNotMatch": [
         "#[allow(dead_code)]",
+        "#[cfg_attr(not(any(test, feature = \"test-hooks\")), allow(dead_code))]",
         "#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]"
+      ]
+    },
+    {
+      "id": "no-simd-arch-or-nightly-in-cleanflate",
+      "description": "SPEC §3 / §10 / C17: no std::arch/core::arch intrinsics, std::simd, #[target_feature], runtime CPU feature detection or nightly #![feature] anywhere under crates/cleanflate/. Auto-vectorisation by the compiler is fine.",
+      "paths": [
+        "crates/cleanflate/"
+      ],
+      "pattern": "\\b(std|core)::(arch|simd)\\b|#\\[\\s*target_feature\\b|#!\\[\\s*feature\\s*\\(|\\bis_(x86|aarch64)_feature_detected\\b",
+      "shouldMatch": [
+        "use std::arch::x86_64::_mm_loadu_si128;",
+        "use core::arch::aarch64::vld1q_u8;",
+        "#[target_feature(enable = \"avx2\")]",
+        "#![feature(portable_simd)]",
+        "use std::simd::u8x16;",
+        "if is_x86_feature_detected!(\"sse4.2\") {"
+      ],
+      "shouldNotMatch": [
+        "#[cfg(feature = \"stats\")]",
+        "#![forbid(unsafe_code)]",
+        "// architecture-independent word refill",
+        "let arch_bits = 64;"
+      ]
+    },
+    {
+      "id": "no-default-diagnostic-features",
+      "description": "SPEC §4.3 / §5 / C18: the stats and test-hooks features are opt-in only; the default build must be bit-for-bit unaffected, so neither may appear in a default feature list.",
+      "paths": [
+        "crates/cleanflate/Cargo.toml",
+        "crates/oracle/Cargo.toml"
+      ],
+      "pattern": "^\\s*default\\s*=\\s*\\[[^\\]]*(stats|test-hooks)",
+      "shouldMatch": [
+        "default = [\"stats\"]",
+        "default = [\"std\", \"test-hooks\"]",
+        "  default = [ \"stats\" ]"
+      ],
+      "shouldNotMatch": [
+        "default = []",
+        "stats = []",
+        "test-hooks = []",
+        "stats = [\"cleanflate/stats\"]"
+      ]
+    },
+    {
+      "id": "no-profiling-of-oracle",
+      "description": "SPEC §2.2 / §4.3 / C19: Makefile recipes and CI never run perf, flamegraph, objdump, gdb, lldb or valgrind against the oracle or C zlib; profiling targets wrap only the cleanflate-only example.",
+      "paths": [
+        "Makefile",
+        ".github/"
+      ],
+      "pattern": "\\b(perf\\s+(record|report|annotate|stat|top|script)|flamegraph|objdump|gdb|lldb|valgrind)\\b.*\\b(oracle|libz)\\b",
+      "shouldMatch": [
+        "\tperf record -g -- cargo run --release -p oracle -- bench",
+        "\tcargo flamegraph -p oracle -- bench --corpus silesia",
+        "\tobjdump -d target/release/oracle | head",
+        "\tperf annotate -i perf.data --dso libz.so",
+        "\tgdb --args target/release/oracle bench"
+      ],
+      "shouldNotMatch": [
+        "\tperf record --call-graph dwarf -o target/profile/perf.data target/release/examples/profile_decode --dir $(PROFILE_DIR)",
+        "\tcargo run --release -q -p oracle -- perf-prep --corpus silesia --out testdata/perf-inputs",
+        "\tCARGO_PROFILE_RELEASE_DEBUG=true cargo flamegraph -p cleanflate --example profile_decode -o target/profile/flamegraph.svg",
+        "\tperf report -i target/profile/perf.data --stdio --no-children --sort symbol"
       ]
     }
   ]

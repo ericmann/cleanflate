@@ -1,5 +1,5 @@
 {
-  "round": 3,
+  "round": 2,
   "implemented": true,
   "reviewed": true,
   "verdict": "APPROVED",
@@ -16,34 +16,26 @@
   "rounds": [
     {
       "round": 1,
-      "fixTasks": 8,
-      "unblocked": 1,
-      "verdict": "CHANGES REQUESTED",
-      "nonConverging": false,
-      "at": "2026-09-29T18:44:07.687Z"
-    },
-    {
-      "round": 2,
-      "fixTasks": 5,
+      "fixTasks": 2,
       "unblocked": 0,
       "verdict": "CHANGES REQUESTED",
       "nonConverging": false,
-      "at": "2026-09-29T21:15:18.351Z"
+      "at": "2026-09-30T04:49:58.653Z"
     },
     {
-      "round": 3,
+      "round": 2,
       "fixTasks": 1,
       "unblocked": 0,
       "verdict": "CHANGES REQUESTED",
       "nonConverging": false,
-      "at": "2026-09-29T21:36:03.256Z"
+      "at": "2026-09-30T05:37:51.282Z"
     },
     {
-      "round": 4,
+      "round": 3,
       "fixTasks": 0,
       "unblocked": 0,
       "verdict": "APPROVED",
-      "at": "2026-09-29T21:44:20.354Z"
+      "at": "2026-09-30T05:45:11.622Z"
     }
   ]
 }

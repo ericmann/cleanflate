@@ -14,3 +14,4 @@
 /provenance/*.lock
 __pycache__/
 *.pyc
+/testdata/perf-inputs/

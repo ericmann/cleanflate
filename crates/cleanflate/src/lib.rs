@@ -92,16 +92,23 @@
 //! # }
 //! ```
 
+#[macro_use]
+mod stats;
+
 mod bitreader;
 pub mod checksum;
 mod config;
+mod decode_path;
 pub mod error;
+mod fast_loop;
 pub mod gzip;
 mod huffman;
 mod inflate;
 mod options;
 mod stream;
 mod tables;
+#[cfg(feature = "test-hooks")]
+pub mod test_hooks;
 mod window;
 mod zlib;
 
@@ -109,6 +116,10 @@ pub use config::{DEFAULT_MAX_GZIP_FIELD, DEFAULT_MAX_GZIP_HEADERS, DEFAULT_MAX_O
 pub use error::{ChecksumKind, Error, ErrorKind, HeaderError, HuffmanError};
 pub use gzip::GzipHeader;
 pub use options::{Format, Options, TrailingData};
+#[cfg(feature = "stats")]
+pub use stats::Stats;
+#[cfg(feature = "stats")]
+pub use stream::decompress_with_stats;
 pub use stream::{
     decompress_with, gzip_decompress, inflate, zlib_decompress, Decoded, Decompressor, Progress,
     Status,

@@ -7,6 +7,10 @@ Python 3 stdlib only. Usage: `summarize.py [--log PATH] [--out PATH]`.
 Without `--log`: `provenance/tool-log.jsonl` if it exists (the live log),
 else `provenance/tool-log.snapshot.jsonl` (the committed snapshot).
 Without `--out`: `provenance/SUMMARY.md`.
+
+`--since-commit REV` keeps only entries whose timestamp is at or after
+REV's commit time (`git show -s --format=%cI REV`), so a later phase can
+be summarised without the earlier one; the header names the range.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -212,6 +217,32 @@ def load_entries(log_path: Path) -> tuple[list[dict], int]:
                 continue
             entries.append(obj)
     return entries, bad
+
+
+def commit_time(root: Path, rev: str) -> datetime | None:
+    """The committer time of `rev` in the git repository at `root`, or
+    None if it cannot be resolved."""
+    try:
+        out = subprocess.run(
+            ["git", "show", "-s", "--format=%cI", rev],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except Exception:
+        return None
+    return parse_ts(out)
+
+
+def filter_since(entries: list[dict], cutoff: datetime) -> list[dict]:
+    """Entries whose timestamp parses and is at or after `cutoff`."""
+    kept = []
+    for e in entries:
+        dt = parse_ts(e.get("ts", ""))
+        if dt is not None and dt >= cutoff:
+            kept.append(e)
+    return kept
 
 
 def totals_by(entries: list[dict], key: str) -> dict[str, int]:
@@ -445,8 +476,19 @@ def read_known_gaps(root: Path) -> str:
     return "\n".join(lines[start + 1 : end]).strip()
 
 
-def build_summary(log_path: Path, root: Path) -> str:
+def build_summary(log_path: Path, root: Path, since_commit: str | None = None) -> str:
     entries, bad_lines = load_entries(log_path)
+    range_line = ""
+    if since_commit:
+        cutoff = commit_time(root, since_commit)
+        if cutoff is None:
+            raise ValueError(f"cannot resolve commit {since_commit!r} in {root}")
+        parsed = len(entries)
+        entries = filter_since(entries, cutoff)
+        range_line = (
+            f"Range: entries at or after commit `{since_commit}` "
+            f"({cutoff.isoformat()}): {len(entries)} of {parsed} parsed line(s)."
+        )
 
     rel_log = log_path
     try:
@@ -462,6 +504,7 @@ def build_summary(log_path: Path, root: Path) -> str:
         "",
         f"Source: `{rel_log}` ({len(entries)} parsed line(s)).",
         "",
+        *([range_line, ""] if range_line else []),
         "## Totals by tool",
         "",
         render_counts_table(totals_by(entries, "tool"), "tool"),
@@ -518,13 +561,14 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--log", type=str, default=None)
     parser.add_argument("--out", type=str, default=None)
+    parser.add_argument("--since-commit", type=str, default=None)
     args = parser.parse_args(argv)
 
     root = REPO_ROOT
     log_path = Path(args.log) if args.log else default_log_path(root)
     out_path = Path(args.out) if args.out else root / "provenance" / "SUMMARY.md"
 
-    summary = build_summary(log_path, root)
+    summary = build_summary(log_path, root, since_commit=args.since_commit)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(summary, encoding="utf-8")
     print(f"summarize.py: wrote {out_path} from {log_path}")

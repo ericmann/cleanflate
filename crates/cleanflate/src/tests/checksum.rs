@@ -1,4 +1,5 @@
-use crate::checksum::{adler32, crc32, Adler32, Crc32};
+use crate::checksum::{adler32, crc32, crc32_update_bytewise, Adler32, Crc32, CRC32_TABLES};
+use crate::config::CRC32_SLICES;
 
 #[test]
 fn adler32_empty_is_one() {
@@ -122,4 +123,89 @@ fn adler32_large_buffer_of_ff() {
     }
     let expected = ((s2 as u32) << 16) | (s1 as u32);
     assert_eq!(result, expected);
+}
+
+/// Test-local xorshift64 generator.
+fn seeded_bytes(seed: u64, len: usize) -> Vec<u8> {
+    let mut x = seed | 1;
+    (0..len)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 24) as u8
+        })
+        .collect()
+}
+
+/// The reference: the register updated one byte at a time with table 0.
+fn bytewise(data: &[u8]) -> u32 {
+    crc32_update_bytewise(0xFFFF_FFFF, data) ^ 0xFFFF_FFFF
+}
+
+#[test]
+fn crc32_slices_match_bytewise() {
+    let data = seeded_bytes(0xC0FFEE, 8192);
+    // Every length 0..=64 at every start offset 0..=7.
+    for offset in 0..=7usize {
+        for len in 0..=64usize {
+            let slice = &data[offset..offset + len];
+            assert_eq!(crc32(slice), bytewise(slice), "offset {offset} len {len}");
+        }
+    }
+    // Random lengths up to 4096.
+    let mut x = 0x1234_5678_9ABC_DEF1u64;
+    for _ in 0..200 {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        let len = (x % 4097) as usize;
+        let offset = ((x >> 20) % 8) as usize;
+        let slice = &data[offset..offset + len];
+        assert_eq!(crc32(slice), bytewise(slice), "offset {offset} len {len}");
+    }
+    // Split updates at every boundary of a short buffer, and in random
+    // pieces of a long one.
+    let short = &data[..100];
+    for cut in 0..=short.len() {
+        let mut c = Crc32::new();
+        c.update(&short[..cut]);
+        c.update(&short[cut..]);
+        assert_eq!(c.finish(), bytewise(short), "cut {cut}");
+    }
+    let mut c = Crc32::new();
+    let mut pos = 0usize;
+    let mut step = 1usize;
+    while pos < data.len() {
+        let end = (pos + step).min(data.len());
+        c.update(&data[pos..end]);
+        pos = end;
+        step = step * 3 % 41 + 1;
+    }
+    assert_eq!(c.finish(), bytewise(&data));
+}
+
+#[test]
+fn crc32_tables_follow_zero_byte_recurrence() {
+    // Table k maps byte b to the register after b followed by k zero
+    // bytes, so table k follows from table k-1 by one more zero-byte step:
+    // T_k[b] = T_0[T_{k-1}[b] & 0xFF] ^ (T_{k-1}[b] >> 8).
+    let t0 = &CRC32_TABLES[0];
+    for k in 1..CRC32_SLICES {
+        for b in 0..256usize {
+            let prev = CRC32_TABLES[k - 1][b];
+            let expected = t0[(prev & 0xFF) as usize] ^ (prev >> 8);
+            assert_eq!(CRC32_TABLES[k][b], expected, "table {k} byte {b}");
+        }
+    }
+    // And table 0 is the classic table: T_0[1] is the polynomial's
+    // one-bit-set reflection (RFC 1952 S8), T_0[0] is 0.
+    assert_eq!(t0[0], 0);
+    assert_eq!(t0[1], 0x7707_3096);
+    assert_eq!(t0[255], 0x2D02_EF8D);
+}
+
+#[test]
+fn crc32_slices_config_valid() {
+    assert!(std::hint::black_box(CRC32_SLICES) >= 4);
 }

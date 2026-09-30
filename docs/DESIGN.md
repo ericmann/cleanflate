@@ -17,6 +17,12 @@ Each decision is one `### D-NN: <title>` block with three lines:
 every `### D-` heading is followed by an `RFC:` line before the next
 heading.
 
+Performance decisions carry a `[perf]` tag right after the id
+(`### D-NN: [perf] <title>`). Per SPEC section 2.1, each such block also
+needs a `Measurement:` line and the exact phrase "general technique; not
+derived from any specific implementation"; `make design-check` fails a
+`[perf]` block missing either.
+
 ## Decisions
 
 ### D-01: Error model
@@ -683,3 +689,295 @@ construction rather than only by the `remaining_allowance` calculation
 in `Decompressor::decompress`) into a defined error the moment the
 buffer genuinely cannot grow further, regardless of which of the two
 independent checks would have caught it.
+
+### D-26: Decode-path switch and a uniform invalid-code rule
+
+RFC: RFC 1951 S3.2.2, S3.2.7
+Decision: Every decoder layer carries a `DecodePath { Fast, Reference }`.
+`Reference` decodes Huffman symbols bit-serially and copies matches byte
+by byte; `Fast` uses the table lookup and the bulk copy. Only the
+`test-hooks` feature exposes a way to request `Reference`, so a default
+build always runs `Fast`. Both decoders share one invalid-code rule: a
+code is `Invalid` as soon as at least one buffered bit shows that it
+matches no code and no longer code can extend it. Per RFC 1951 S3.2.7
+this only happens for the two incomplete distance tables it allows (no
+codes, or one code of length 1), and both are decided after 1 bit. The
+bit-serial walk returns `Invalid` after failing at length `len` when no
+code longer than `len` exists; the table path returns `Invalid` for an
+`Invalid` entry and delegates to the bit-serial walk while fewer than
+`table_bits` bits are buffered.
+Rationale: The differential test needs a path that is simple enough to
+trust. Before this rule the table path could answer `Invalid` while the
+bit-serial path answered `NeedMoreBits` for the same buffer, so the two
+could disagree about the error for a stream that is both truncated and
+invalid. The rule can only turn `Truncated` into `InvalidSymbol` for such
+a stream; whether a stream is accepted or rejected is unchanged.
+
+### D-27: [perf] Bulk bit refill with an exact give-back invariant
+
+RFC: RFC 1951 S3.1.1, S3.2.4
+Decision: On the Fast path the bit reader tops its buffer up a word at a
+time (`refill_bulk`: one 64-bit little-endian read when at least 8 input
+bytes remain, single bytes otherwise, never more than 63 buffered bits)
+whenever fewer than 15 bits (the longest RFC 1951 code) are buffered, and
+then decodes. This supersedes D-07's "at most 7 bits between steps" with
+an invariant stated at the exits of `Inflater::step`:
+(a) a `NeedsInput` exit has consumed all of `input`, and the buffer holds
+only bits of the pending sub-step, fewer than it requires;
+(b) an `OutputFull` or `Done` exit goes through one shared exit helper
+that gives back (`give_back`) every whole buffered byte above the bits of
+a decoded-but-unconsumed symbol. That symbol is the pending literal when
+`LitLen` stops for lack of output room, and its code length is the number
+of bits kept; otherwise at most 7 bits stay. The input position moves
+back by the number of bytes returned;
+(c) after LEN and NLEN of a stored block the reader gives back every
+whole byte, so the stored payload is read straight from `input` (a
+defensive drain remains for any byte that would still be buffered).
+Consequence: after every `step` return the Fast reader holds exactly the
+bits the exact-fill Reference reader holds, so the per-call `consumed`
+count is identical on both paths, and a zlib or gzip trailer that follows
+`Done` starts at the right byte. Bytes given back were always loaded in
+the same call, because bits carried in from an earlier call are consumed
+by the first sub-step. Error exits are unchanged: they are sticky and
+report no `consumed`.
+Rationale: The buffer was refilled one byte at a time and held at most 7
+bits between steps, so the table lookup, which needs 10 bits, was skipped
+for about half of all symbols (46% of literal/length and 48% of distance
+symbols took the bit-serial walk, one refill per 1.08 bytes). Loading a
+word at a time removes that, but a reader that holds bytes it does not
+yet need must hand them back at every point where the caller regains
+control. The phase-1 attempt at a faster loop failed exactly there: it
+over-read, corrupted a gzip trailer, and left a stream that was one byte
+short stuck at `NeedsInput`. Stating the invariant at the exits, giving
+back through one helper instead of at each return, and comparing per-call
+`consumed`, `produced` and status against the Reference path (the
+differential traces and `tests/bitreader_bulk.rs`) make that class of bug
+visible at the call where it happens.
+Provenance: general technique; not derived from any specific implementation.
+Measurement: docs/perf/P1-01.json against docs/perf/P1-01-before.json:
+Silesia level 6 one-shot raw 51.1 -> 79.3 MiB/s (WIN), zlib 49.7 -> 75.5,
+gzip 45.3 -> 57.8; streaming raw 50.6 -> 78.2.
+
+### D-28: [perf] Two-level lookup tables for every symbol
+
+RFC: RFC 1951 S3.2.2, S3.1.1, S3.2.7
+Decision: The Fast path decodes every literal/length, distance and
+code-length symbol through lookup tables; the bit-serial walk (`decode`)
+stays as the Reference path and as the specification the tables are
+checked against. A table has a first level of `1 << table_bits` entries
+indexed by the next `table_bits` stream bits (codes are stored reversed
+because the stream is read LSB-first), and, for every first-level prefix
+that some longer code shares, a second-level table appended in the same
+`Vec`, indexed by the following `max_len - table_bits` bits, where
+`max_len` is the longest code under that prefix. Short codes fill every
+index that agrees with them on their own bits; a second-level table is
+filled the same redundant way. Entries are packed into one `u32`: an
+`Invalid` marker, a `Symbol` (symbol and full code length), or a `Sub`
+(offset and width). The code-length alphabet gets a single 7-bit level:
+RFC 1951 S3.2.7 sends its lengths as 3-bit fields, so its codes are at
+most 7 bits. The widths of the other first levels stay in `config.rs`.
+Lookup, with `a` buffered bits and unavailable bits reading as zero:
+index the first level; follow a `Sub` into its table with the next bits;
+a `Symbol` of length at most `a` is the answer; a `Symbol` longer than
+`a` means `NeedMoreBits`; an `Invalid` entry with `a >= 1` is `Invalid`
+(the uniform rule of D-26). This supersedes D-16's gate that used the
+table only when at least `table_bits` bits were buffered.
+Why the lookup equals `decode` for every buffer state: a prefix code is
+prefix-free, so the real bits, if they contain a whole code, contain
+exactly one. If a code of length `len <= a` matches the real bits, the
+zero padding cannot change which entry the lookup reaches, so it returns
+that code. If no code of length at most `a` matches, then any entry the
+padded index reaches is longer than `a` (a shorter match would have been
+found), so the lookup says `NeedMoreBits`, as the serial walk does when it
+runs out of bits. The `Invalid` cases exist only in the two incomplete
+distance tables of S3.2.7, where an index bit already proves no code
+matches. `tests/huffman_twolevel.rs` checks the equality for fixed,
+exception and random complete tables (with 15-bit codes) at every buffer
+size and for widths 7 to 12.
+Rationale: After bulk refill (D-27) the buffer usually holds enough bits,
+but a code longer than the first level and a nearly empty buffer both
+still sent the decoder down the serial walk, one bit per step. Making
+the lookup total removes that walk from the Fast path and gives the
+later fast loop a single lookup per symbol. The extra memory is bounded:
+at most `1 << (15 - table_bits)` entries per first-level prefix.
+Provenance: general technique; not derived from any specific implementation.
+Measurement: docs/perf/P1-02.json against docs/perf/P1-02-before.json:
+NEUTRAL on Silesia (level 6 one-shot raw 78.9 -> 81.9 MiB/s, +3.8%, inside
+twice the noise), WINs on several Canterbury aggregates; kept as the
+prerequisite of the fast loop.
+
+### D-29: [perf] Fast decode loop with margins
+
+RFC: RFC 1951 S3.2.5, S3.2.6
+Decision: On the Fast path, when the state is "decode a literal/length
+symbol" and both margins hold, `Inflater::step` hands control to a loop
+(`fast_loop.rs`) that decodes literals, matches and the end-of-block
+symbol without cloning the state or returning to the state machine for
+each symbol. The margins are tunables in `config.rs`: at least
+`FAST_LOOP_MIN_INPUT` input bytes and `FAST_LOOP_MIN_OUTPUT` output bytes
+must remain at the start of every iteration. Each iteration tops the bit
+buffer up to at least 48 bits when it holds fewer, does a literal/length
+lookup, and for a length symbol reads the extra bits, does a distance
+lookup, reads the distance's extra bits, checks the distance against the
+history, and copies the whole match. The loop stops, and the state machine
+continues, when a margin no longer holds; at the end-of-block symbol (the
+loop sets the next-block state); and on any error, with the same `Error`
+value the state machine reports (invalid symbol for an invalid lookup,
+distance codes 30 and 31, and codes 286 and 287; invalid distance with the
+same `distance` and `available`). After a margin stop, one state-machine
+dispatch runs before the loop is tried again, so every pass makes
+progress.
+Why no step inside an iteration can run out of bits or room: an iteration
+needs at most 15 + 5 + 15 + 13 = 48 bits (the longest literal/length code,
+the extra length bits, the longest distance code, the extra distance
+bits). With at least 8 input bytes left, one word refill leaves at least
+56 bits buffered, so the lookups always see a whole code and can never
+report that more bits are needed. The longest match is 258 bytes (RFC 1951
+S3.2.5), and an iteration starts only with at least that much output room,
+so a match is always copied whole and never has to stop halfway. The
+input margin is larger than 8 so the loop stays away from the end of the
+input, where the ordinary rules of D-27 apply.
+Exits follow the invariant of D-27 unchanged: the loop only consumes
+whole symbols, keeps the buffer and the positions in locals, writes them
+back on every exit, and leaves any whole buffered bytes for the shared
+exit of `step` to give back, so per-call `consumed`, `produced` and status
+equal the Reference path's. The phase-1 attempt at such a loop (D-22) was
+reverted for a correctness bug in exactly this exit handling; the
+differential traces, the boundary tests at margin minus one, at the margin
+and above, and the fixtures make the class of bug visible where it
+happens.
+Rationale: After bulk refill and total table lookup, most of the time left
+was the outer dispatch and a state clone per symbol (about 31% of samples
+at the M0 profile). Nothing about RFC 1951 needs a state change between
+two symbols of one block, so a tight loop that only leaves for the reasons
+above removes that overhead without changing what is decoded.
+Provenance: general technique; not derived from any specific implementation.
+Measurement: docs/perf/P2-01.json against docs/perf/P2-01-before.json:
+Silesia level 6 one-shot raw 83.1 -> 132.2 MiB/s, zlib 80.2 -> 131.0, gzip
+66.1 -> 92.6; streaming raw 83.8 -> 135.5.
+
+### D-30: [perf] Output as match history; window carried only across calls
+
+RFC: RFC 1951 S2, S3.2.5
+Decision: Within one `step` call the caller's output slice is the match
+history. History is the window as it stood at call entry, followed by
+`output[..out_pos]`, and the history available to a distance is
+`min(window.available() + out_pos, 32768)`. Distance validation and the
+`available` reported in `Error::InvalidDistance` use that number, which
+equals what the per-byte window gave before. Literals are written to the
+output only; a stored block is copied with one slice copy per call chunk on
+both paths (structure shared by both paths, not a switched technique).
+The 32 KiB ring keeps only what must survive across calls: on every return
+from `step` (`NeedsInput`, `OutputFull`, `Done` and errors), exactly once,
+the shared exit appends `output[..out_pos]` to it, copying only the last 32
+KiB in at most two slice copies (`Window::append`). A preset dictionary is
+appended the same way when the decoder is built. A one-byte output buffer
+therefore appends one byte per call, and the streaming contract, bounded
+memory and dictionary semantics are unchanged (no new field, and no new
+per-call allocation).
+A match is copied as slices on the Fast path: bytes that reach back before
+the start of the call's output come from the window (`Window::read_back`,
+at most two slice copies); bytes inside the output are copied with
+`copy_within`, at most `distance` at a time, which is non-overlapping by
+construction and repeats the pattern of an overlapping match as RFC 1951
+S3.2.3 requires. The Reference path copies byte by byte through the same
+view: `output[cur - dist]` when the source is inside the output, else
+`window.get_back(dist - cur)`. This supersedes the copy mechanics of the
+per-byte ring of D-08 and the bulk copy of D-22; what is decoded does not
+change.
+Rationale: Every output byte used to be written twice, once to the caller's
+buffer and once into the ring, one byte at a time (the window wrote as many
+bytes as the decoder produced; H3 in PERF.md). A distance never reaches
+further than 32 KiB, so the output already holds the history for
+everything except a match that reaches back across a call boundary, and
+the ring only has to be brought up to date when control returns to the
+caller. That removes the second per-byte write from the hot path and lets
+matches become slice copies.
+Provenance: general technique; not derived from any specific implementation.
+Measurement: docs/perf/P3-01.json against docs/perf/P3-01-before.json:
+Silesia level 6 one-shot raw 133.4 -> 160.6 MiB/s, zlib 122.1 -> 151.1, gzip
+87.9 -> 108.2; streaming raw 134.3 -> 160.4.
+
+### D-31: [perf] One-shot output sizing from hints
+
+RFC: RFC 1952 S2.3.1
+Decision: `decompress_with` sizes its first output allocation from hints
+and grows geometrically from there only when the decoder says it has run
+out of room. The first allocation is `max(growth floor, hint)`. The hint
+is, for gzip input of at least 18 bytes, the last four bytes read as a
+little-endian ISIZE (RFC 1952 S2.3.1: the uncompressed length of the last
+member modulo 2^32); for anything else, `ONESHOT_INITIAL_RATIO` output
+bytes per input byte. The hint is capped by `Options::max_output` and by
+`ONESHOT_MAX_PREALLOC`, and the growth step keeps its floor,
+`ONESHOT_GROWTH_FLOOR` (a literal moved into `config.rs`). Growth happens
+on `OutputFull` and nowhere else; if the buffer is already at
+`max_output`, the call fails with `OutputLimitExceeded`, the backstop of
+D-25 restated in terms of the buffer.
+Why a hostile ISIZE cannot force a large allocation: the hint is only an
+upper bound on the first allocation, never a length the output is trusted
+to have. A crafted ISIZE of 4 GiB is capped at `ONESHOT_MAX_PREALLOC`
+(and at `max_output` when that is smaller), so memory stays proportional
+to the output actually produced beyond a fixed cap. A hint that is too
+small (a multi-member stream whose last member is short, trailing data)
+only costs an ordinary growth step; one that is too large costs at most the
+capped allocation. The decoded output never depends on the hint, the
+output limit is enforced exactly as before, and the bomb test is unchanged.
+Growing only on `OutputFull` also removes an extra zero-filled buffer the
+old loop allocated when a gzip stream stopped, exactly full, at its member
+boundary.
+Rationale: The loop used to start from nothing and double, so a 200 MiB
+output took about 120 growth steps, each zero-filling new space, and a
+gzip decode allocated about twice its output because the last loop
+iteration grew the buffer before finding nothing left to do. A hint that
+is usually right removes both. Memory safety is kept by capping the hint,
+not by trusting it.
+Provenance: general technique; not derived from any specific implementation.
+Measurement: docs/perf/P3-03.json against docs/perf/P3-03-before.json:
+`make bench-stats` one-shot growth steps on Silesia 122 -> 15 (raw and
+zlib) and 134 -> 12 (gzip), gzip bytes allocated 513.9 MB -> 211.9 MB
+(equal to the output); Silesia level 6 gzip one-shot 108.1 -> 117.9 MiB/s.
+
+### D-32: [perf] CRC-32 several bytes per step
+
+RFC: RFC 1952 S8, S2.3.1
+Decision: `Crc32::update` folds `CRC32_SLICES` (8, a tunable, at least 4)
+bytes per step with that many 256-entry tables, built by `const fn` into a
+`static` from the reflected polynomial 0xEDB88320. Table 0 is the classic
+one-byte table. Table `k` maps a byte `b` to the register after `b`
+followed by `k` zero bytes, so table `k` follows from table `k-1` by one
+more zero-byte step (eight shifts). For each chunk of `N = CRC32_SLICES`
+bytes, the running register is XORed into the chunk's first four bytes and
+byte `i` is looked up in table `N-1-i`; the XOR of the `N` results is the
+new register. The tail (fewer than `N` bytes) uses the one-byte step, which
+stays as the test reference. The public `Crc32` and `crc32` are unchanged.
+Derivation. Let `Z(r)` be eight steps of "shift right one bit; if the bit
+shifted out was 1, XOR in the polynomial". Each step is linear over GF(2),
+so `Z` is too. Processing a byte `b` with register `R` gives `Z(R ^ b)`
+(the byte is XORed into the low eight bits, which the eight steps then
+consume), which equals `Z(R) ^ Z(b)`, and `Z(b)` is table 0. A zero byte
+is `Z` again. So, from register 0, `b` followed by `k` zero bytes is
+`Z^k(Z(b))`, which is the definition of table `k`, and table `k` is
+`Z(table k-1)`: the recurrence above. For a chunk `x_0 .. x_{N-1}` and
+register `R`, the register after the chunk is
+`Z^N(R) ^ XOR_i Z^(N-i)(x_i)`, and `Z^(N-i)(x_i)` is table `N-1-i` at
+`x_i`. It remains to express `Z^N(R)`. Write `R` as its four bytes `R_0` to
+`R_3`, byte `R_j` sitting at bits `8j..8j+7`. During the eight steps of one
+`Z`, only bits 0 to 7 can produce the XOR feedback, so the part of `R` above
+bit 7 just shifts down by eight bits: `Z(R_j << 8j)` is `R_j << 8(j-1)` for
+`j >= 1`. After `j` applications `R_j` therefore sits in the low byte, and
+the remaining `N-j` applications give `Z^(N-j)(R_j)`, which is table
+`N-1-j` at `R_j` (this needs `N >= 4`, hence the lower bound on the
+tunable). Because every table is linear, `T[a] ^ T[b] = T[a ^ b]`, so adding
+`R_j` into byte `j` of the chunk and doing one lookup per byte gives the
+same value. `tests/checksum.rs` checks the recurrence, the results against
+the one-byte reference for every length up to 64 at every offset and for
+random lengths, and `tests/checksums.rs` (oracle) checks long buffers
+updated in random pieces against C zlib.
+Rationale: The CRC-32 was the largest cost specific to gzip, about 13% of
+samples in the M0 profile, because it touched every output byte through a
+single dependent table lookup. Eight independent lookups per step remove
+most of that chain.
+Provenance: general technique; not derived from any specific implementation.
+Measurement: docs/perf/P4-01.json against docs/perf/P4-01-before.json:
+Silesia level 6 one-shot gzip 120.2 -> 154.3 MiB/s (+28.4%, WIN); the gzip
+overhead over raw fell from 36.3% to 4.6%.

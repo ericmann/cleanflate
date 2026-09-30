@@ -173,3 +173,87 @@ fn table_single_distance_code_unused_is_invalid() {
     assert_eq!(table.decode_table(&br), Decoded::Invalid);
     assert_eq!(table.decode(&br), Decoded::Invalid);
 }
+
+/// A reader holding exactly `available` (0..=15) bits, whose contents
+/// are the top bits of `pattern`.
+fn reader_with(pattern: u32, available: u32) -> BitReader {
+    let bytes = pattern.to_le_bytes();
+    let mut br = BitReader::new();
+    let mut pos = 0usize;
+    assert!(br.fill(&bytes, &mut pos, 32));
+    br.consume(32 - available);
+    assert_eq!(br.available(), available);
+    br
+}
+
+#[test]
+fn table_decode_equals_serial_for_all_buffer_states() {
+    let mut rng = XorShift::new(0xDEC0_DE5E);
+    let mut tables: Vec<(Huffman, &str)> = vec![
+        (
+            Huffman::from_lengths(&fixed_litlen_lengths(), TableKind::LitLen).expect("fixed"),
+            "fixed litlen",
+        ),
+        (
+            Huffman::from_lengths(&fixed_dist_lengths(), TableKind::Distance).expect("fixed"),
+            "fixed dist",
+        ),
+        (
+            Huffman::from_lengths(&[1u8], TableKind::Distance).expect("single"),
+            "single code",
+        ),
+        (
+            Huffman::from_lengths(&[0u8], TableKind::Distance).expect("empty"),
+            "no codes",
+        ),
+    ];
+    for trial in 0..60usize {
+        let n = 2 + rng.range1(120);
+        let lengths = random_complete_lengths(&mut rng, n, 15);
+        let kind = if trial % 2 == 0 {
+            TableKind::LitLen
+        } else {
+            TableKind::Distance
+        };
+        tables.push((
+            Huffman::from_lengths(&lengths, kind).expect("complete"),
+            "random",
+        ));
+    }
+    assert!(tables.len() >= 54);
+    for (table, name) in &tables {
+        for available in 0..=15u32 {
+            for _ in 0..64 {
+                let br = reader_with(rng.next_u64() as u32, available);
+                assert_eq!(
+                    table.decode_table(&br),
+                    table.decode(&br),
+                    "{name}: available={available}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn invalid_code_detected_after_one_bit() {
+    let single = Huffman::from_lengths(&[1u8], TableKind::Distance).expect("single");
+    let none = Huffman::from_lengths(&[0u8], TableKind::Distance).expect("empty");
+
+    // Single code of length 1 is code 0; bit 1 is the unused code.
+    let one = reader_with(0xFFFF_FFFF, 1);
+    assert_eq!(single.decode(&one), Decoded::Invalid);
+    assert_eq!(single.decode_table(&one), Decoded::Invalid);
+    let zero = reader_with(0, 1);
+    assert_eq!(single.decode(&zero), Decoded::Symbol { symbol: 0, len: 1 });
+    assert_eq!(single.decode_table(&zero), single.decode(&zero));
+
+    for pattern in [0u32, 0xFFFF_FFFF] {
+        let br = reader_with(pattern, 1);
+        assert_eq!(none.decode(&br), Decoded::Invalid);
+        assert_eq!(none.decode_table(&br), Decoded::Invalid);
+    }
+    let empty = reader_with(0, 0);
+    assert_eq!(none.decode(&empty), Decoded::NeedMoreBits);
+    assert_eq!(none.decode_table(&empty), Decoded::NeedMoreBits);
+}

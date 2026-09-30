@@ -1,59 +1,77 @@
-# Review
-Round: 4
+# REVIEW: phase 2 (performance) build branch `build/2026-09-29-2`
+Round: 3
 
-**Verdict: APPROVED**
+Base `13112c175a17` (feature/perf) .. head `129c7fe`. 36 tasks done (P0-01..P5-03, R1-01, R1-02, R2-01), 0 blocked, 0 skipped.
 
-Branch `build/2026-09-29` against base `c4afeb796ddf`, head `8391b06`. The branch has 62 tasks done, 0 blocked, 0 skipped and 0 open. This round covers the single R3 fix task, R3-01 (`507e64a`). I also re-checked the whole branch against the constraints, and everything from rounds 1-3 still holds.
+## Verdict
 
-I checked the following myself:
-- **`foundry_verify`, run with no file filter and again with `tools/` + `docs/DESIGN.md` files:**
-  - All 11 constraint rules are ok, with 0 hits and no fixture failures.
-  - fmt-check, lint, corpus (quick tier, 2494 up to date), test, crate-checks, cleanroom-selftest (22/22), tools-check (60 Python tests plus all shell script tests) and design-check all pass.
-- **C12:** all 5 commits since the round-3 review carry `[stage:fix] [task:...]` tags and a good signature (`G`).
-- **No stray config edits:** since `review: round 3`, only these files changed: `.foundry/state.json`, `docs/HANDOFF.md`, `docs/PROGRESS.md`, `provenance/SUMMARY.md`, `tools/cleanroom/summarize.py`, the summarize test and its fixture. There are no `.gitignore`, `.gitattributes`, CI or editor-config edits.
-- **R3-01 diff checked against its PLAN task and SPEC §5 M6:**
-  - `render_fetch_scripts` only considers allowed `Bash` entries.
-  - It splits each command on shell separators and counts `bash|sh <script>` or `<path>/<script>` as the command word as an invocation.
-  - For each invoked script it lists the URLs from that script's tracked manifest, together with the manifest path and `fetched_by`.
-  - A missing manifest prints `MISSING:` rather than being skipped.
-- **Regenerated `provenance/SUMMARY.md`:** its "### Fetch scripts" section now lists the three `rfc-editor.org/rfc/rfc195{0,1,2}.txt` URLs, from `docs/rfc/SOURCES.json`. It also lists the Canterbury URL (`fetched_by: human-operator-browser`) and the Silesia URL, from `testdata/corpora/SOURCES.json`. Both match the tracked manifests. Round 3's F1 is resolved.
+**APPROVED**
 
-## Findings (most severe first)
+R2-01 closes the round-2 finding (F1). All three mutants that survived in round 2 are now killed by tests, not by lints. The library change is limited to two read-only `pub(crate)` accessors. Every mechanical constraint passes, and every verify command is green. Nothing else on the branch changed since round 2, which reviewed the whole branch, and round 1 before it.
 
-None. Categories 1-3 are clean across the whole branch, and there are no blocked or skipped tasks.
+## What I checked
 
-### Interpretation choices (HANDOFF Round 3)
-- **R3-01 reads "invoked" narrowly:** only the command word of a shell-separated piece counts; grep, sed, shellcheck, git and similar commands that name the script are mentions. This fits the task's out-of-scope note (no general shell parsing) and SPEC's intent, since a mention does not fetch anything. It is accepted. The one known gap is that a wrapped invocation (for example `env X=1 bash <script>` or `bash -x <script>`) would be missed. The real log does not contain that shape: the regenerated summary shows both scripts.
+- `foundry_verify`, run with the R2-01 touched files (`stream.rs`, `zlib.rs`, `tests/decode_path.rs`) so every extraVerify ran.
+  - All 15 constraints were ok, with no fixture failures and no hits.
+  - `make fmt-check`, `lint` (all five clippy lines), `corpus`, `test` (211 cleanflate unit tests plus the oracle suites), `crate-checks`, `cleanroom-selftest` and `proptest-3k` all pass. The `proptest-3k` run includes the `fastslow` differential at 3000 cases.
+- C12: every commit in `13112c175a17..HEAD` carries `[stage:<..>] [task:<..>]`. `c43ea88` carries `[stage:fix] [task:R2-01]` and follows the commit template.
+- Boundaries: since round 2 (`6686b1a..HEAD`), the only files changed are the three R2-01 files plus pipeline bookkeeping (`.foundry/state.json`, HANDOFF, PLAN, PROGRESS, REVIEW). No ignore, CI or editor config changed.
+- R2-01 library diff:
+  - It adds `ZlibDecoder::inflater_path` and `Decompressor::inflater_path`.
+  - Each carries only `#[cfg_attr(not(test), allow(dead_code))]`, mirroring `GzipDecoder::inflater_path`. There is no clippy panic or indexing allow (C5), and nothing panics in library code (C4).
+  - There is no behaviour change and no public API change.
+- R2-01 tests follow C16:
+  - The DICTID and trailer Adler-32 come from the test's own `adler_by_hand` arithmetic.
+  - The gzip CRC-32 comes from an inline bitwise loop.
+  - Neither uses `crate::checksum`, and the `no-cleanflate-checksums-in-fixtures` rule reports no hits.
+- R2-01 acceptance coverage:
+  - `zlib_decoder_uses_same_path` checks the plain zlib decoder before and after stepping. It also checks an FDICT stream (`78 20`, valid FCHECK) after the DICTID is accepted and `abc` is produced.
+  - `decompressor_passes_path_every_format` covers Raw, Raw with a dictionary, Zlib and Gzip. It checks the path at construction and after one `decompress` call that produces 3 bytes.
+
+### Mutation sampling (`foundry_mutate`, this round)
+
+| file | mutation | commands | result |
+|---|---|---|---|
+| `zlib.rs:47` | `ZlibDecoder::new` inflater built with `DecodePath::Fast` | make test | killed (`zlib_decoder_uses_same_path`, `decompressor_passes_path_every_format`) |
+| `zlib.rs:156` | FDICT dictionary inflater built with `DecodePath::Fast` | make test | killed (`zlib_decoder_uses_same_path`, a test failure rather than the dead_code lint) |
+| `stream.rs:172` | raw-with-dictionary inflater built with `DecodePath::Fast` | make test | killed (`decompressor_passes_path_every_format`, "Raw initial") |
+| `stream.rs:175` | Zlib backend `ZlibDecoder::new(.., DecodePath::Fast)` | make test | killed (`decompressor_passes_path_every_format`, "Zlib initial") |
+
+Earlier rounds sampled `fast_loop.rs`, `window.rs`, `huffman.rs`, `inflate.rs`, `stream.rs`, `checksum.rs`, `bitreader.rs` and `gzip.rs`. Their tables are in git history: round 1 in `88bbb49`, round 2 in `a9f1c33`.
+
+## Findings
+
+None.
 
 ## Spec issues
-- **SPEC §5 M4's 70% throughput target** is still reported as NOT MET: 25.6% raw and 27.3% zlib on Silesia (`docs/PERF.md`). SPEC says "Report the actual number either way", so this is compliant as written. Whether M4 counts as complete is a human call.
-- **Round 1's spec issues** still stand (C16 vs C3 test placement, the pre-hook C12 bootstrap gap, multi-member "zero divergences"). They were resolved in PLAN-compatible ways by R1-01, R1-08 and R1-07.
 
-## Manual checks still owed (from HANDOFF.md, Rounds 1-3)
-1. Run `make fuzz-long`, or trigger `.github/workflows/fuzz-nightly.yml`, for the 1-hour-per-target signal SPEC §5 M4 requires. Only 60 s smoke runs have happened.
-2. Confirm the pushed branch's GitHub Actions `ci` run is green. The CI Canterbury fetch runs from a host that got Cloudflare 403s during P0-08, so that step is the likely failure point.
-3. Spot-check `docs/rfc/*.txt` against rfc-editor.org.
-4. Re-run `make bench` on a quiet machine and sanity-check `docs/PERF.md`.
-5. After merge:
-   - Run `make provenance-snapshot provenance-summary build-report` and commit. BUILD_REPORT's "Defects caught" and "Open divergence classes" sections predate the R1-R3 fixes.
-   - Then tag `v0.1.0-cleanroom` and push the tag.
-6. Complete `provenance/human-interventions.md` with anything not yet captured, for example the round-1 re-opening of P0-08 and its skipped cascade.
-7. From HANDOFF Round 3: glance at the "### Fetch scripts" subsection of `provenance/SUMMARY.md` after the post-merge regeneration, to confirm it still reads sensibly.
+- **SPEC 6 M3, one-shot sizing cap** (carried over from rounds 1 and 2):
+  - SPEC says the allocation is "always capped by the output limit", and PLAN sets `ONESHOT_MAX_PREALLOC = 64 MiB`.
+  - Together they let an 18-byte hostile gzip input whose ISIZE is 0xFFFFFFFF make `decompress_with` allocate and zero-fill 64 MiB before it decodes a byte.
+  - This is bounded and within SPEC. A human may want a smaller cap, or to trust the hint only up to a multiple of `input.len()`.
+- **SPEC 4.1 targets:**
+  - The primary 70% one-shot target is NOT MET: 66.9% raw, 68.8% zlib, 68.8% gzip.
+  - The streaming 60% target is MET: 74.9% raw.
+  - The shortfall is reported with measurements and next steps, as SPEC 4.1 and 9 allow.
+
+## Manual checks still owed (from HANDOFF.md)
+
+- **P0-11 / P0-13, benchmark noise:** aggregate noise is 6.1% (full) and 6.5% (quick), above the 5% and 3% goals, and measured run-to-run drift is about 10%. Re-run the baseline on a quiet machine with a pinned governor (SPEC 8), then repeat the final `make bench`. The recorded ratios depend on the machine state at the time: schedutil governor, load about 3.
+- **Every phase-end task:** confirm GitHub Actions `ci` is green on the pushed branch. It now lints and tests the `stats` and `test-hooks` features.
+- **P0-13, profiles:** sanity-check the P0-12 profile tables against `make flamegraph`. The denied entries in the provenance log from this phase are benign: a recursive grep at the repository root, and a `sed` regex containing a forbidden word.
+- **DESIGN entries and fast-loop code:**
+  - P1-05: review D-27 and D-28 for clean-room wording (SPEC 2.1).
+  - P3-04: review D-30 and D-31.
+  - P4-04: review the CRC derivation in D-32.
+  - P2-04: review the fast-loop code by hand and mutation-sample it (SPEC 5). Rounds 1 to 3 sampled it; see their tables.
+- **P2-02 / P2-04 / P5-03, fuzzing:** run `make fuzz-long` or the nightly workflow for all six targets, including `diff_fast_reference`, for the one-hour signal. Then triage `make fuzz-divergences`. Only `make fuzz-smoke` has been run.
+- **P3-04, memory:** compare peak RSS of `make bomb` against a phase-1 checkout (`/usr/bin/time -v`).
+- **P5-03, hand-off:**
+  - Review the PERF.md result line and the negative results.
+  - Complete `provenance/human-interventions.md`.
+  - After review and merge into `feature/perf` (and on to `main`), tag `v0.2.0-cleanroom`. The implementer does not tag.
 
 ## Notes
-- **Mutation sample this round (all killed):**
-  - `summarize.py`, allowed-only filter removed from `render_fetch_scripts`: `test_urls_from_fetch_scripts` failed.
-  - `summarize.py`, every mention treated as an invocation: `test_urls_from_fetch_scripts` failed.
-  - `summarize.py`, `fetched_by` output suppressed: `test_urls_and_fetched_by_from_allowed_corpus_fetch_script` failed.
-  - `inflate.rs`, stored LEN/NLEN check disabled: `stored_nlen_mismatch_error` failed.
-  - `zlib.rs`, FCHECK mod-31 check disabled: `zlib_bad_fcheck` failed.
-- **`summarize.py` readability:**
-  - The trailing `if first_base in MENTION_ONLY_VERBS: continue` at the end of the inner loop in `_invoked_fetch_scripts` does nothing, because nothing follows it in the loop. `MENTION_ONLY_VERBS` is therefore documentation only; the positive checks alone decide what counts as an invocation.
-  - The per-script headings are rendered at the same `###` level as their parent "### Fetch scripts" heading.
-  - Neither is worth a task.
-- **Earlier notes still apply:**
-  - The `32768` growth floor in `next_len` (`stream.rs`) is a literal outside `config.rs`.
-  - There is a stale `#[allow(dead_code)]` comment in `tables.rs`.
-  - R1-01's garbled "this crate's own this crate's own" comments are still there.
-  - HANDOFF.md's top half is still the superseded round-0 text.
-  - The guard's substring match on fetch-script names causes false positives.
+
+- `Raw with dictionary` in `decompressor_passes_path_every_format` decodes a stored block, so it never reads from the dictionary. That is fine, because the test pins the path, not the dictionary copy. `tests/zlib.rs::raw_with_dictionary_prefill` already covers the copy.
+- The round-1 notes on the P3-01 commit size and the P4-03 full-bench confirmation still stand. Neither needs action.

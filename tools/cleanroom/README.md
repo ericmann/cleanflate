@@ -33,3 +33,12 @@ Nothing here reads or fetches anything other than what SPEC §2.1 permits.
 `tools/git-hooks/commit-msg` appends `[stage:<s>] [task:<id>]` to any commit
 message that lacks it. Fresh clones must run `make hooks-install` once
 (`git config core.hooksPath tools/git-hooks`) to enable it.
+
+## Profiling rule (phase 2, SPEC 2.2)
+
+Bash segments whose tool word is perf, objdump, gdb, lldb, valgrind, ltrace,
+uftrace, flamegraph, or `cargo flamegraph` are denied if any token names
+oracle, libz or zlib. Otherwise they are allowed only when they reference
+`profile_decode`, read perf data under `target/profile/`, or are a no-target
+query (`perf --version`, `perf list`, `--help`). `make` and `cargo rustc`
+are unaffected.

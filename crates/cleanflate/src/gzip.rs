@@ -5,6 +5,7 @@
 //! and inter-member boundary logic (RFC 1952 S2.2, S2.3, S2.3.1).
 
 use crate::checksum::Crc32;
+use crate::decode_path::DecodePath;
 use crate::error::{ChecksumKind, Error, HeaderError};
 use crate::inflate::{InflateStatus, Inflater};
 use crate::options::TrailingData;
@@ -405,6 +406,7 @@ enum GState {
 pub(crate) struct GzipDecoder {
     state: GState,
     inflater: Inflater,
+    path: DecodePath,
     member_crc: Crc32,
     member_len: u64,
     headers: Vec<GzipHeader>,
@@ -424,17 +426,36 @@ pub(crate) struct GzipDecoder {
     /// used as the trailing-data offset if it turns out not to be a new
     /// member.
     boundary_start: u64,
+    /// Counters of the members already finished (feature `stats` only).
+    #[cfg(feature = "stats")]
+    stats_done: Box<crate::stats::Stats>,
 }
 
 impl GzipDecoder {
+    /// Counters accumulated across every member so far.
+    #[cfg(feature = "stats")]
+    pub(crate) fn stats(&self) -> crate::stats::Stats {
+        let mut s = (*self.stats_done).clone();
+        s.merge(&self.inflater.stats());
+        s
+    }
+
+    /// The decode path of the current member's inflater.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn inflater_path(&self) -> DecodePath {
+        self.inflater.path()
+    }
+
     pub(crate) fn new(
         trailing: TrailingData,
         max_gzip_field: usize,
         max_gzip_headers: usize,
+        path: DecodePath,
     ) -> Self {
         GzipDecoder {
             state: GState::MemberHeader(GzipHeaderParser::new(max_gzip_field)),
-            inflater: Inflater::new(),
+            inflater: Inflater::new_with_path(path),
+            path,
             member_crc: Crc32::new(),
             member_len: 0,
             headers: Vec::new(),
@@ -447,6 +468,8 @@ impl GzipDecoder {
             trailing_start: None,
             boundary_pending: Vec::new(),
             boundary_start: 0,
+            #[cfg(feature = "stats")]
+            stats_done: Box::default(),
         }
     }
 
@@ -513,7 +536,9 @@ impl GzipDecoder {
                                     if self.headers.len() < self.max_gzip_headers {
                                         self.headers.push(header);
                                     }
-                                    self.inflater = Inflater::new();
+                                    #[cfg(feature = "stats")]
+                                    self.stats_done.merge(&self.inflater.stats());
+                                    self.inflater = Inflater::new_with_path(self.path);
                                     self.member_crc = Crc32::new();
                                     self.member_len = 0;
                                     self.state = GState::Body;

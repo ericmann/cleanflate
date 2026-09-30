@@ -25,6 +25,17 @@ iteration spend unbounded time producing output; that behavior is
 exercised deliberately and at realistic scale in
 `crates/oracle/tests/bomb.rs` instead.
 
+One more differential target compares the two decode paths of cleanflate
+itself (SPEC S5, phase 2):
+
+- `diff_fast_reference`: `byte0 % 3` selects the format, `byte1` and
+  `byte2` give the input and output chunk sizes (1..=256), and the rest is
+  the stream. Both `DecodePath::Fast` and `DecodePath::Reference` (via the
+  `test-hooks` feature, enabled only in this workspace's dependency) decode
+  it one-shot and through the streaming API; any difference in output,
+  error, per-call consumed/produced/status or `finish()` panics. Seeds
+  come from `testdata/malformed/`.
+
 Two differential targets compare `cleanflate` against the oracle's own
 C zlib wrapper (SPEC S5 M4 (b)/(c); C9: always through `oracle::ffi`,
 never the raw C bindings directly):

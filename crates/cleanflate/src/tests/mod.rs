@@ -6,21 +6,30 @@
 )]
 
 mod bitreader;
+mod bitreader_bulk;
 #[allow(dead_code)] // write_code is reused by later Huffman/inflate tests
 pub(crate) mod bitwriter;
 mod checksum;
+mod config;
+mod decode_path;
 mod dynbuilder;
 mod error;
+mod fast_loop;
 mod fastpath;
 mod gzip;
 mod gzip_header;
+mod history;
 mod huffman;
 mod huffman_table;
+mod huffman_twolevel;
 mod huffman_validation;
 mod inflate_dynamic;
 mod inflate_fixed;
 mod inflate_stored;
 mod invariants;
+mod oneshot_sizing;
+#[cfg(feature = "stats")]
+mod stats;
 mod stream_contract;
 mod stream_raw;
 mod tables;

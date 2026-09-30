@@ -1,1621 +1,1128 @@
-# cleanflate build plan
-Derived from docs/SPEC.md v(unversioned, commit ba82a47) on 2026-09-29. SPEC.md wins over this file.
+# cleanflate phase 2 build plan
+Derived from docs/SPEC.md v(unversioned, commit 877892c) on 2026-09-29. SPEC.md wins over this file.
 
 ## Decisions
-- Phases vs milestones → Phase N implements SPEC milestone MN for M0–M4 and M6. There is **no Phase 5**: M5 is marked optional and is deferred. Rationale: M5 (no_std, a compressor) is a separate clean-room scope, the companion bench spec only needs decompression, and adding it doubles the unattended surface. BUILD_REPORT.md lists it as deferred.
-- "Each milestone ends with a Foundry review stage" (SPEC §5) → a single Foundry flight runs one review loop after all phases. Each phase instead ends with an acceptance-and-push task that runs that milestone's acceptance commands and records the results. Rationale: Foundry reviews once per flight. A human who wants per-milestone review can run one flight per phase.
-- CI (SPEC §5 M0) → `make ci` is authoritative. `.github/workflows/ci.yml` runs the same target. Rationale: the implementer can run `make ci` locally, but it cannot observe GitHub Actions.
-- Hook liveness → Claude Code may snapshot hooks at session start. If so, the hooks written in P0-05 do not take effect until the session restarts. P0-11 records whether the log is live, and restarting is a manual check. No later task depends on liveness. Rationale: the flight must not stall on something only a human can do.
-- Tool-log location → the live log `provenance/tool-log.jsonl` is gitignored. `make provenance-snapshot` copies it to the tracked `provenance/tool-log.snapshot.jsonl` at every phase end. Rationale: a tracked file that grows on every tool call leaves the tree dirty after every commit, and Foundry refuses to close tasks with uncommitted files.
-- Denied calls → the PreToolUse guard appends its own `denied` line, and the PostToolUse logger appends `allowed` lines. Rationale: PostToolUse never fires for a call that PreToolUse blocked, so the logger alone would drop every denial (SPEC §2.3 forbids that).
-- Guard implementation → Python 3 using only the stdlib (`tools/cleanroom/guard.py`, with `shlex` for tokenizing). SPEC allows "guard.sh or equivalent". Rationale: robust JSON and shell-word parsing. python3 3.12 and jq 1.7 are present.
-- Guard failure mode → fail closed: an internal error exits 2 and logs the error. Rationale: provenance comes before convenience. The self-test is what keeps the guard from wedging a flight.
-- Forbidden-word path rule (SPEC §2.3) → apply it literally. Every tracked path outside `crates/cleanflate/` and `crates/oracle/` avoids the words zlib/miniz/flate2/libdeflate/libz-sys/zopfli. Testdata paths therefore name framings `rfc1951`/`rfc1950`/`rfc1952`, and fuzz targets are `never_panic_*`/`diff_oracle_*`. `make crate-checks` enforces this.
-- Guard extras beyond SPEC → deny all of `~/.cargo/registry/**` (not only `src/`), `target/doc/src/**` (rustdoc source pages), and the tokens `libz_sys`, plus inflate/deflate/gzip/puff for paths outside the repo. Rationale: these are the same leaks under a different spelling.
-- Commit tags (SPEC §2.4) → every agent-written commit body carries `[stage:<s>] [task:<id>]`. A versioned `commit-msg` hook (`tools/git-hooks/commit-msg`, enabled with `git config core.hooksPath tools/git-hooks`) adds the tags to any commit that lacks them, including Foundry's own `progress:`/`review:` commits. Rationale: Foundry requires subjects to start with `<ID>:`, so the tags go in the body.
-- Corpora → neither corpus is committed. `testdata/corpora/SOURCES.json` (URLs, SHA-256) is committed, and archives and extracted files are gitignored. GitHub CI fetches Canterbury with an explicit override variable. Silesia is used locally only (the full tier). Rationale: repo size and redistribution uncertainty.
-- Generated conformance corpus → `testdata/generated/` is gitignored and regenerated deterministically. `testdata/MANIFEST.json` is committed and verified by SHA-256 on every `make corpus`. Tier `quick` (synthetic + Canterbury) runs in `make test`. Tier `full` (adds Silesia) runs in `make conformance-full`. Rationale: gigabytes of output cannot live in git, and a determinism check replaces committing them.
-- Generation matrix (SPEC §4) → a bounded set of four sub-matrices (levels, strategies, window/memLevel, dictionary) defined in P1-02, not the full cross product. Rationale: the full cross product is about 9,450 streams per input, and every individual parameter value is still covered.
-- Oracle build → `libz-sys` with the `static` feature, which builds the C backend that libz-sys bundles, not a system zlib. Rationale: deterministic MANIFEST hashes across machines.
-- Dev-dependency restriction (SPEC §3.1) → `crates/cleanflate` has no dev-dependencies. Every test that needs proptest, serde or the oracle lives in `crates/oracle/tests/`. cleanflate's own tests use std only. Unit tests live under `crates/cleanflate/src/tests/` so that line rules can exclude them.
-- Streaming architecture → the raw DEFLATE core is a resumable state machine from M1 on, and the one-shot functions drive it. `Decompressor` is public from P1-10, and M4 finalizes its contract. Rationale: retrofitting resumability onto a slice decoder is a rewrite, and one code path makes chunking invariance structural.
-- Public API names → `inflate`, `zlib_decompress`, `gzip_decompress`, `decompress_with(Format, &[u8], &Options) -> Result<Decoded, Error>`, `Decompressor { new, decompress, finish, total_in, total_out, trailing_start, gzip_headers }`, `Progress { consumed, produced, status }`, `Status { NeedsInput, OutputFull, Done }`, `Options { max_output, trailing, dictionary, max_gzip_field }`, `TrailingData { Reject, Allow }`, `Format { Raw, Zlib, Gzip }` (#[non_exhaustive]; Zlib added in P3-01, Gzip in P3-03). Rationale: the SPEC §3.3 capabilities with one name each.
-- Error enum → `Error::{BadHeader(HeaderError), PresetDictionaryRequired{dict_id}, DictionaryMismatch{expected,actual}, BadBlockType, InvalidStoredLength{len,nlen}, InvalidHuffmanTable(HuffmanError), InvalidSymbol, InvalidDistance{distance,available}, ChecksumMismatch{kind,expected,actual}, Truncated, TrailingData{offset}, OutputLimitExceeded{limit}}` plus `Error::kind() -> ErrorKind`. Rationale: covers every SPEC §3.3 category, and `ErrorKind` names are the strings used in the malformed corpus.
-- Default output limit (SPEC §3.3 "default documented") → `DEFAULT_MAX_OUTPUT = 1 GiB` in `crates/cleanflate/src/config.rs`. Producing byte limit+1 fails with `OutputLimitExceeded`, and exactly `limit` bytes succeeds. Rationale: larger than any corpus member (51 MB) and small enough to stop a bomb.
-- Gzip FNAME/FCOMMENT/FEXTRA memory → store at most `DEFAULT_MAX_GZIP_FIELD = 65536` bytes of each field, keep parsing the rest, and set `truncated_fields`. Valid streams are never rejected. Rationale: bounded memory (SPEC §1).
-- Trailing data (SPEC §3.3) → the default is `TrailingData::Reject`. After a gzip member, bytes starting with 1f 8b are always another member, and anything else is trailing data. Under `Allow`, `consumed` and `trailing_start()` report the exact offset. Rationale: strict by default, and the lenient option is explicit.
-- Incomplete Huffman codes (RFC 1951 §3.2.7 leaves this open) → reject every incomplete or over-subscribed table except the distance table in two cases: a single code of length 1, and all lengths zero (literals-only block). HDIST up to 32 is accepted per the RFC's stated range, and distance symbols 30/31 fail with `InvalidSymbol` if decoded. Length code 284 with extra value 31 decodes arithmetically to 258 and is accepted. Rationale: follow the RFC text literally, and document each choice in DESIGN.md.
-- Zlib CINFO → validate CINFO ≤ 7, but do not limit back-references to the declared window. Header checks run in the order FCHECK, CM, CINFO. Rationale: RFC 1950 defines CINFO as an encoder hint, and a fixed order makes errors deterministic.
-- Zip-bomb fixture (SPEC §5 M4 says "1 KiB → >1 GiB") → use about 1 MiB of compressed zeros that expands to DEFAULT_MAX_OUTPUT + 1 MiB. Rationale: DEFLATE's maximum ratio is about 1032:1, so 1 KiB cannot expand to 1 GiB.
-- Fuzzing toolchain → cargo-fuzz and nightly are not installed. P4-04 attempts to install them. Smoke runs (`FUZZ_SECONDS`, default 60) are best-effort, and the 1-hour runs come from `.github/workflows/fuzz-nightly.yml` or a human. Rationale: a 1-hour run cannot sit inside per-task verify.
-- Chunking property test cases → `CLEANFLATE_CHUNKING_CASES` env, default 512 in `make test`. `make proptest-10k` runs 10,000 cases in release. Rationale: keeps per-task verify fast while still running the SPEC's 10k cases at each phase end.
-- Release tag `v0.1.0-cleanroom` and BUILD_REPORT review-round counts → the implementer does not tag. A human tags after the Foundry review converges and the branch merges, then re-runs `make provenance-summary build-report`. Rationale: tagging before review would freeze unreviewed code.
-- Transcript backfill of pre-hook activity → not built. `provenance/README.md` documents the gap. Rationale: the transcript format is undocumented and reading it may prompt for permission, which would stall an unattended flight.
-- Toolchain → `rust-toolchain.toml` pins `channel = "1.89.0"` (the installed stable), edition 2021, `rust-version = "1.89"`, `resolver = "3"` (MSRV-aware resolution). `[profile.dev] opt-level = 1` with `[profile.dev.package."*"] opt-level = 3`. Rationale: tests stay fast while overflow checks stay on.
-- Performance measurement → `oracle bench` reports best-of-N one-shot decompression throughput (uncompressed MB/s) for cleanflate and C zlib on each Silesia file, compressed at level 6, raw and zlib framing, in release. The ratio is reported against the 70% target either way.
+- Phases vs milestones → Phase N implements SPEC §6 milestone MN (M0–M5), in order, not merged. Rationale: SPEC defines the milestones and their acceptance.
+- Review cadence (SPEC §6 "each milestone ends with an acceptance task") → one Foundry review loop per flight, up to 6 rounds (SPEC §7). Each phase ends with an acceptance-and-push task. Rationale: Foundry reviews once per flight. The acceptance tasks carry the per-milestone gates.
+- Base branch → `feature/perf`; build branches use the `build/` prefix and PR into `feature/perf` (SPEC §7). Rationale: stated by SPEC.
+- Narrow dependencies (SPEC §6) → optimisation tasks depend on the M0 infrastructure tasks they use (switch, differential, fixtures, stats, bench), never on acceptance tasks. Acceptance tasks depend only on their milestone's core task. Rationale: phase 1 lost 17 tasks to one cascade.
+- Task order vs "order the remaining milestones' tasks by measured cost" (SPEC §4.4, M0) → milestone order is fixed (M1 → M4; the fast loop needs bulk refill and table decode, output history needs a stable loop). P0-12 records the measured cost ranking. Tasks whose hypothesis may prove cheap (P1-03, P1-04, P2-03, P4-02) are **gated**: they measure first and record a negative result without code changes when the target is below max(2%, 2x noise) of samples (CLAUDE.md PT2). Rationale: PLAN cannot be reordered mid-flight, and gates give the same effect.
+- Force-slow-path switch (SPEC §5 "cfg(test)-only or feature-gated") → cargo feature `test-hooks` (off by default) exposing `cleanflate::test_hooks::{DecodePath, decompress_with_path, decompressor_with_path}`. `crates/oracle` enables it only in `[dev-dependencies]`. Rationale: `cfg(test)` of cleanflate is invisible to the oracle's integration tests, which own the corpora.
+- What the Reference path switches off → every decode technique: bulk refill (exact byte-at-a-time fill), table lookup (bit-serial `Huffman::decode`), the fast loop, and slice/doubling match copies (byte-by-byte copy through the same history view). Storage changes shared by both paths (table ownership, output-as-history, stored-block slice copy) are covered by conformance and chunking tests against C zlib. Checksums are not switched; they have direct oracle tests. Rationale: the reference must stay obviously correct, while structural code cannot sensibly exist twice.
+- "Identical consumed" in the differential (SPEC §5) → compared **per call**, together with produced, status and the full `Error` value (Debug string), plus `finish()`, `total_in`, `total_out`, `trailing_start` and gzip member count. The Fast path therefore gives back whole unneeded bytes at every non-NeedsInput exit so its reader holds exactly the Reference reader's bits (P1-01). Rationale: the strongest reading, and it catches the phase-1 P4-08 class of bug at the call where it happens.
+- Invalid-code timing (found while planning: phase-1 D-16 reports `Invalid` from the table after ≥ table-width bits but the serial walk only after 15, so the two paths disagree and the answer depends on a tunable) → one rule for both decoders: a code is `Invalid` as soon as ≥ 1 buffered bit proves no code matches or extends it. This only arises for the two incomplete distance tables RFC 1951 §3.2.7 allows (P0-04). Rationale: table-width independent, accept/reject unchanged, and the malformed corpus expectations do not move.
+- Stats "time or calls spent building tables" vs C7 (no clocks in cleanflate) → the `stats` feature counts table builds and entries written, never time. Time comes from profiles. Counters are per-instance fields (no global state), and with the feature off they do not exist. Rationale: C7 and "default build bit-for-bit unaffected".
+- Stats API → `#[cfg(feature = "stats")]` `cleanflate::Stats`, `Decompressor::stats()` and `decompress_with_stats()`. The oracle feature `stats` forwards to it, and `oracle bench --stats` prints it. Rationale: additive, opt-in and required by SPEC §4.3.
+- Profiling entry point (SPEC §4.3) → `crates/cleanflate/examples/profile_decode.rs`. It depends only on cleanflate and std, so no C code exists in the profiled process. It reads inputs prepared by the unprofiled `oracle perf-prep` into gitignored `testdata/perf-inputs/`. `make profile`/`make flamegraph` wrap `perf record`/`cargo flamegraph` around it. Rationale: the strictest reading of "never calls C zlib in the profiled process".
+- Guarding SPEC §2.2 mechanically → the PreToolUse guard denies perf/flamegraph/objdump/gdb/lldb/valgrind commands unless they target the cleanflate-only example or `target/profile/` (P0-02). A foundry constraint keeps Makefile/CI clean. Rationale: provenance is priority 1, and prose rules are not enough (phase-1 SPEC §2.3 lesson).
+- Streaming-target denominator (SPEC §4.1 "≥ 60% of C zlib ... through `Decompressor` with 64 KiB chunks") → cleanflate streaming median vs C zlib **one-shot** median on the same input. Rationale: SPEC §10 forbids changing the oracle's C zlib usage beyond timing, and a harder denominator cannot overstate the result.
+- Bench method (SPEC §4.2) → a warm-up decode that verifies the output, then N timed samples (full N=7, quick N=5). Each sample repeats the decode until it lasts ≥ 20 ms and runs the implementations interleaved. The bench reports median and min. The aggregate is total bytes / sum of per-file medians. The full bench covers Silesia + Canterbury, raw/zlib/gzip, levels 1/6/9, one-shot and streaming. Quick covers Canterbury + Silesia {dickens, mr, ooffice, sao, xml}, level 6. Rationale: SPEC §4.2 plus stable numbers for small files.
+- Noise and verdicts (SPEC §4.1/§4.2) → noise is |run1 − run2| / run1 of cleanflate median throughput per aggregate key and per file, from two baseline runs (full and quick separately). `WIN` means the aggregate delta is > 2x its noise. A per-file `REGRESSION` means the delta is < −max(file noise, aggregate noise). Rationale: tiny Canterbury files have noisy timings, and SPEC's per-file rule should not fire on jitter.
+- Performance results → `docs/perf/<task-id>.json` (plus `<task-id>-before.json` for PT1 tasks and `docs/perf/P4-03/` for the sweep), generated only by `oracle bench`/`bench-noise`. PERF.md tables come from `oracle bench-md`, and PERF.md keeps the phase-1 sections and adds `## Phase 2`. Rationale: SPEC §4.2 and no hand-transcription.
+- Benchmarks are not CI gates, and acceptance-task performance criteria are recorded, not blocking → an unmet target or ratio is written as NOT MET, and the task completes. A correctness failure (ci, heavy, differential, regression) blocks with a fixture per PT5. Rationale: SPEC §4.1 "report either way" and §1 priorities.
+- 3000-case rule (SPEC §5) → `make proptest-3k` (chunking + fastslow at 3000 cases) runs through `extraVerify` for any change under `crates/cleanflate/src/`. Milestone acceptance runs `make heavy` (10k cases, full-tier differential, full conformance, bomb). Rationale: mechanical rather than remembered.
+- Regression fixtures (SPEC §5) → `testdata/regressions/` with `MANIFEST.tsv` (expected output length and SHA-256 from the oracle, or an expected ErrorKind) plus `oracle regress-add`/`regress-seed`. Tests run each fixture one-shot, at 1-byte chunks and with its recorded schedule, on both paths. Proptest failure dumps land in `target/regress-candidates/`. Rationale: a repro is a committed file with a test, never a log line.
+- New tunables (SPEC §3, C8) → `FAST_LOOP_MIN_INPUT = 16`, `FAST_LOOP_MIN_OUTPUT = 258`, `ONESHOT_GROWTH_FLOOR = 32_768` (moves the phase-1 literal out of stream.rs), `ONESHOT_INITIAL_RATIO = 4`, `ONESHOT_MAX_PREALLOC = 64 MiB`, `CRC32_SLICES = 8`, all in config.rs. Each is introduced by the task that first needs it and re-swept in P4-03. Rationale: SPEC §3/§6 M4.
+- One-shot size hints (SPEC §6 M3 "gzip ISIZE when trustworthy") → ISIZE (last 4 bytes) and `input.len() x ONESHOT_INITIAL_RATIO` are allocation hints only, capped by `max_output` and by `ONESHOT_MAX_PREALLOC`. Rationale: a hostile ISIZE must not force a large up-front allocation. Memory stays proportional to output actually produced, beyond a fixed cap.
+- Toolchain, SIMD, threads, nightly → unchanged: 1.89.0, none of the others (SPEC §3/§10), enforced by constraint `no-simd-arch-or-nightly-in-cleanflate`.
+- Phase-2 task IDs reuse the `P<n>-<nn>` shape and collide with phase-1 IDs in git history → the provenance summary and build report gain `--since`/`--since-commit` scoping with `PHASE_BASE ?= 599ca51` (last phase-1 commit) in P5-01. Rationale: phase-1 history must not be counted as phase-2 work.
+- DESIGN numbering → every new entry takes the next free `D-NN` (D-26 at plan time). PLAN never names a number. Performance entries use `### D-NN: [perf] <title>`, enforced by design-check (P0-03). Rationale: phase-1 ID drift.
+- Tagging → the implementer never tags. A human tags `v0.2.0-cleanroom` after review and merge (SPEC §6 M5).
 
 ## Conventions
-- Every task is one commit. The subject is `<ID>: <title>`, and the body follows the `## Commit template` in CLAUDE.md, including the `[stage:implement] [task:<ID>]` line and a `Defects-caught:` line.
-- The implementer reads CLAUDE.md, the task, and the SPEC sections the task cites. Constraint IDs `C1`–`C16` and clean-room rules `CR1`–`CR6` refer to CLAUDE.md.
-- cleanflate unit tests go in `crates/cleanflate/src/tests/<module>.rs` (declared from `src/tests/mod.rs`). Integration tests that need no deps go in `crates/cleanflate/tests/`. Tests needing the oracle, serde or proptest go in `crates/oracle/tests/`.
-- Test names in Acceptance tests are `file::function`. All of them must exist and pass.
-- Makefile targets are the only commands the implementer needs. Every target exits non-zero on failure.
-- A phase-end task writes `Manual check: NOT VERIFIED (human)` in its progress-log entry and never waits.
+- Every task is one commit. The subject is `<ID>: <title>`, and the body follows the `## Commit template` in CLAUDE.md, including `[stage:implement] [task:<ID>]`, `Defects-caught:` and, for performance tasks, `Measurement:`.
+- The implementer reads CLAUDE.md, the task and the SPEC sections the task cites. `C1`–`C20`, `CR1`–`CR7` and `PT1`–`PT8` refer to CLAUDE.md.
+- "Global invariants" in a task means: C1–C8, C15, C17 and SPEC §3 apply to every file under `crates/cleanflate/` the task touches. That means no unsafe, no panicking calls or `[]` indexing in library code, zero dependencies, no clocks/IO/global state, tunables only in config.rs, checked arithmetic on hostile values, and no SIMD/arch/nightly.
+- cleanflate unit tests go in `crates/cleanflate/src/tests/<name>.rs`, declared in `src/tests/mod.rs`. Tests needing the oracle, proptest, the corpora or `test_hooks` go in `crates/oracle/tests/`. Tests of the `stats` feature are gated `#[cfg(feature = "stats")]` and run by `make test`.
+- Test names in Acceptance tests are `file::function`. All must exist and pass.
+- `make` targets are the only commands the implementer needs. `make bench` and `make heavy` exceed the 10-minute foreground limit: run them in the background and wait (PT8).
+- A phase-end task writes `Manual check: NOT VERIFIED (human)` with its list in the progress log and never waits.
 
-## Phase 0 — M0 Clean-room harness and scaffolding
+## Phase 0 — M0 Baseline, instrumentation, safety net
 
-### P0-01: Workspace scaffold, toolchain pin and Makefile skeleton
-**Goal:** Create the Cargo workspace, the empty `cleanflate` and `oracle` crates, the directory skeleton and a Makefile whose verify targets all exist.
-**Files touched:** `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.gitignore`, `Makefile`, `crates/cleanflate/Cargo.toml`, `crates/cleanflate/src/lib.rs`, `crates/cleanflate/src/tests/mod.rs`, `crates/oracle/Cargo.toml`, `crates/oracle/src/lib.rs`, `fuzz/README.md`, `tools/cleanroom/README.md`, `provenance/README.md` (stub, one paragraph), `docs/rfc/README.md`, `testdata/README.md`, `README.md`.
-**Design constraints:** SPEC §3.1 and §5 M0.
-- Workspace `Cargo.toml`:
-  - `members = ["crates/cleanflate", "crates/oracle"]`, `exclude = ["fuzz"]`, `resolver = "3"`.
-  - `[workspace.package] edition = "2021"`, `rust-version = "1.89"`.
-  - `[profile.dev] opt-level = 1`, `[profile.dev.package."*"] opt-level = 3`, `[profile.release] debug = "line-tables-only"`.
-- `rust-toolchain.toml`: `channel = "1.89.0"`, `components = ["rustfmt", "clippy"]`, `profile = "minimal"`. If rustup reports the toolchain missing, run `rustup toolchain install 1.89.0 --profile minimal --component rustfmt,clippy`.
-- Only `tools/cleanroom/README.md` goes under `tools/` in this task. Do not create scripts yet.
-- `crates/cleanflate/Cargo.toml`: no `[dependencies]`, `[dev-dependencies]` or `[build-dependencies]` sections, and no build script (C3).
-- `crates/cleanflate/src/lib.rs` starts with exactly these lines:
-  ```
-  #![forbid(unsafe_code)]
-  #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing, clippy::unreachable, clippy::todo, clippy::unimplemented)]
-  #![warn(missing_docs)]
-  ```
-  It continues with a crate doc comment and `#[cfg(test)] mod tests;`.
-- `src/tests/mod.rs` begins with `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]` and holds one test.
-- `crates/oracle`: `publish = false`, no dependencies yet.
-- `.gitignore`: `/target`, `/fuzz/target`, `/fuzz/corpus`, `/fuzz/artifacts`, `/fuzz/coverage`, `/testdata/generated/`, `/testdata/corpora/archives/`, `/testdata/corpora/canterbury/`, `/testdata/corpora/silesia/`, `/provenance/tool-log.jsonl`, `/provenance/*.lock`.
-- Makefile targets:
-  - `fmt-check` (`cargo fmt --all -- --check`)
-  - `lint` (`cargo clippy --workspace --all-targets -- -D warnings`)
-  - `test` (`cargo test --workspace`)
-  - stubs that print `STUB: <target> arrives in <task>` and exit 0: `corpus` (P1-03), `crate-checks` (P0-02), `cleanroom-selftest` (P0-05), `tools-check` (P0-02), `design-check` (P1-05), `fuzz-check` (P4-04). These targets must exist from the start because `docs/foundry.json` verify and extraVerify call them.
-  - `ci` depending on `fmt-check lint corpus test crate-checks cleanroom-selftest`
-- Directory and file names outside the two crates must not contain zlib/miniz/flate2/libdeflate/libz-sys/zopfli (C11).
-- CR1–CR6 apply.
-**Acceptance tests:** `crates/cleanflate/src/tests/mod.rs::crate_builds` (asserts `true`, proving the test tree is wired). `make ci` exits 0.
-**Out of scope:** Any decoder code. Any oracle FFI. Hooks. Downloads. Creating a git branch.
-**Verification:** `make fmt-check && make lint && make test && make ci`. Also check `cargo metadata --no-deps --format-version 1 | jq '.packages[]|select(.name=="cleanflate")|.dependencies|length'` prints `0`.
+### P0-01: Feature flags, Makefile targets and ignore rules
+**Goal:** Declare the opt-in `stats` and `test-hooks` features, make `make lint`/`make test` (and therefore CI) build, lint and test them, and add `make proptest-3k`.
+**Files touched:** `crates/cleanflate/Cargo.toml`, `crates/oracle/Cargo.toml`, `Cargo.lock`, `Makefile`, `.gitignore`, `docs/perf/README.md` (new).
+**Design constraints:** SPEC §3 (zero dependencies: features are not dependencies), §4.3 (stats compiled out by default), §5 (switch unreachable in the default build), §6 M0 ("CI: also build and clippy the stats feature"). C3, C18.
+- `crates/cleanflate/Cargo.toml`: add `[features]` with `stats = []` and `test-hooks = []`. There is no `default` key naming either.
+- `crates/oracle/Cargo.toml`:
+  - Add `[features] stats = ["cleanflate/stats"]`.
+  - Add `[dev-dependencies] cleanflate = { version = "0.1.0", path = "../cleanflate", features = ["test-hooks"] }`.
+  - Leave the normal `[dependencies]` entry exactly as it is, without features.
+- `Makefile`:
+  - `lint`: keep the existing line and add:
+    - `cargo clippy -p cleanflate --lib -- -D warnings` (default features only; catches code that is dead without a feature)
+    - `cargo clippy -p cleanflate --all-targets --features stats -- -D warnings`
+    - `cargo clippy -p cleanflate --all-targets --features stats,test-hooks -- -D warnings`
+  - `test`: keep `cargo test --workspace`, and add `cargo test -p cleanflate` and `cargo test -p cleanflate --features stats`.
+  - New `proptest-3k: CLEANFLATE_CHUNKING_CASES=3000 cargo test --release -p oracle --test chunking` (P0-05 extends it). Add it to `.PHONY`.
+- `.gitignore`: add `/testdata/perf-inputs/`. Profile output goes to `target/profile/` and bench scratch to `target/bench/`, both already ignored via `/target`.
+- `docs/perf/README.md`: one short section saying this directory holds bench JSON files named by task id, written only by `oracle bench`/`oracle bench-noise` and never hand-edited. The schema is added by P0-08.
+- `.github/workflows/ci.yml` needs no change, because it runs `make ci`, which runs lint and test.
+**Acceptance tests:**
+- No new test files.
+- `make lint`, `make test`, `make proptest-3k` and `make crate-checks` pass.
+- `cargo metadata --format-version 1 --no-deps` lists cleanflate with 0 dependencies and features `stats` and `test-hooks`.
+**Out of scope:** Any Rust source. The `test_hooks` module (P0-04). The `stats` module (P0-07).
+**Verification:** `make lint && make test && make proptest-3k && make crate-checks`.
 **Depends on:** none
 
-### P0-02: Crate checks script (zero deps, no unsafe token, forbidden path names)
-**Goal:** Make `make crate-checks` mechanically enforce C1, C2, C3 and C11, with shell tests proving each check fails on a violating fixture.
-**Files touched:** `tools/ci/crate-checks.sh`, `tools/ci/tests/crate_checks_test.sh`, `Makefile`.
-**Design constraints:** SPEC §3.1 and §5 M0 ("a check that crates/cleanflate has zero dependencies and contains no unsafe token").
-- The script honours `CRATE_CHECKS_ROOT` (default: git toplevel) so tests can point it at a temp fixture.
-- Checks, each printing `FAIL <check>: <detail>` on violation and exiting 1 if any failed:
-  - (a) `deps`: for the `cleanflate` package, `cargo metadata --format-version 1 --no-deps --manifest-path $ROOT/Cargo.toml` has an empty `.dependencies` array (this covers normal, dev and build deps). Also, `crates/cleanflate/build.rs` does not exist.
-  - (b) `unsafe-token`: `grep -rnw unsafe $ROOT/crates/cleanflate` finds nothing. `-w` treats `_` as a word character, so `unsafe_code` does not match.
-  - (c) `crate-attrs`: `crates/cleanflate/src/lib.rs` contains the literal lines `#![forbid(unsafe_code)]` and a `#![deny(` line naming all of `clippy::unwrap_used`, `clippy::expect_used`, `clippy::panic`, `clippy::indexing_slicing`.
-  - (d) `forbidden-paths`: `git -C $ROOT ls-files` minus paths under `crates/cleanflate/` and `crates/oracle/` has no path matching the case-insensitive ERE `zlib|miniz|flate2|libdeflate|libz-sys|libz_sys|zopfli`.
-- Add Makefile target `tools-check`:
-  - `shellcheck` on every `*.sh` under `tools/` plus `tools/git-hooks/*` if present
-  - `python3 -m py_compile` on `tools/**/*.py` if any
-  - `python3 -m unittest discover -s tools/cleanroom/tests -p 'test_*.py'` if that dir exists (test modules put `tools/cleanroom` on `sys.path` themselves)
-  - every `tools/ci/tests/*_test.sh`
-  Guard each optional step with an existence test so the target works now.
-- Replace the `crate-checks` and `tools-check` stubs with the real targets (`crate-checks` runs `bash tools/ci/crate-checks.sh`). Add `tools-check` to `ci`.
-**Acceptance tests:** `tools/ci/tests/crate_checks_test.sh`, which builds throwaway fixture repos in `mktemp -d` and prints PASS/FAIL per case:
-- `case_clean_passes`
-- `case_unsafe_block_fails`
-- `case_unsafe_in_comment_fails`
-- `case_dependency_fails`
-- `case_dev_dependency_fails`
-- `case_missing_forbid_fails`
-- `case_forbidden_path_fails`
-- `case_forbidden_word_inside_crates_ok`
-The file exits non-zero if any case fails. `make crate-checks` passes on the real repo.
-**Out of scope:** Clippy config. Hook scripts. Any network access.
-**Verification:** `make crate-checks`, `make tools-check`, `make ci`.
-**Depends on:** P0-01
-
-### P0-03: Provenance library and PostToolUse logger
-**Goal:** Implement `tools/cleanroom/provenance.py` (shared context and append helpers) and `tools/cleanroom/log.py` (the PostToolUse hook) so every tool call can be appended to `provenance/tool-log.jsonl` as one JSON line.
-**Files touched:** `tools/cleanroom/provenance.py`, `tools/cleanroom/log.py`, `tools/cleanroom/tests/__init__.py`, `tools/cleanroom/tests/test_provenance.py`, `tools/cleanroom/README.md`.
-**Design constraints:** SPEC §2.3 (logger bullet). Python 3 stdlib only.
-- Entry keys, in this order: `ts` (UTC ISO-8601 with milliseconds and `Z`), `foundry_stage`, `task_id`, `model`, `tool`, `target`, `decision` (`"allowed"` or `"denied"`), `reason` (string or null). Extra keys `session_id` and `agent_type` may follow.
-- `provenance.py` API:
-  - `repo_root(hook_input)`: env `CLEANROOM_REPO_ROOT`, else env `CLAUDE_PROJECT_DIR`, else `hook_input["cwd"]`'s git toplevel, else cwd.
-  - `log_path(root)`: env `CLEANROOM_LOG`, else `<root>/provenance/tool-log.jsonl`.
-  - `context(hook_input, root) -> dict` (see derivation below).
-  - `target_of(tool_name, tool_input) -> str` (see mapping below).
-  - `append(entry, path)`: `os.open` with `O_APPEND|O_CREAT`, `fcntl.flock`, one `write` of `json.dumps(entry, separators=(",",":")) + "\n"`, and creating `provenance/` if missing.
-- Stage derivation, first match wins:
-  1. Hook input `agent_type` containing `planner` → `plan`, `implementer` → `implement` (or `fix` if `.foundry/state.json` `round` ≥ 1), `reviewer` → `review`, `summarizer` → `summarize`.
-  2. Env `FOUNDRY_STAGE` if it is one of plan/implement/review/fix/summarize.
-  3. `<root>/.foundry/implement.lock` exists → `implement`, or `fix` when round ≥ 1.
-  4. Otherwise null.
-- Task derivation: when the stage is implement or fix, use env `FOUNDRY_TASK_ID`, else the first line under `## Tasks` in `docs/PROGRESS.md` matching `^- \[~\] (\S+)`. Otherwise null.
-- Model derivation: hook input `model` if it is a string, else env `CLEANROOM_MODEL`, else best-effort. The best-effort path reads the last 256 KiB of `transcript_path`, scans lines newest-first, and uses the first `message.model` string. Otherwise null. A missing or unreadable file is never an error.
-- `target_of` mapping:
-  - Read/Write/Edit → `file_path`
-  - NotebookEdit → `notebook_path`
-  - Grep → `path=<p> glob=<g> pattern=<pat>`
-  - Glob → `path=<p> pattern=<pat>`
-  - WebFetch → `url`
-  - WebSearch → `query`
-  - Bash → `command` truncated to 4000 chars
-  - Task/Agent → `subagent_type: description`
-  - anything else → the tool name plus compact JSON of the input, truncated to 500 chars
-- `log.py` reads the hook JSON from stdin, appends an `allowed` entry and **always exits 0**. On any exception it tries to append an entry with reason `logger-error: <msg>`. If that also fails, it writes to stderr and still exits 0.
-**Acceptance tests:** `tools/cleanroom/tests/test_provenance.py`:
-- `test_target_for_each_tool`
-- `test_stage_from_agent_type`
-- `test_stage_from_env`
-- `test_stage_from_lock_and_round`
-- `test_stage_null_outside_flight`
-- `test_task_id_from_progress`
-- `test_model_from_transcript_tail`
-- `test_model_null_when_unknown`
-- `test_append_writes_one_json_line_with_spec_keys`
-- `test_log_py_exits_zero_on_garbage_stdin`
-All tests use temp dirs and `CLEANROOM_LOG`, and never touch the real log.
-**Out of scope:** The guard (P0-04). `.claude/settings.json` (P0-05). Reading real Claude transcripts.
-**Verification:** `make tools-check`.
-**Depends on:** P0-01
-
-### P0-04: PreToolUse clean-room guard
-**Goal:** Implement `tools/cleanroom/guard.py` so that it exits 2 with a stderr reason and logs a `denied` entry for every call SPEC §2.3 forbids, and otherwise exits 0 silently.
-**Files touched:** `tools/cleanroom/guard.py`, `tools/cleanroom/allowlist.txt`, `tools/cleanroom/tests/test_guard.py`, `tools/cleanroom/README.md`.
-**Design constraints:** SPEC §2.2 and §2.3 (guard bullets). Python 3 stdlib only. Uses `provenance.py` from P0-03 for context and `append`.
-- **Configuration and overrides:**
-  - Lockdown flag: `CLEANROOM_LOCKDOWN_FILE`, default `<root>/tools/cleanroom/LOCKDOWN`.
-  - Repo root: `CLEANROOM_REPO_ROOT`.
-  - Log path: `CLEANROOM_LOG`.
-  - Home directory: `HOME`.
-- **`allowlist.txt`** holds one URL per line, `#` comments allowed, and exactly:
-  - `https://www.rfc-editor.org/rfc/rfc1950.txt`
-  - `https://www.rfc-editor.org/rfc/rfc1951.txt`
-  - `https://www.rfc-editor.org/rfc/rfc1952.txt`
-  - the same three without `www.`
-  - `https://corpus.canterbury.ac.nz/resources/cantrbry.tar.gz`
-  - `https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip`
-  - `https://sun.aei.polsl.pl//~sdeor/corpus/silesia.zip`
-  - the two Silesia URLs with `http://`
-- **Forbidden words (W):** `zlib`, `miniz`, `flate2`, `libdeflate`, `libz-sys`, `libz_sys`, `zopfli`, matched case-insensitively.
-- **Outside-repo extra words (W+):** W plus `inflate`, `deflate`, `gzip`, `puff`.
-- **Exempt dirs (E):** `<root>/crates/cleanflate/` and `<root>/crates/oracle/`.
-- **Forbidden roots (F):**
-  - `$HOME/.cargo/registry/` (and `$CARGO_HOME/registry/` if `CARGO_HOME` is set)
-  - `$HOME/.cargo/git/`
-  - any path containing a `target/` segment followed later by a `build` segment
-  - any path containing `target/doc/src`
-- **Rules, evaluated in order. The first deny wins.**
-  - **R1:** `WebSearch` → deny.
-  - **R2:** `WebFetch` → deny if the lockdown file exists. Otherwise allow only if `url` (trimmed) is in the allowlist, and deny anything else.
-  - **R3:** `Read` (`file_path`), `Glob` (`path`, `pattern`) and `Grep` (`path`, `glob`). Resolve paths with `~` expansion, relative to hook `cwd`, `normpath`, and also `realpath`. Then:
-    - deny if the path is under F;
-    - deny if a path value contains a W word and does not resolve inside E;
-    - deny if a path outside `<root>` contains a W+ word;
-    - deny if the Glob `pattern` or Grep `glob` contains a W word and the search base (`path`, default `cwd`) is not inside E.
-    - The Grep `pattern` (the regex) is not path-checked.
-  - **R4:** `Bash` (`command`), checked in this order:
-    - **(a) Network:** match the raw command against `(^|[\s;|&(\x60'"])(curl|wget|gh)(\s|$)`, `\bgit\s+clone\b` and `\bcargo\s+(vendor|download)\b`.
-      - `gh`, `git clone`, `cargo vendor` and `cargo download` → always deny.
-      - curl/wget → allow only if the lockdown file is absent and every `https?://\S+` URL in the command (quotes stripped) is in the allowlist, with at least one present. Otherwise deny.
-    - **(b) Fetch scripts:** a command referencing `fetch-rfcs.sh`, `fetch-corpora.sh` or `CLEANROOM_ALLOW_CORPUS_FETCH` → deny once the lockdown file exists.
-    - **(c) Forbidden roots:** the raw command contains `.cargo/registry`, `.cargo/git`, `target/doc/src`, or matches `target/(\S*/)?build(/|\s|$)` → deny.
-    - **(d) Read-family commands.** Split the command into segments on `;`, `&&`, `||`, `|` and newlines. Take a segment's command word after skipping `VAR=val` assignments and the wrappers `sudo`, `env`, `time`, `command`, `xargs` (and their flags). If its basename is in {cat, less, more, head, tail, grep, egrep, fgrep, rg, ag, ack, find, fd, locate, ls, tree, sed, awk, bat, strings, xxd, od, hexdump, file, zcat, zless, zgrep, zmore, view, vi, vim, nano, emacs}:
-      - Tokenize with `shlex.split`. A `ValueError` → deny, reason "unparseable command".
-      - A token is path-like if it starts with `/`, `~`, `./` or `../`, contains `/`, or exists relative to `cwd`.
-      - Deny if any path-like token contains a W word and does not resolve inside E.
-      - Deny if any non-path token contains a W word, unless every path-like token (or `cwd` if there are none) resolves inside `<root>` and not under `<root>/target` or `<root>/fuzz/target`.
-      - For grep/egrep/fgrep with a recursive flag (`-r`, `-R`, `--recursive`, or a combined short flag containing r/R): deny if any path argument (or `cwd` if none) is `<root>` or an ancestor of `<root>/target`, unless `--exclude-dir=target` is present.
-  - **R5:** any uncaught exception → deny with reason `guard internal error: <exc>` (fail closed).
-- **On deny:** append an entry with decision `denied` and the reason (the same schema as P0-03), print `cleanroom guard: <reason>` to stderr and exit 2.
-- **On allow:** exit 0, print nothing, and do not log. The PostToolUse logger logs allowed calls.
-**Acceptance tests:** `tools/cleanroom/tests/test_guard.py`, one unittest per behaviour (all with temp `CLEANROOM_LOG` and `CLEANROOM_LOCKDOWN_FILE`):
-- `test_r1_websearch_denied`
-- `test_r2_webfetch_allowlisted_prelock_allowed`
-- `test_r2_webfetch_unlisted_denied`
-- `test_r2_webfetch_postlock_denied`
-- `test_r3_read_cargo_registry_denied`
-- `test_r3_read_cargo_git_denied`
-- `test_r3_read_target_build_denied`
-- `test_r3_read_target_doc_src_denied`
-- `test_r3_read_zlib_path_outside_crates_denied`
-- `test_r3_read_crate_zlib_rs_allowed`
-- `test_r3_read_outside_repo_gzip_denied`
-- `test_r3_glob_zlib_pattern_repo_root_denied`
-- `test_r3_grep_zlib_regex_in_repo_allowed`
-- `test_r4a_curl_allowlisted_prelock_allowed`
-- `test_r4a_curl_unlisted_denied`
-- `test_r4a_curl_postlock_denied`
-- `test_r4a_wget_denied`
-- `test_r4a_gh_denied`
-- `test_r4a_git_clone_denied`
-- `test_r4a_cargo_vendor_denied`
-- `test_r4a_curl_inside_bash_c_denied`
-- `test_r4b_fetch_script_postlock_denied`
-- `test_r4c_cat_registry_denied`
-- `test_r4d_find_home_zlib_denied`
-- `test_r4d_grep_zlib_in_repo_paths_allowed`
-- `test_r4d_grep_r_repo_root_without_exclude_denied`
-- `test_r4d_grep_r_with_exclude_dir_allowed`
-- `test_r4d_unparseable_denied`
-- `test_cargo_test_allowed`
-- `test_git_status_allowed`
-- `test_denial_is_logged_once`
-- `test_internal_error_fails_closed`
-**Out of scope:** Wiring into `.claude/settings.json` (P0-05). The LOCKDOWN file itself (P0-10). Downloading anything.
-**Verification:** `make tools-check`.
-**Depends on:** P0-03
-
-### P0-05: Cleanroom self-test and hook wiring
-**Goal:** Wire the guard and logger into `.claude/settings.json`, and add `tools/cleanroom/selftest.sh`, an end-to-end self-test that pipes sample hook payloads through both scripts.
-**Files touched:** `.claude/settings.json`, `tools/cleanroom/selftest.sh`, `tools/cleanroom/fixtures/*.json`, `Makefile`, `tools/cleanroom/README.md`.
-**Design constraints:** SPEC §2.3 (hooks, self-test) and §5 M0 acceptance.
-- `.claude/settings.json` holds exactly this `hooks` block. Merge it if the file somehow exists, and do not touch `.claude/settings.local.json`:
-  - `PreToolUse`: `[{"matcher": "Read|Grep|Glob|WebFetch|WebSearch|Bash", "hooks": [{"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/tools/cleanroom/guard.py\""}]}]`
-  - `PostToolUse`: `[{"matcher": "*", "hooks": [{"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/tools/cleanroom/log.py\""}]}]`
-- `selftest.sh`:
-  - Sets a temp `CLEANROOM_LOG`, a temp `CLEANROOM_LOCKDOWN_FILE` (absent, then created for post-lock cases), and `CLEANROOM_REPO_ROOT=<repo>`.
-  - Feeds each `fixtures/*.json` payload to `guard.py` and asserts the exit code (2 deny, 0 allow).
-  - Asserts each denial added exactly one `denied` line.
-  - Feeds one allowed payload to `log.py` and asserts one `allowed` line with all eight SPEC keys.
-  - Asserts with `jq` that `.claude/settings.json` contains both hook commands.
-  - Prints `PASS <case>`/`FAIL <case>` and exits 1 on any failure.
-  - Must never write to `provenance/tool-log.jsonl`.
-- Replace the `cleanroom-selftest` stub with `bash tools/cleanroom/selftest.sh`.
-- Hooks may not take effect until Claude Code restarts. Do not try to restart anything.
-**Acceptance tests:** `tools/cleanroom/selftest.sh` cases:
-- `deny_websearch`
-- `deny_webfetch_unlisted`
-- `allow_webfetch_rfc_prelock`
-- `deny_webfetch_rfc_postlock`
-- `deny_read_cargo_registry`
-- `deny_read_target_build`
-- `deny_read_forbidden_word_outside_crates`
-- `allow_read_spec`
-- `allow_read_crate_source_with_word`
-- `deny_bash_curl_unlisted`
-- `allow_bash_curl_allowlisted_prelock`
-- `deny_bash_curl_postlock`
-- `deny_bash_wget`
-- `deny_bash_git_clone`
-- `deny_bash_cargo_vendor`
-- `deny_bash_gh`
-- `deny_bash_find_forbidden_home`
-- `allow_bash_cargo_test`
-- `denials_logged`
-- `logger_appends_allowed`
-- `settings_json_wired`
-`make cleanroom-selftest` exits 0.
-**Out of scope:** Writing the real LOCKDOWN file. Any download. Changing guard rules (fix P0-04 code only if a self-test exposes a bug, and say so under Interpretation).
-**Verification:** `make cleanroom-selftest && make tools-check && make ci`.
-**Depends on:** P0-04
-
-### P0-06: commit-msg hook adding stage and task tags
-**Goal:** Add a versioned `commit-msg` hook that appends `[stage:<s>] [task:<id>]` to any commit message lacking them, and enable it for this clone.
-**Files touched:** `tools/git-hooks/commit-msg`, `tools/git-hooks/tests/commit_msg_test.sh` (also make `tools-check` run `tools/git-hooks/tests/*_test.sh`), `Makefile` (target `hooks-install`: `git config core.hooksPath tools/git-hooks`), `tools/cleanroom/README.md`.
-**Design constraints:** SPEC §2.4.
-- POSIX `sh` or `bash`. **It must always exit 0**: a failing hook would wedge the flight.
-- If the message already contains `[stage:`, leave it unchanged.
-- Derive the task from the subject:
-  - `^([A-Z][A-Za-z0-9]*-[0-9]+):` → that ID
-  - `^plan:` → `plan`
-  - `^review:` → `review`
-  - `^progress:` → the first `[A-Z][A-Za-z0-9]*-[0-9]+` in the subject, else `progress`
-  - otherwise the lowercase word before the first `:`, else `unknown`
-- Derive the stage:
-  - `plan:` → `plan`
-  - `review:` → `review`
-  - a subject containing `summary` → `summarize`
-  - otherwise `fix` if `.foundry/state.json` has `round` ≥ 1 (read with `jq` if available, else `sed`), else `implement`
-- Append a blank line and the tag line before any trailer block. Keep it simple: append at the end.
-- Run `make hooks-install` in this task, and document in README.md that fresh clones must run it.
-**Acceptance tests:** `tools/git-hooks/tests/commit_msg_test.sh`, which runs the hook on temp message files:
-- `case_task_subject_tagged_implement`
-- `case_round1_tagged_fix`
-- `case_plan_subject`
-- `case_review_subject`
-- `case_progress_subject_with_id`
-- `case_already_tagged_unchanged`
-- `case_no_state_file_ok`
-- `case_hook_exit_zero_on_unreadable_state`
-**Out of scope:** Rewriting past commits. Changing Foundry's commit behaviour.
-**Verification:** `make tools-check`. After committing, check that `git log -1 --format=%B` shows exactly one tag line.
-**Depends on:** P0-01
-
-### P0-07: Vendor RFC 1950/1951/1952 texts
-**Goal:** Add `tools/cleanroom/fetch-rfcs.sh`, run it to vendor the three RFC texts into `docs/rfc/` with `docs/rfc/SOURCES.json`, and add a check that the vendored hashes match.
-**Files touched:** `tools/cleanroom/fetch-rfcs.sh`, `docs/rfc/rfc1950.txt`, `docs/rfc/rfc1951.txt`, `docs/rfc/rfc1952.txt`, `docs/rfc/SOURCES.json`, `docs/rfc/README.md`, `tools/ci/sources-check.sh`, `tools/ci/tests/sources_check_test.sh`, `Makefile`.
-**Design constraints:** SPEC §2.1, §2.3 (WebFetch allowlist used only in M0) and §5 M0 ("recording source URL and SHA-256").
-- `fetch-rfcs.sh`:
-  - Refuses to run if the lockdown file exists.
-  - Uses `curl -fsSL` only on the `https://www.rfc-editor.org/rfc/rfc195N.txt` URLs from `tools/cleanroom/allowlist.txt`.
-  - Writes `SOURCES.json` as `[{"file", "url", "sha256", "bytes", "fetched_at"}]`.
-  - Run it from the repo root.
-  - If the network fails, retry up to 3 times, then block the task with the curl error. Do not fetch from any other host.
-- `sources-check.sh`:
-  - Verifies every file in `docs/rfc/SOURCES.json` exists with a matching sha256.
-  - Verifies each RFC text contains `Request for Comments: 195N`.
-  - Verifies `testdata/corpora/SOURCES.json` the same way, for files present locally only, and only if it exists.
-- Add a Makefile target `sources-check` and include it in `tools-check`.
-**Acceptance tests:** `tools/ci/tests/sources_check_test.sh`:
-- `case_real_sources_pass`
-- `case_tampered_file_fails` (on a temp copy)
-- `case_missing_file_fails`
-**Out of scope:** Corpora (P0-08). Any other URL. Summarising the RFCs.
-**Verification:** `make sources-check && make tools-check`.
-**Depends on:** P0-04
-
-### P0-08: Download Canterbury and Silesia corpora
-**Goal:** Add `tools/cleanroom/fetch-corpora.sh`, download and extract both corpora into `testdata/corpora/`, and commit `testdata/corpora/SOURCES.json` with URLs and SHA-256 for every archive and extracted file.
-**Files touched:** `tools/cleanroom/fetch-corpora.sh`, `testdata/corpora/SOURCES.json`, `testdata/corpora/README.md`, `testdata/README.md`.
-**Design constraints:** SPEC §2.1 (corpora are opaque binary data), §2.3 and §5 M0.
-- Usage: `fetch-corpora.sh [canterbury|silesia|all] [--record]`.
-- If `tools/cleanroom/LOCKDOWN` exists, refuse unless `CLEANROOM_ALLOW_CORPUS_FETCH=1`. That variable is for humans and CI only.
-- Downloads with `curl -fsSL`, using only the allowlist URLs from P0-04 (Silesia: try the https single-slash URL, then the double-slash one, then http), into `testdata/corpora/archives/`.
-- Extracts Canterbury with `tar -xzf` into `testdata/corpora/canterbury/` and Silesia with `unzip -o -j` into `testdata/corpora/silesia/`, keeping flat file names.
-- `--record` writes `SOURCES.json`: `{"canterbury": {"url", "archive_sha256", "archive_bytes", "status": "ok", "files": [{"name", "sha256", "bytes"}]}, "silesia": {...}}`.
-- Without `--record` it verifies against `SOURCES.json` and exits 1 on mismatch.
-- Canterbury is required: if it cannot be downloaded after 3 attempts, block the task.
-- Silesia is best-effort: if all its URLs fail, record `"status": "missing"` with the curl error for silesia, finish the task, and say "Silesia NOT DOWNLOADED" in the progress log and commit body.
-- Treat corpus contents as opaque. Never open or summarise them.
+### P0-02: Guard denies profiling of anything but cleanflate-only binaries
+**Goal:** Extend the PreToolUse guard so agent Bash commands cannot profile, disassemble or debug the oracle or anything that executes C zlib. Profiling of the cleanflate-only example stays allowed.
+**Files touched:**
+- `tools/cleanroom/guard.py`, `tools/cleanroom/tests/test_guard.py`, `tools/cleanroom/README.md`.
+- New fixtures in `tools/cleanroom/fixtures/`:
+  - `deny_bash_perf_record_oracle.json`, `deny_bash_flamegraph_oracle.json`, `deny_bash_objdump_oracle.json`, `deny_bash_gdb_test_binary.json`
+  - `allow_bash_perf_record_profile_decode.json`, `allow_bash_perf_report_profile_dir.json`, `allow_bash_make_profile.json`
+- `tools/cleanroom/selftest.sh`, only if it lists fixtures explicitly.
+**Design constraints:** SPEC §2 (the phase-1 guard applies in full and is not relaxed) and §2.2 (profiling, disassembling or stepping through C zlib is forbidden). CR6, CR7. Fail closed and log denials exactly like existing rules. Create fixture files with the Write tool, not shell heredocs, because the guard inspects Bash command text.
+- The rule applies per shell segment, using the guard's existing splitting.
+- **Tool words:** `perf`, `objdump`, `gdb`, `lldb`, `valgrind`, `ltrace`, `uftrace`, `flamegraph`, `cargo-flamegraph`, and `cargo` whose first non-option argument is `flamegraph`.
+- **Deny** a tool-word segment if any token contains `oracle`, `libz` or `zlib`, case-insensitive.
+- **Otherwise allow** a tool-word segment only if one of these holds:
+  - It references `profile_decode`.
+  - It is `perf report|annotate|script|diff` whose input (`-i`/`--input`) is under `target/profile/`.
+  - It is a no-target query: `perf --version`, `perf list`, or `<tool> --help`.
+- **Deny everything else** with reason `SPEC phase-2 §2.2: profile/disassemble/debug only cleanflate-only binaries (make profile)`.
+- Segments whose command word is `make` or `cargo rustc` (e.g. `cargo rustc --release -p cleanflate -- --emit asm`, which SPEC §2.1 permits) are unaffected.
 **Acceptance tests:**
-- `make sources-check` passes, now also covering the corpus files.
-- `tools/ci/tests/sources_check_test.sh::case_corpus_tamper_fails` (add this case) is present and passes.
-**Out of scope:** Generating compressed streams (P1-03). Committing corpus files (they are gitignored).
-**Verification:** `bash tools/cleanroom/fetch-corpora.sh all` (verify mode) exits 0, `make sources-check`, and `git status --porcelain` shows no corpus files.
-**Depends on:** P0-04
+- `tools/cleanroom/tests/test_guard.py::test_deny_profiling_oracle` denies each of:
+  - `perf record -g target/release/oracle bench`
+  - `cargo flamegraph -p oracle -- bench`
+  - `objdump -d target/release/oracle`
+  - `gdb target/release/deps/chunking-0123abcd`
+  - `valgrind cargo test -p oracle`
+  - `perf stat target/release/deps/conformance-89ab`
+- `tools/cleanroom/tests/test_guard.py::test_allow_cleanflate_profiling` allows each of:
+  - `perf record --call-graph dwarf -o target/profile/perf.data target/release/examples/profile_decode --dir testdata/perf-inputs/silesia/rfc1951-l6`
+  - `perf report -i target/profile/perf.data --stdio`
+  - `cargo flamegraph -p cleanflate --example profile_decode`
+  - `make profile`
+  - `perf --version`
+- The seven new fixtures pass in `make cleanroom-selftest`.
+**Out of scope:** Any other guard rule. The Makefile profiling targets (P0-10).
+**Verification:** `make tools-check && make cleanroom-selftest`.
+**Depends on:** none
 
-### P0-09: CI entry point and GitHub Actions workflow
-**Goal:** Finalise `make ci` and add `.github/workflows/ci.yml`, which runs it on GitHub.
-**Files touched:** `Makefile`, `.github/workflows/ci.yml`, `README.md`.
-**Design constraints:** SPEC §5 M0 (fmt, clippy deny warnings, test, cleanroom self-test, zero-dependency and no-unsafe check).
-- `ci` runs, in order: `fmt-check lint corpus test crate-checks cleanroom-selftest tools-check`.
-- Workflow:
-  - Triggers on push and pull_request, runs on `ubuntu-latest`.
-  - Steps: checkout; `rustup toolchain install 1.89.0 --profile minimal --component rustfmt,clippy`; `sudo apt-get install -y shellcheck jq` if missing; `CLEANROOM_ALLOW_CORPUS_FETCH=1 bash tools/cleanroom/fetch-corpora.sh canterbury`; `make hooks-install`; `make ci`.
-  - No third-party actions except `actions/checkout`.
-- README gets a "Building and CI" section listing the Makefile targets.
-**Acceptance tests:** `make ci` exits 0 locally. The workflow YAML parses: use `python3 -c 'import yaml,sys; yaml.safe_load(open(sys.argv[1]))' .github/workflows/ci.yml` if PyYAML is importable, else `ruby -ryaml -e 'YAML.load_file(ARGV[0])' .github/workflows/ci.yml` if ruby exists. If neither validator exists, write `YAML parse: NOT CHECKED` in the progress log. Do not install a validator.
-**Out of scope:** Fuzz workflows (P4-06). Silesia in CI.
-**Verification:** `make ci`.
-**Depends on:** P0-02, P0-05, P0-08
+### P0-03: design-check enforces the [perf] decision format
+**Goal:** Make `make design-check` reject any `[perf]` DESIGN entry that lacks the clean-room statement or a measurement.
+**Files touched:** `tools/ci/design-check.sh`, `tools/ci/tests/design_check_test.sh`, `docs/DESIGN.md` (the "How to read this document" section only).
+**Design constraints:** SPEC §2.1 (each technique written up in the project's own words with "general technique; not derived from any specific implementation") and §9. CLAUDE.md PT7, C14.
+- A heading matching `^### (D-\S+): \[perf\]` opens a perf block, which ends at the next `### D-` heading or EOF, like existing blocks.
+- A perf block must contain:
+  - a line starting `RFC:` (the existing rule);
+  - a line starting `Measurement:`;
+  - a line containing the exact phrase `general technique; not derived from any specific implementation`.
+- Each failure prints the D-id and the missing element.
+- Blocks without `[perf]` keep only the existing rule. The current D-01..D-25 must still pass.
+- DESIGN.md "How to read this document": add one paragraph describing `[perf]` entries (the extra phrase and `Measurement:` line) and citing SPEC §2.1.
+**Acceptance tests:** `tools/ci/tests/design_check_test.sh` cases:
+- `case_perf_block_complete_passes`
+- `case_perf_missing_phrase_fails`
+- `case_perf_missing_measurement_fails`
+- `case_non_perf_block_unaffected`
+- all existing cases still pass.
+**Out of scope:** Adding any `[perf]` entry.
+**Verification:** `make tools-check && make design-check`.
+**Depends on:** none
 
-### P0-10: Lockdown flag, provenance docs and log snapshot
-**Goal:** Write the post-M0 lockdown flag, document the provenance record and its gaps, and add `make provenance-snapshot`.
-**Files touched:** `tools/cleanroom/LOCKDOWN`, `tools/cleanroom/snapshot-log.sh`, `provenance/README.md`, `provenance/human-interventions.md`, `tools/cleanroom/selftest.sh`, `Makefile`.
-**Design constraints:** SPEC §2.3 ("After M0 completes, WebFetch is denied entirely. Implement this with a flag file") and §5 M6 (human interventions logged manually).
-- `LOCKDOWN` content: `locked_at=<UTC ISO-8601>` and `head=<git rev-parse HEAD before this commit>`.
-- `snapshot-log.sh` copies `provenance/tool-log.jsonl` to `provenance/tool-log.snapshot.jsonl` if the live log exists and is non-empty, and prints the line count. Otherwise it prints `no live log` and exits 0. Target `provenance-snapshot` runs it.
-- `provenance/README.md` must cover:
-  - the entry schema and where each field comes from (P0-03)
-  - the live-log vs snapshot arrangement
-  - guard rules summary
-  - known gaps:
-    - the plan stage ran before the harness existed
-    - hooks are snapshotted at session start, so a session that installed them is not covered until restart
-    - commands run inside MCP servers or Makefile subprocesses are not individually seen
-    - bypass via interpreters (e.g. `python3 -c` network calls) is not blocked
-    - commits made with `--no-verify` skip the tag hook
-    - model may be null
-  - a "Harness status during build" section. Determine it now: check whether `provenance/tool-log.jsonl` exists and has entries with `ts` after the P0-05 commit time, and record `LIVE` or `NOT LIVE (restart required)`.
-- `human-interventions.md` is a table template (`| when (UTC) | who | stage/task | what | why |`) with no rows.
-- Add selftest case `deny_webfetch_real_lockdown`, which uses the real flag without the env override.
+### P0-04: Decode-path switch and a uniform invalid-code rule
+**Goal:** Carry `DecodePath { Fast, Reference }` through every decoder layer, expose it only under feature `test-hooks`, and route today's two fast techniques through it. Make table and bit-serial decoding agree on exactly when a code is invalid.
+**Files touched:**
+- `crates/cleanflate/src/`: `decode_path.rs` (new), `test_hooks.rs` (new), `lib.rs`, `inflate.rs`, `huffman.rs`, `window.rs`, `zlib.rs`, `gzip.rs`, `stream.rs`.
+- `crates/cleanflate/src/tests/`: `mod.rs`, `decode_path.rs` (new), `huffman_table.rs`.
+- `docs/DESIGN.md`.
+**Design constraints:** SPEC §5 (reference path; a switch the default build cannot reach), §3 (public API additive only). RFC 1951 §3.2.2, §3.2.7. DESIGN D-11, D-16, D-17, D-19. Global invariants apply.
+- **`decode_path.rs`:**
+  - `pub enum DecodePath { Fast, Reference }`, deriving Debug, Clone, Copy, PartialEq, Eq, with `Default = Fast`.
+  - Rustdoc: Fast is the production path. Reference is the simple path used as the differential oracle: exact byte-at-a-time fill, bit-serial Huffman decode, byte-by-byte match copy and no fast loop.
+- **Plumbing:**
+  - `Inflater` gains a `path` field and `pub(crate)` constructors taking a path, including the dictionary variant.
+  - `ZlibDecoder` and `GzipDecoder` take a path and pass it to every `Inflater` they create. Gzip creates one per member.
+  - `Decompressor::new(format, options)` delegates to a `pub(crate) new_with_path(.., DecodePath::Fast)`.
+  - `decompress_with` delegates to a `pub(crate)` path-taking twin.
+- **`test_hooks.rs`**, declared `#[cfg(feature = "test-hooks")] pub mod test_hooks;` in lib.rs:
+  - `pub use crate::decode_path::DecodePath;`
+  - `pub fn decompress_with_path(format: Format, input: &[u8], options: &Options, path: DecodePath) -> Result<Decoded, Error>`
+  - `pub fn decompressor_with_path(format: Format, options: Options, path: DecodePath) -> Decompressor`
+  - Module rustdoc says it is for tests and differential fuzzing only and is not part of the stable API.
+- **Dead code in the default build:** nothing constructs `Reference` there. Items used only by it get `#[cfg_attr(not(any(test, feature = "test-hooks")), allow(dead_code))]` (allowed: C5 bans only the panic lints), so `cargo clippy -p cleanflate --lib -- -D warnings` stays clean.
+- **Switched techniques:**
+  - `Inflater::peek_symbol` uses `Huffman::decode_table` under Fast and `Huffman::decode` under Reference.
+  - `Window::copy_match` uses the bulk non-overlap path under Fast and a byte-by-byte `copy_match_bytewise` under Reference.
+- **Uniform invalid-code rule**, for both decoders, so they return the same answer for every buffer state regardless of table width:
+  - A code is `Invalid` as soon as at least one buffered bit shows that it matches no code and no longer code can extend it. This only happens for the two incomplete distance tables RFC 1951 §3.2.7 allows: no codes, or one code of length 1. Both are decided after 1 bit.
+  - Bit-serial: after failing to match at length `len`, return `Invalid` if no codes longer than `len` exist.
+  - Table: an `Invalid` entry with `available() >= 1` is `Invalid`. It is no longer gated on `available() >= table_bits`.
+  - Record a new DESIGN entry (next free D-NN; `RFC: RFC 1951 S3.2.2, S3.2.7`). It notes that the rule can only turn `Truncated` into `InvalidSymbol` for a stream that is both truncated and invalid; accept/reject is unchanged.
+  - `testdata/malformed/EXPECTED.tsv` must not change.
 **Acceptance tests:**
-- `tools/cleanroom/selftest.sh` case `deny_webfetch_real_lockdown`.
-- `tools/cleanroom/tests/test_guard.py::test_real_lockdown_file_denies_fetch_script`.
-- `make cleanroom-selftest` passes.
-**Out of scope:** Deleting or rewriting any log. Restarting Claude Code.
-**Verification:** `make cleanroom-selftest && make provenance-snapshot && make ci`.
-**Depends on:** P0-05, P0-07, P0-08
-
-### P0-11: M0 acceptance and push
-**Goal:** Run the M0 acceptance commands, snapshot the provenance log, push the branch, and list the manual checks.
-**Files touched:** `provenance/tool-log.snapshot.jsonl` (if a live log exists), `provenance/README.md` (harness status line only).
-**Design constraints:** SPEC §5 M0 acceptance: the self-test passes, CI is green on an empty crate, the provenance log is populating, and WebFetch is locked after the flag is written.
-**Acceptance tests:** `make ci` exits 0 and `make cleanroom-selftest` exits 0. Record both results in the progress log.
-**Out of scope:** Any code change beyond a ≤ 20-line fix for a failure found here (describe it under Interpretation). Waiting for a human.
-**Verification:** `make ci`, `make provenance-snapshot`, then `git push -u origin HEAD`. Write `Manual check: NOT VERIFIED (human)` in the progress log with this list:
-1. Restart Claude Code in this repo, approve the hooks in `/hooks`, and confirm `provenance/tool-log.jsonl` gains a line per tool call.
-2. In a fresh session, confirm WebSearch and WebFetch are refused with a `cleanroom guard:` message and logged as `denied`.
-3. Confirm the GitHub Actions `ci` run for the pushed branch is green.
-4. Spot-check `docs/rfc/*.txt` against rfc-editor.org.
-5. Record any intervention in `provenance/human-interventions.md`.
-**Depends on:** P0-01, P0-02, P0-03, P0-04, P0-05, P0-06, P0-07, P0-08, P0-09, P0-10
-
-## Phase 1 — M1 Bit reader, stored and fixed-Huffman blocks, checksums
-
-### P1-01: Oracle FFI wrappers over libz-sys
-**Goal:** Give `crates/oracle` safe Rust wrappers for C zlib compression, decompression and checksums through libz-sys's public API only.
-**Files touched:** `crates/oracle/Cargo.toml`, `Cargo.lock`, `crates/oracle/src/lib.rs`, `crates/oracle/src/ffi.rs`, `crates/oracle/tests/ffi_roundtrip.rs`.
-**Design constraints:** SPEC §2.1 (libz-sys public API surface only), §4 and CR5.
-- **Dependencies:**
-  - `libz-sys = { version = "1", features = ["static"] }`. If cargo says the feature does not exist, remove it and add `[env] LIBZ_SYS_STATIC = "1"` to `.cargo/config.toml` instead. Never open libz-sys sources or rustdoc `src` pages to find out.
-  - `libc = "0.2"`.
-  - `cleanflate = { path = "../cleanflate" }` (unused until later is fine).
-- **Signatures to use**, from the zlib manual as exposed by libz-sys (`z_streamp = *mut z_stream`):
-  - `deflateInit2_(strm, level: c_int, method: c_int, windowBits: c_int, memLevel: c_int, strategy: c_int, version: *const c_char, stream_size: c_int) -> c_int`
-  - `deflate(strm, flush: c_int) -> c_int`
-  - `deflateEnd(strm) -> c_int`
-  - `deflateSetDictionary(strm, dictionary: *const Bytef, dictLength: uInt) -> c_int`
-  - `inflateInit2_(strm, windowBits: c_int, version: *const c_char, stream_size: c_int) -> c_int`
-  - `inflate(strm, flush) -> c_int`
-  - `inflateEnd(strm) -> c_int`
-  - `inflateSetDictionary(strm, dictionary, dictLength) -> c_int`
-  - `zlibVersion() -> *const c_char`
-  - `crc32(crc: uLong, buf: *const Bytef, len: uInt) -> uLong`
-  - `adler32(adler: uLong, buf: *const Bytef, len: uInt) -> uLong`
-  - Pass `zlibVersion()` as `version` and `size_of::<z_stream>() as c_int` as `stream_size`.
-- **Constants:** use libz-sys's `Z_*` constants if exported, with these values: Z_OK 0, Z_STREAM_END 1, Z_NEED_DICT 2, Z_DATA_ERROR -3, Z_BUF_ERROR -5, Z_NO_FLUSH 0, Z_FINISH 4, Z_DEFLATED 8. Strategies: default 0, filtered 1, huffman-only 2, RLE 3, fixed 4.
-- **windowBits:** raw = `-wb`, zlib = `wb`, gzip = `wb + 16`. Inflate uses raw -15, zlib 15 and gzip 31. Gzip inflate stops at the end of the first member.
-- **z_stream construction:** build it by writing every field explicitly. Never use `mem::zeroed`, because `zalloc`/`zfree` may be non-nullable fn pointers. Supply `extern "C"` allocator functions wrapping `libc::calloc`/`libc::free`.
-- **Public API** (`oracle::ffi`):
-  - `enum Framing { Raw, Zlib, Gzip }`
-  - `enum Strategy { Default, Filtered, HuffmanOnly, Rle, Fixed }`
-  - `struct DeflateParams { level: u8 /*0..=9*/, strategy, window_bits: u8 /*9..=15*/, mem_level: u8 /*1..=9*/, framing }`
-  - `fn deflate_bytes(input, &DeflateParams, dictionary: Option<&[u8]>) -> Result<Vec<u8>, OracleError>`
-  - `fn deflate_zeros(total: u64, &DeflateParams) -> Result<Vec<u8>, OracleError>`, which feeds 1 MiB zero chunks with Z_NO_FLUSH and then Z_FINISH
-  - `fn inflate_bytes(input, Framing, dictionary: Option<&[u8]>, max_output: usize) -> InflateOutcome`, where `InflateOutcome { output: Vec<u8>, consumed: usize, status: OracleStatus }` and `OracleStatus::{StreamEnd, DataError, NeedDict, Truncated, OutputLimit, OtherError(i32)}`
-  - `fn crc32(&[u8]) -> u32`, `fn adler32(&[u8]) -> u32`, `fn zlib_version() -> String`
-- `unsafe` is allowed in this crate only (C1 covers only cleanflate).
-**Acceptance tests:** `crates/oracle/tests/ffi_roundtrip.rs`:
-- `roundtrip_all_framings_and_levels` (10 KiB pseudo-random plus text-like input)
-- `roundtrip_all_strategies_windowbits_memlevels` (sampled grid)
-- `zlib_dictionary_roundtrip`
-- `inflate_garbage_is_error_not_panic`
-- `crc32_check_value` (`b"123456789"` → `0xCBF43926`)
-- `adler32_known_value` (`b"Wikipedia"` → `0x11E60398`)
-- `deflate_zeros_matches_deflate_bytes` (1 MiB)
-- `gzip_inflate_reports_first_member_consumed`
-**Out of scope:** Corpus generation (P1-02, P1-03). Any use of cleanflate.
-**Verification:** `make lint && cargo test -p oracle --test ffi_roundtrip`.
+- `crates/cleanflate/src/tests/decode_path.rs`:
+  - `default_path_is_fast`
+  - `reference_path_same_output_fixed_dynamic_stored` (hand-built streams from the existing `bitwriter`/`dynbuilder` helpers)
+  - `gzip_second_member_uses_same_path` (via a `pub(crate)` accessor)
+  - `reference_byte_copy_matches_bulk_copy` (distances 1..=300 and lengths 3..=258, including ring wraparound)
+- `crates/cleanflate/src/tests/huffman_table.rs`:
+  - `table_decode_equals_serial_for_all_buffer_states`: `decode_table == decode` for every `available` 0..=15 and ≥ 64 bit patterns each. Tables covered: the fixed tables, both exception distance tables, and ≥ 50 random complete length sets from a fixed-seed generator written in the test.
+  - `invalid_code_detected_after_one_bit` (both exception tables)
+- Existing tests and `make test`, including the malformed corpus, pass unchanged.
+**Out of scope:** New fast techniques. The oracle differential test (P0-05). Stats (P0-07).
+**Verification:** `make lint && make test && make proptest-3k`.
 **Depends on:** P0-01
 
-### P1-02: Deterministic synthetic inputs and generation matrix
-**Goal:** Define the deterministic synthetic inputs and the bounded parameter matrix the conformance corpus is generated from.
-**Files touched:** `crates/oracle/src/prng.rs`, `crates/oracle/src/inputs.rs`, `crates/oracle/src/matrix.rs`, `crates/oracle/src/lib.rs`, `crates/oracle/Cargo.toml` (`sha2 = "0.10"`), `crates/oracle/tests/matrix.rs`.
-**Design constraints:** SPEC §4 (inputs, determinism).
-- **PRNG:** `SplitMix64` (`state += 0x9E3779B97F4A7C15`, then the standard xor-shift-multiply finaliser). `pub const CORPUS_SEED: u64 = 0x636C_6561_6E66_6C61` in `matrix.rs`. Each synthetic input seeds `CORPUS_SEED ^ fnv1a64(id)`.
-- **Synthetic inputs** (id → content):
-  - `empty` (0 B)
-  - `one-byte` (`0x61`)
-  - `zeros-1KiB`, `zeros-64KiB`, `zeros-1MiB`, `zeros-16MiB`
-  - `random-64KiB`, `random-1MiB`
-  - `text-256KiB`: words from a fixed 64-word list joined by spaces/newlines, chosen by the PRNG
-  - `repeat-abc-1MiB`
-  - `repeat-period17-1MiB`: a 17-byte random pattern repeated
-  - `window-d32767`, `window-d32768`, `window-d32769`: a random 512 B block R, then random filler of length d−512, then R again, then 1 KiB random. The second R starts exactly d bytes after the first.
-  - `run-64KiB`: one random byte, then 65,536 × `0x42` (max-length matches at distance 1)
-  - `period258-64KiB`: a 258 B random block repeated 254 times
-- **Corpus inputs:** every regular file in `testdata/corpora/canterbury/` (id `canterbury-<name>`, tier `canterbury`) and `testdata/corpora/silesia/` (id `silesia-<name>`, tier `silesia`), sorted by name. Synthetic inputs are tier `synthetic`.
-- **Matrix** (`fn entries(inputs) -> Vec<EntrySpec>`), deduplicated by parameter key:
-  - **A levels:** every input × levels 0..=9 × {Raw, Zlib, Gzip}, strategy Default, wb 15, mem 8. Inputs larger than 4 MiB use levels {0,1,6,9} only.
-  - **B strategies:** inputs ≤ 4 MiB get Fixed × levels 1..=9 × Raw, plus Fixed × level 6 × {Zlib, Gzip}, plus {Filtered, HuffmanOnly, Rle} × {1,6,9} × Raw. Inputs > 4 MiB get {Fixed, HuffmanOnly, Rle} × level 6 × Raw.
-  - **C window:** inputs ≤ 1 MiB get wb 9..=15 × mem {1,9} × level 6 × {Raw, Zlib}, plus wb {9,15} × mem 1..=9 × level 1 × Raw.
-  - **D dictionary:** Canterbury `alice29.txt`, `asyoulik.txt` and `cp.html` × levels {1,6,9} × Zlib, with the dictionary set to the first 32,768 bytes of `canterbury/lcet10.txt`. Skip if that file is absent.
-- **Entry id:** `<input-id>__<raw|zlib|gzip>_l<level>_<default|filtered|huffman|rle|fixed>_w<wb>_m<mem>[_dict]`.
-- **Relative path:** `<tier>/<input-id>/<rfc1951|rfc1950|rfc1952>-l<level>-<strategy>-w<wb>-m<mem>[-dict].bin`. Paths never contain the forbidden words (C11).
-- **Tiers:** `quick` = synthetic + canterbury; `full` = all.
-**Acceptance tests:** `crates/oracle/tests/matrix.rs`:
-- `synthetic_inputs_are_deterministic` (generate twice and compare, and pin the SHA-256 of `random-64KiB`, computing it once and hard-coding the value in the test)
-- `window_inputs_repeat_at_exact_distance`
-- `matrix_ids_unique`
-- `matrix_covers_all_parameter_values` (quick tier contains every level 0–9, all 5 strategies, wb 9–15, mem 1–9, all 3 framings, and ≥ 1 dictionary entry when Canterbury is present)
-- `quick_tier_size_is_bounded` (between 300 and 6,000 entries)
-**Out of scope:** Compressing anything or writing files (P1-03).
-**Verification:** `cargo test -p oracle --test matrix && make lint`.
-**Depends on:** P1-01
-
-### P1-03: Corpus generator CLI and MANIFEST
-**Goal:** Add the `oracle generate` command that writes the conformance corpus into `testdata/generated/`, records and verifies `testdata/MANIFEST.json`, and turns `make corpus`/`make corpus-full` into real targets.
-**Files touched:** `crates/oracle/src/manifest.rs`, `crates/oracle/src/generate.rs`, `crates/oracle/src/main.rs`, `crates/oracle/Cargo.toml` (`serde = { version = "1", features = ["derive"] }`, `serde_json = "1"`), `crates/oracle/tests/manifest.rs`, `testdata/MANIFEST.json`, `testdata/README.md`, `Makefile`.
-**Design constraints:** SPEC §4 (deterministic generation, MANIFEST with parameters, input source, SHA-256).
-- **MANIFEST format:** `{"format": 1, "zlib_version": "...", "seed": "0x636c65616e666c61", "entries": [...]}`. Entries are sorted by `id`. Each entry has:
-  - `id`, `tier`, `input` (`synthetic:<id>` or `testdata/corpora/<dir>/<name>`), `input_sha256`, `input_len`
-  - `framing` (`raw`/`zlib`/`gzip`), `level`, `strategy`, `window_bits`, `mem_level`
-  - `dictionary` (null or `{"input", "len", "sha256"}`)
-  - `path` (relative to `testdata/generated/`), `sha256`, `len`
-- **CLI:** `oracle generate --tier quick|full [--write-manifest] [--out DIR]` (default out `testdata/generated`).
-  - Without `--write-manifest`: for each entry of the tier, if the file exists with the manifest sha, skip it. Otherwise generate it and require that its sha equals the manifest. Exit 1 listing every mismatch, missing manifest entry, or zlib_version difference.
-  - `--write-manifest` regenerates the tier and replaces the manifest entries for that tier, keeping other tiers' entries.
-  - `full` exits 1 with `Silesia corpus missing: run tools/cleanroom/fetch-corpora.sh silesia` if its inputs are absent.
-  - Hand-parse arguments with std. No clap.
+### P0-05: Fast-vs-reference differential test
+**Goal:** Add `crates/oracle/tests/fastslow.rs`. It decodes the conformance corpus, the malformed corpus and proptest streams on both paths and asserts identical output, errors, per-call consumed/produced/status and finish results.
+**Files touched:** `crates/oracle/tests/common/mod.rs` (new), `crates/oracle/tests/fastslow.rs` (new), `crates/oracle/tests/chunking.rs` (use the shared strategies), `Makefile`.
+**Design constraints:** SPEC §5 (differential in `make test`; identical output, errors, consumed and status), C13 (a missing manifest/corpus or an empty selection fails), phase-1 R1-05 (drivers must fail, never hang).
+- **`tests/common/mod.rs`:**
+  - `pub enum CallOutcome { Progress { consumed: usize, produced: usize, status: Status }, Err(String) }`, where the error string is `format!("{e:?}")`.
+  - `pub struct Trace { calls: Vec<CallOutcome>, output: Vec<u8>, finish: Option<String>, total_in: u64, total_out: u64, trailing_start: Option<u64>, gzip_member_count: u64, stalled: bool }` (derive PartialEq, Debug).
+  - `pub fn trace(format, options: &Options, path: DecodePath, input: &[u8], in_sched: &[usize], out_sched: &[usize]) -> Trace`:
+    - Schedules (entries ≥ 1) are cycled.
+    - Each call gets the next input chunk from the current offset (advanced by `consumed`) and a fresh zeroed output buffer of the next size.
+    - The trace stops at `Done` or `Err`. After input is exhausted, it keeps calling with empty input while calls make progress.
+    - It stops after 64 consecutive no-progress calls and then records `finish()`.
+    - If the number of calls exceeds `16 * (input.len() + total_out + 64)`, it sets `stalled = true` and stops.
+  - `pub fn oneshot(format, options, path, input) -> Result<(Vec<u8>, usize, String), String>`, returning data, consumed and the gzip headers' Debug string.
+  - `pub fn dump_candidate(tag, format, input, in_sched, out_sched, note) -> PathBuf`: writes `target/regress-candidates/<tag>-<first 8 hex of sha256(input)>.bin` plus a `.txt` with the format, schedules and note.
+  - Move the data/parameter proptest strategies out of `chunking.rs` into `common` and use them from both files. Keep `chunking.rs`'s behaviour and test names unchanged.
+- **`fastslow.rs` tests:**
+  - `fastslow_conformance_oneshot`:
+    - Entries: every manifest entry for the tier (`oracle::conformance::selected(|_| true)`, honouring `CLEANFLATE_TIER`).
+    - `Options.dictionary` comes from `dictionary_bytes` where the entry has one.
+    - Assertion: Fast and Reference `oneshot` results are equal.
+  - `fastslow_conformance_streaming`: the same entries with schedules in `[1021]` and out `[997]`. The Fast and Reference traces must be equal and not stalled.
+  - `fastslow_malformed`:
+    - Rows: every row of `testdata/malformed/EXPECTED.tsv`. A missing file or zero rows panics.
+    - Each row is decoded one-shot and traced with schedules `[1]/[1]` and `[3,5,7]/[2,11]`. The two paths must agree.
+  - `fastslow_proptest`:
+    - Cases: `CLEANFLATE_FASTSLOW_CASES`, default 256.
+    - Streams: the shared data/parameter strategies (all framings, levels 0–9, all strategies, windowBits 9–15, memLevel 1–9).
+    - Schedules: 1..=64 per entry, with a 10% chance of all-1s.
+    - Each case also runs a copy with one byte flipped at a random offset. Traces must be equal.
+    - On mismatch, call `dump_candidate` first and then fail.
+- Every mismatch message shows the first differing call index and both outcomes.
 - **Makefile:**
-  - `corpus: cargo run --release -q -p oracle -- generate --tier quick`
-  - `corpus-full: cargo run --release -q -p oracle -- generate --tier full`
-- In this task, run `--tier full --write-manifest`, or `--tier quick --write-manifest` if Silesia is missing (say so in the log), then commit the MANIFEST.
-**Acceptance tests:** `crates/oracle/tests/manifest.rs`:
-- `manifest_serde_roundtrip`
-- `generate_small_matrix_twice_is_identical` (temp dirs)
-- `check_mode_detects_tampered_file`
-- `check_mode_detects_missing_manifest_entry`
-Also, `make corpus` exits 0 on a second run without regenerating (prints a skipped count).
-**Out of scope:** Decoding with cleanflate (P1-11). Malformed corpus (P2-04).
-**Verification:** `make corpus && make corpus && make lint && cargo test -p oracle --test manifest`. Also check `git status` shows no files under `testdata/generated/`.
-**Depends on:** P1-02, P0-08
+  - `proptest-3k` and `proptest-10k` set `CLEANFLATE_FASTSLOW_CASES` to the same count as `CLEANFLATE_CHUNKING_CASES` and add `--test fastslow`.
+  - New `fastslow-full: corpus-full` recipe: `CLEANFLATE_TIER=full cargo test --release -p oracle --test fastslow`.
+  - `heavy` gains `fastslow-full`.
+- If this test exposes an existing Fast/Reference difference, fix it (≤ 50 lines in cleanflate, following PT5 with a fixture once P0-06 exists, or a named test otherwise) and record it in `Defects-caught:`.
+**Acceptance tests:**
+- `crates/oracle/tests/fastslow.rs`:
+  - `fastslow_conformance_oneshot`
+  - `fastslow_conformance_streaming`
+  - `fastslow_malformed`
+  - `fastslow_proptest`
+- `make proptest-3k` runs both proptests at 3000 cases.
+- `make fastslow-full` passes; record its duration.
+**Out of scope:** The regression fixture store (P0-06). New fast techniques.
+**Verification:** `make test && make proptest-3k && make fastslow-full`.
+**Depends on:** P0-04
 
-### P1-04: Adler-32 and CRC-32 in cleanflate
-**Goal:** Implement Adler-32 and CRC-32 from the RFC definitions as the public `cleanflate::checksum` module, cross-checked against the oracle.
-**Files touched:** `crates/cleanflate/src/checksum.rs`, `crates/cleanflate/src/lib.rs`, `crates/cleanflate/src/tests/mod.rs`, `crates/cleanflate/src/tests/checksum.rs`, `crates/oracle/tests/checksums.rs`. Do not create `docs/DESIGN.md` here; P1-05 creates it and records the checksum decision as D-10.
-**Design constraints:** RFC 1950 §2.2 and §9 (Adler-32), RFC 1952 §2.3.1 and §8 (CRC-32), SPEC §3.2 ("implemented in-crate, derived from the RFCs' definitions") and §5 M1.
-- API:
-  - `pub struct Adler32` with `new()`, `update(&mut self, &[u8])` and `finish(&self) -> u32`, plus `pub fn adler32(&[u8]) -> u32`
-  - `pub struct Crc32` with `new()`, `update` and `finish`, plus `pub fn crc32(&[u8]) -> u32`
-- CRC-32: a 256-entry table built by a `const fn` from the reflected polynomial `0xEDB88320` per RFC 1952 §8.
-- Adler-32: modulus 65521. Reducing per byte is acceptable here, and P4-09 may optimise it.
-- Cite the RFC sections in rustdoc on `checksum.rs`. P1-05 copies them into DESIGN.md D-10.
-- C1–C8 and C10 apply. Use no indexing: table lookups use `.get()` with a fallback, or iterator zips.
+### P0-06: Regression fixture store and repro tooling
+**Goal:** Add committed repro fixtures under `testdata/regressions/` with a manifest, `oracle regress-add`/`regress-seed`, and a test that runs every fixture on both paths, so a failing case is never lost again.
+**Files touched:**
+- `crates/oracle/src/`: `regress.rs` (new), `lib.rs`, `main.rs`.
+- `crates/oracle/tests/`: `regressions.rs` (new), `chunking.rs` (dump failing cases).
+- `testdata/regressions/`: `README.md`, `MANIFEST.tsv`, `rfc1951/*.bin`, `rfc1950/*.bin`, `rfc1952/*.bin`.
+- `Makefile`.
+**Design constraints:** SPEC §5 ("never lose a repro"), C11 (paths use rfc1951/rfc1950/rfc1952), C13, C16 (expected output hashes come from `oracle::ffi`, never cleanflate).
+- **`MANIFEST.tsv`:** `#` comment lines, then columns `path	format	expect	out_len	out_sha256	in_chunks	out_chunks	origin`.
+  - `format` is `raw|zlib|gzip`.
+  - `expect` is `ok` or `err:<ErrorKind::as_str()>`.
+  - For `ok`, `out_len` and `out_sha256` come from the oracle's decode. For `err`, both are `-`.
+  - Chunk lists are comma-separated positive integers (cycled), or `-`.
+- **`oracle regress-add --input PATH --format raw|zlib|gzip --name NAME [--in-chunks LIST] [--out-chunks LIST] [--expect ok|err:<Kind>] --origin TEXT`:**
+  - Copies the input to `testdata/regressions/<rfc195x>/<NAME>.bin`.
+  - For `ok`, computes the expected output with `oracle::ffi::inflate_bytes` (raw/zlib) or `inflate_gzip_members` (gzip). It requires a clean, complete decode; otherwise it refuses and suggests `--expect err:<Kind>`.
+  - Appends a row. Refuses a duplicate name.
+- **`oracle regress-seed`:** deterministic (fixed seed via `oracle::prng`) and idempotent (skips existing names). It creates four seeds:
+  - `rfc1951/fixed-heavy-match-11k`:
+    - Data: 11,264 bytes of short repeated patterns with random literals between them.
+    - Compression: Fixed strategy, level 6, raw.
+    - Chunks: `1`/`1`.
+    - Origin: "seed: shape of the lost phase-1 P4-08 repro (Fixed, ~11 KiB, match-heavy), not its bytes".
+  - `rfc1950/fixed-heavy-match-11k`: the same data as zlib, chunks `7,1,13` / `1,258,3`.
+  - `rfc1952/two-members`: two members with different data, concatenated, chunks `1`/`1`.
+  - `rfc1951/dynamic-l9-64k`: 64 KiB of mixed text-like data at level 9, chunks `8,9,15,16,17` / `257,258,259`.
+- **`crates/oracle/tests/regressions.rs`:**
+  - `regressions_all_paths`:
+    - For each row and for both Fast and Reference: decode one-shot, trace `[1]/[1]`, and trace the row's schedules when they are not `-`.
+    - For `ok`: length and SHA-256 match and `finish` is Ok.
+    - For `err`: the `ErrorKind` string matches.
+    - Fast and Reference traces are equal.
+    - The test fails if the manifest is missing, has zero rows, or names a missing file.
+  - `regressions_manifest_matches_files`: every `.bin` under `testdata/regressions/` has exactly one row, and every row has its file.
+- **`chunking.rs`:** on a failing case, call `common::dump_candidate("chunking", ...)` before failing. Proptest's shrinking calls the test last with the minimal case, so the final dump is the minimal one.
+- **`testdata/regressions/README.md`:** how to add a fixture (PT5), what each column means, and the C16 note.
+- **`Makefile`:** add `regress-seed: cargo run --release -q -p oracle -- regress-seed`.
+**Acceptance tests:**
+- `crates/oracle/tests/regressions.rs`:
+  - `regressions_all_paths`
+  - `regressions_manifest_matches_files`
+- Unit tests in `crates/oracle/src/regress.rs`:
+  - `manifest_roundtrip`
+  - `chunk_list_parse_rejects_zero`
+  - `seed_is_deterministic`
+- Running `make regress-seed` a second time leaves `git status` clean.
+**Out of scope:** Fixtures that need a preset dictionary.
+**Verification:** `make regress-seed && make test && make crate-checks`.
+**Depends on:** P0-05
+
+### P0-07: `stats` feature counters
+**Goal:** Add the opt-in `stats` feature, with per-decoder counters for the quantities SPEC §4.3 lists, exposed through `Decompressor::stats()` and `decompress_with_stats`, and compiled out entirely by default.
+**Files touched:**
+- `crates/cleanflate/src/`: `stats.rs` (new), `lib.rs`, `inflate.rs`, `huffman.rs` (only to report which method resolved a symbol), `window.rs`, `stream.rs`, `zlib.rs`, `gzip.rs`.
+- `crates/cleanflate/src/tests/`: `mod.rs`, `stats.rs` (new, the whole module `#[cfg(feature = "stats")]`).
+**Design constraints:** SPEC §4.3. Global invariants apply.
+- **C7:** no clocks, so table-building cost is counted as calls and entries, never time. No global state: counters are fields of the decoder.
+- **C15:** increments use `saturating_add`.
+- **C18:** with the feature off, no counter fields or increment code exist. Use `#[cfg]` fields and a crate-internal macro defined twice (on/off), so default behaviour and layout are untouched.
+- **`stats.rs`:** `#[cfg(feature = "stats")] pub struct Stats` (Debug, Clone, Default, PartialEq) with documented `pub u64` fields:
+  - `step_calls`, `state_dispatches` (iterations of `Inflater::step`'s state loop), `output_bytes`.
+  - `blocks_stored`, `blocks_fixed`, `blocks_dynamic`, `stored_bytes`.
+  - `literals`, `matches`, `match_bytes`, `overlap_matches` (distance < length).
+  - `match_len_hist: [u64; 7]`, bucketing lengths 3-4, 5-8, 9-16, 17-32, 33-64, 65-128 and 129-258.
+  - `match_dist_hist: [u64; 9]`, bucketing distances 1, 2-4, 5-16, 17-64, 65-256, 257-1024, 1025-4096, 4097-16384 and 16385-32768.
+  - `litlen_table_decodes`, `litlen_serial_decodes`, `dist_table_decodes`, `dist_serial_decodes`, `codelen_table_decodes`, `codelen_serial_decodes`. Each symbol is counted once, by the method that resolved it.
+  - `refills` (fills that loaded ≥ 1 byte), `refill_bytes`, `given_back_bytes`.
+  - `table_builds` (`Huffman::from_lengths` calls), `table_entries_built`, `fixed_table_clones`.
+  - `window_bytes_written` (bytes written into the history window).
+  - `fast_loop_entries`, `fast_loop_symbols`.
+  - `oneshot_resizes`, `oneshot_bytes_allocated`, set only by `decompress_with_stats`.
+  - `pub fn merge(&mut self, other: &Stats)`.
+  - Fields for mechanisms that do not exist yet stay 0 until their task.
+- **Gzip:** accumulates across members by merging each finished member's inflater stats.
+- **Public API:**
+  - `#[cfg(feature = "stats")] pub fn Decompressor::stats(&self) -> Stats`.
+  - `#[cfg(feature = "stats")] pub fn decompress_with_stats(format, input, options) -> Result<(Decoded, Stats), Error>`. It shares the implementation of `decompress_with` (no copy) and also counts resizes and bytes allocated.
+  - `lib.rs` re-exports both under the feature.
+- **Tests:** gzip fixtures reuse the existing `tests/gzip.rs` helpers with literal CRCs (C16).
+**Acceptance tests:** `crates/cleanflate/src/tests/stats.rs`:
+- `stats_stored_block_counts`: an N-byte stored block gives `stored_bytes == N`, `blocks_stored == 1` and `output_bytes == N`.
+- `stats_fixed_literals_and_matches`: a hand-built fixed block with known literals, lengths and distances gives exact counters, histogram buckets and overlap count.
+- `stats_dynamic_table_builds`: two dynamic blocks give `blocks_dynamic == 2` and 3 table builds per block.
+- `stats_symbol_decode_methods_sum`: litlen table + serial decodes == literals + matches + end-of-block symbols.
+- `stats_accumulate_across_gzip_members`
+- `stats_decompress_with_counts_resizes`
+- `make lint` passes, including the default-feature clippy line.
+**Out of scope:** Printing stats (P0-09). Any optimisation.
+**Verification:** `make lint && make test && make proptest-3k`.
+**Depends on:** P0-01
+
+### P0-08: Bench harness: medians, framings, levels, modes, JSON
+**Goal:** Harden `oracle bench` per SPEC §4.2. It takes a warm-up plus N timed samples and reports median and min, per file and aggregate. It covers raw/zlib/gzip, levels 1/6/9, one-shot and 64 KiB streaming, writes machine-readable JSON, and adds `make bench`/`make bench-quick`.
+**Files touched:** `crates/oracle/src/bench.rs` (rewrite), `crates/oracle/src/bench_json.rs` (new), `crates/oracle/src/main.rs`, `crates/oracle/src/lib.rs`, `Makefile`, `docs/perf/README.md`.
+**Design constraints:**
+- SPEC §4.1 and §4.2.
+- SPEC §2.1: C zlib is a black-box stopwatch. Time `oracle::ffi::inflate_bytes` and nothing else.
+- SPEC §10: no change to how the oracle uses C zlib. Use the existing `deflate_bytes`/`inflate_bytes`.
+- C9, C11 (JSON paths).
+- C13: a missing corpus is an error that names `testdata/corpora/README.md`. Never fall back silently.
+- **CLI:** `oracle bench [--kind full|quick|custom] [--corpus silesia,canterbury] [--subset quick] [--framings raw,zlib,gzip] [--levels 1,6,9] [--modes oneshot,streaming] [--iters N] [--task ID] [--json PATH]`.
+  - Framing names also accept `rfc1951|rfc1950|rfc1952`.
+  - `--kind full` requires `--iters >= 7`.
+  - The bench refuses to run in a debug build.
+- **Quick subset:** all Canterbury files plus Silesia `dickens`, `mr`, `ooffice`, `sao` and `xml`, as a constant list in bench.rs.
+- **Per (corpus, file, level, framing):**
+  - Compress once with the oracle (Default strategy, windowBits 15, memLevel 8).
+  - Warm-up: decode once per timed implementation and mode. Verify the output is byte-identical to the original, and fail loudly otherwise.
+  - Choose `reps`, the smallest power of two that makes one sample last ≥ 20 ms. `MIN_SAMPLE_MS` is a bench-local const, not a cleanflate tunable.
+  - Take N samples. Within each sample index, run cleanflate one-shot, cleanflate streaming and C zlib one-shot back to back (interleaved).
+  - Record per-decode ns as sample time / reps.
+- **Modes:**
+  - `oneshot`: `cleanflate::decompress_with(format, &compressed, &Options::default())`.
+  - `streaming`: `Decompressor::new(format, Options::default())` fed 64 KiB input chunks. Output goes into a pre-sized buffer (`original.len() + 65536`) through successive windows of at most 64 KiB, then `finish()`.
+  - C zlib is timed one-shot only. Its median is the denominator for both cleanflate modes (see Decisions).
+- **Results:**
+  - Median and min per (file, framing, level, mode, impl).
+  - Aggregates per (corpus, framing, level, mode) with key `<corpus>/<framing>/l<level>/<mode>`: total bytes / sum of per-file medians, and also / sum of mins.
+  - Ratio = cleanflate median MiB/s / C zlib median MiB/s.
+- **JSON** (`"schema": 1`), documented field by field in `docs/perf/README.md`:
+  - `kind`, `task`, `git_head`, `git_dirty`.
+  - `timestamp`: UTC, formatted by hand from `SystemTime`.
+  - `machine`: `uname`, `cpu_model`, `governor` (from `/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor`, or `unknown`), `loadavg`, `rustc` (from `rustc --version`).
+  - `c_zlib_version`, `iters`, `min_sample_ms`.
+  - `stats_build`: `cfg!(feature = "stats")` of the cleanflate dependency.
+  - `results[]` and `aggregates[]`.
+- **Stdout:** a markdown table of aggregates: key, cleanflate MiB/s (median), cleanflate MiB/s (min-based), C zlib MiB/s, ratio.
+- **Makefile:**
+  - Variables: `BENCH_ID ?= adhoc`, `BENCH_OUT ?= target/bench/$(BENCH_ID).json`.
+  - `bench`: `--kind full`, corpora silesia,canterbury, framings raw,zlib,gzip, levels 1,6,9, both modes, iters 7.
+  - `bench-quick`: `--kind quick --subset quick`, level 6, all framings, both modes, iters 5.
+  - Both create the output's parent directory.
+**Acceptance tests:**
+- Unit tests in `crates/oracle/src/bench.rs` and `bench_json.rs` (`#[cfg(test)]` is allowed in the oracle):
+  - `median_and_min_odd_even`
+  - `aggregate_is_total_bytes_over_total_median_time`
+  - `reps_reach_min_sample`
+  - `json_roundtrip`
+  - `quick_subset_names`
+  - `full_kind_requires_seven_iters`
+  - existing `throughput_math`, kept
+- `make bench-quick BENCH_ID=P0-08` completes and writes parseable JSON under `target/bench/`. Do not commit it.
+**Out of scope:** Compare/noise/markdown/stats (P0-09). Running the full bench (P0-11).
+**Verification:** `make lint && make test && make bench-quick BENCH_ID=P0-08`.
+**Depends on:** none
+
+### P0-09: bench-compare, bench-noise, bench-md and `bench --stats`
+**Goal:** Add the comparison, noise, markdown and statistics tools the rest of the plan measures with.
+**Files touched:** `crates/oracle/src/bench_compare.rs` (new), `crates/oracle/src/bench.rs`, `crates/oracle/src/main.rs`, `crates/oracle/src/lib.rs`, `Makefile`, `docs/perf/README.md`.
+**Design constraints:** SPEC §4.1 ("no per-file regression ... by more than the measured noise"), §4.2 ("twice the measured noise", `make bench-compare A=... B=...`), §4.3 (`oracle bench --stats`). Decisions entries on noise and verdicts.
+- **`oracle bench-noise A B --out PATH`:**
+  - For every aggregate key and every per-file key `<corpus>/<file>/<framing>/l<level>/<mode>` present in both files, using cleanflate median throughput only: noise % = |a − b| / a × 100.
+  - Writes `{schema: 1, kind, sources: [A, B], aggregate: {key: pct}, aggregate_max_pct, per_file: {key: pct}}`.
+- **`oracle bench-compare A B [--noise PATH] [--fail-on-regression]`:**
+  - Default noise file: `docs/perf/noise.json` when both inputs are kind `full`, and `docs/perf/noise-quick.json` when both are `quick`. If the file is missing, print `noise unknown` and use verdict `UNKNOWN`.
+  - Per aggregate key, print A and B MiB/s, delta %, 2×noise % (the key's own noise, else `aggregate_max_pct`) and a verdict: `WIN` (delta > +2×noise), `LOSS` (delta < −2×noise) or `NEUTRAL`.
+  - Per file: `REGRESSION` when delta < −max(file noise, aggregate noise of its key). REGRESSION lines are listed at the end.
+  - Keys found in only one file are listed.
+  - Error out if either JSON has `stats_build: true`.
+  - Exit 0 unless `--fail-on-regression` is given and there is at least one REGRESSION.
+- **`oracle bench-md JSON [--files] [--filter PREFIX]`:** markdown tables for PERF.md. Aggregates by default; `--files` adds per-file rows.
+- **`oracle bench --stats`:**
+  - Available only when built with oracle feature `stats`; otherwise exit with "rebuild with --features stats".
+  - `--iters 0` is allowed only together with `--stats` (no timing).
+  - Per (file, framing, level), one untimed `decompress_with_stats`, plus `Decompressor::stats()` after a 64 KiB-chunk decode when mode streaming is selected.
+  - Prints per framing:
+    - totals;
+    - litlen and dist table-decode %;
+    - dispatches per output byte;
+    - bytes per refill;
+    - overlap-match %;
+    - match length and distance histograms as % of matches;
+    - stored %;
+    - table builds per block;
+    - one-shot resizes.
+  - The JSON gets a `stats` array: raw counters per file plus totals.
+- **Makefile:**
+  - `bench-compare`: fails with a usage message if `A` or `B` is unset; otherwise runs `oracle bench-compare $(A) $(B)`, plus `--noise $(NOISE)` if set.
+  - `bench-noise A= B= OUT=`
+  - `bench-md J=`
+  - `bench-stats`: `cargo run --release -q -p oracle --features stats -- bench --stats --iters 0 --kind custom --corpus silesia --framings raw,zlib,gzip --levels 6 --modes oneshot,streaming --task $(BENCH_ID) --json $(BENCH_OUT)`.
+  - `lint` gains `cargo clippy -p oracle --all-targets --features stats -- -D warnings`.
+**Acceptance tests:**
+- Unit tests in `crates/oracle/src/bench_compare.rs`:
+  - `noise_from_two_runs`
+  - `verdicts_win_loss_neutral`
+  - `regression_threshold_is_max_of_file_and_aggregate_noise`
+  - `fail_on_regression_flag`
+  - `refuses_stats_build_json`
+  - `markdown_render_has_all_keys`
+- Unit test in `crates/oracle/src/bench.rs`: `stats_flag_requires_feature`.
+- `make bench-stats BENCH_ID=P0-09` prints the table. Do not commit the output.
+**Out of scope:** Baseline measurement (P0-11).
+**Verification:** `make lint && make test`, then two `make bench-quick` runs into `target/bench/a.json` and `target/bench/b.json`, then `make bench-compare A=target/bench/a.json B=target/bench/b.json` and `make bench-stats BENCH_ID=P0-09`.
+**Depends on:** P0-07, P0-08
+
+### P0-10: Cleanflate-only profiling entry point and `make profile`
+**Goal:** Profile cleanflate alone. Add an unprofiled input-preparation step, a cleanflate-only example binary, and `make profile`/`make flamegraph` wrapped around that binary.
+**Files touched:** `crates/oracle/src/perf_prep.rs` (new), `crates/oracle/src/main.rs`, `crates/oracle/src/lib.rs`, `crates/cleanflate/examples/profile_decode.rs` (new), `Makefile`, `docs/perf/README.md` (profiling section).
+**Design constraints:** SPEC §4.3 (all bullets), §2.2, CR7, C19 (rule `no-profiling-of-oracle`). C1 applies to the example (no `unsafe` token anywhere under `crates/cleanflate/`). C7 covers only `src/`, so the example may use `std::fs` and `Instant`.
+- **`oracle perf-prep --corpus silesia|canterbury --framing rfc1951|rfc1950|rfc1952 --level L --out testdata/perf-inputs`:**
+  - Also accepts raw/zlib/gzip as aliases.
+  - Writes `<out>/<corpus>/<rfc195x>-l<L>/<file>.bin` and `index.tsv` with columns `file	compressed_len	original_len	original_crc32`. The CRC comes from `oracle::ffi::crc32`.
+  - Does nothing if `index.tsv` exists and every listed file has the listed length.
+  - This step is never profiled.
+- **`crates/cleanflate/examples/profile_decode.rs`:**
+  - Uses cleanflate and std only.
+  - Arguments: `--dir DIR --format rfc1951|rfc1950|rfc1952 --iters N [--mode oneshot|streaming]`.
+  - Loads every file in `index.tsv` into memory first, then decodes each one N times. Streaming uses 64 KiB chunks.
+  - On the first iteration, verifies the length and the CRC-32 (`cleanflate::checksum::crc32` against the oracle value in the index). It exits non-zero on any mismatch.
+  - Prints total MiB/s. Built with `--features stats`, it also prints the merged `Stats`.
+- **Makefile:**
+  - Variables: `PROFILE_CORPUS ?= silesia`, `PROFILE_FRAMING ?= rfc1951`, `PROFILE_LEVEL ?= 6`, `PROFILE_ITERS ?= 3`, `PROFILE_MODE ?= oneshot`, `PROFILE_PERF_FLAGS ?= --call-graph dwarf -F 499`.
+  - `PROFILE_DIR := testdata/perf-inputs/$(PROFILE_CORPUS)/$(PROFILE_FRAMING)-l$(PROFILE_LEVEL)`.
+  - `profile-prep` runs perf-prep.
+  - `profile: profile-prep`:
+    - `CARGO_PROFILE_RELEASE_DEBUG=true cargo build --release -p cleanflate --example profile_decode`
+    - `mkdir -p target/profile`
+    - `perf record $(PROFILE_PERF_FLAGS) -o target/profile/perf.data target/release/examples/profile_decode --dir $(PROFILE_DIR) --format $(PROFILE_FRAMING) --iters $(PROFILE_ITERS) --mode $(PROFILE_MODE)`
+    - `perf report -i target/profile/perf.data --stdio --no-children --sort symbol --percent-limit 0.5 > target/profile/top.txt`
+    - Print the first 60 lines of `top.txt`.
+  - `flamegraph: profile-prep`: `CARGO_PROFILE_RELEASE_DEBUG=true cargo flamegraph -p cleanflate --example profile_decode -o target/profile/flamegraph.svg -- <same args>`.
+  - No recipe runs a profiler on anything but `profile_decode`.
+**Acceptance tests:**
+- Unit tests in `crates/oracle/src/perf_prep.rs`: `index_tsv_roundtrip`, `framing_aliases`.
+- `make profile PROFILE_ITERS=1` writes `target/profile/top.txt` whose leading entries are cleanflate functions. Paste its top 10 lines into the progress log.
+- `make flamegraph PROFILE_ITERS=1` writes the SVG.
+- If `perf` fails for an environmental reason, record `profile NOT RUN: <reason>` and finish. Never install or reconfigure tools (CR3).
+**Out of scope:** Recording findings (P0-12).
+**Verification:** `make lint && make test && make profile PROFILE_ITERS=1 && make flamegraph PROFILE_ITERS=1`.
+**Depends on:** P0-07
+
+### P0-11: Baseline and noise measurement
+**Goal:** Measure the phase-2 baseline twice with the full bench and twice with the quick bench, commit the JSONs and the noise estimates, and write the `## Phase 2` baseline section of PERF.md.
+**Files touched:**
+- `docs/perf/`: `baseline.json`, `baseline-rerun.json`, `noise.json`, `baseline-quick.json`, `baseline-quick-rerun.json`, `noise-quick.json`.
+- `docs/PERF.md`.
+**Design constraints:** SPEC §4.1 (baseline and targets), §4.2 (re-measure on this machine before any optimisation; noise from two runs), §8 (record conditions), C10 (no reference-implementation names in PERF.md or docs/perf). Do not touch code. Keep the phase-1 content of PERF.md; add a new top-level `## Phase 2` section after it.
+- **Steps:**
+  1. Record conditions: `cat /proc/loadavg`, the governor and `nproc`. Run nothing else heavy during the benches (PT8: background, wait).
+  2. `make bench BENCH_ID=baseline BENCH_OUT=docs/perf/baseline.json`, then the same with `BENCH_OUT=docs/perf/baseline-rerun.json`.
+  3. `make bench-noise A=docs/perf/baseline.json B=docs/perf/baseline-rerun.json OUT=docs/perf/noise.json`.
+  4. Same with `make bench-quick` into `baseline-quick.json` and `baseline-quick-rerun.json`, then `noise-quick.json`.
+- **PERF.md `## Phase 2`:**
+  - `### Method`: the §4.2 method as implemented.
+    - Warm-up plus N=7 samples, median and min, interleaving, 20 ms samples.
+    - Modes, and C zlib one-shot as the denominator.
+    - JSON location.
+    - Noise, WIN and REGRESSION rules.
+    - Cleanflate-only profiling.
+  - `### Machine and conditions`.
+  - `### Baseline (P0-11)`:
+    - `make bench-md` tables for Silesia level 6, per framing and mode.
+    - The full aggregate table.
+    - A per-file table for Silesia raw level 6 one-shot.
+  - `### Noise`: `aggregate_max_pct`, a per-key table, and quick noise.
+  - `### Targets`: SPEC §4.1 targets against the baseline ratios.
+- If aggregate noise exceeds 5%, say so prominently and add a manual check. Continue anyway.
+**Acceptance tests:**
+- The six JSON files exist, render with `make bench-md`, have kind `full`/`quick` and `stats_build: false`.
+- `make bench-compare A=docs/perf/baseline.json B=docs/perf/baseline-rerun.json` shows no WIN, LOSS or REGRESSION (a sanity check of the noise definition).
+**Out of scope:** Code changes. Hypotheses (P0-12).
+**Verification:** `make bench-md J=docs/perf/baseline.json && make bench-compare A=docs/perf/baseline.json B=docs/perf/baseline-rerun.json`.
+**Depends on:** P0-09
+
+### P0-12: Hypotheses H1–H6 and baseline profile
+**Goal:** Confirm or discard each SPEC §4.4 hypothesis with a number, record the baseline profile's top functions, and rank the costs.
+**Files touched:** `docs/PERF.md`, `docs/perf/P0-12-stats.json`.
+**Design constraints:** SPEC §4.4, §4.3 (profile cleanflate alone: only `make profile`/`make flamegraph`; CR7), §6 M0, C10. No code changes.
+- **Collect:**
+  - `make bench-stats BENCH_ID=P0-12 BENCH_OUT=docs/perf/P0-12-stats.json`.
+  - `make profile` for `PROFILE_FRAMING=rfc1951`, `rfc1950` and `rfc1952` at level 6, plus one run with `PROFILE_MODE=streaming` for rfc1951.
+- **PERF.md `### Baseline profile (P0-12)`:** the top 15 self-time symbols with percentages for each profile.
+- **PERF.md `### Hypotheses (P0-12)`:** a table with the metric, the measured value, a verdict (CONFIRMED, DISCARDED or PARTIAL), the estimated share of decode time, and the tasks each hypothesis drives.
+  - H1: serial / (table + serial) decodes for litlen and dist; the profile share of `Huffman::decode`.
+  - H2: `state_dispatches / output_bytes`; the self share of `Inflater::step` and of State clone/drop frames.
+  - H3: `window_bytes_written / output_bytes`; the share of window push/copy functions.
+  - H4: overlap-match % and overlap bytes; the share of the byte-wise copy loop.
+  - H5: `table_builds` and `fixed_table_clones` per block; the share of `from_lengths`, `build_table` and table clones.
+  - H6: gzip vs raw and zlib vs raw aggregate delta (`baseline.json`, Silesia level 6 one-shot); the CRC/Adler share in the rfc1952/rfc1950 profiles; `oneshot_resizes` per file.
+- **PERF.md `### Cost ranking (P0-12)`:** hypotheses ordered by measured share, naming which gated tasks (P1-03, P1-04, P2-03, P4-02) are likely to end as negative results. Do not edit PLAN.md.
+**Acceptance tests:** PERF.md has a number and a verdict for each of H1..H6, and `docs/perf/P0-12-stats.json` is committed.
+**Out of scope:** Code changes.
+**Verification:** `make design-check` (DESIGN.md untouched; sanity check only).
+**Depends on:** P0-09, P0-10, P0-11
+
+### P0-13: M0 acceptance and push
+**Goal:** Run the M0 acceptance commands, commit the M0 bench, snapshot provenance, push, and list the manual checks.
+**Files touched:** `docs/perf/P0-13.json`, `docs/PERF.md` (`### M0 acceptance (P0-13)`), `provenance/tool-log.snapshot.jsonl`, and fixes of ≤ 100 lines in Phase 0 files.
+**Design constraints:** SPEC §6 (each milestone ends with `make ci`, full `make bench` and the 10k chunking proptest, committed and pushed) and M0 acceptance. PT5 for any correctness failure: block with a fixture. PT8.
+- `make ci`.
+- `make heavy`: proptest-10k (chunking and fastslow), bomb, conformance-full, fastslow-full.
+- `make bench BENCH_ID=P0-13 BENCH_OUT=docs/perf/P0-13.json`.
+- `make bench-compare A=docs/perf/baseline.json B=docs/perf/P0-13.json`. Record any REGRESSION; expect none, since the only decoder change is P0-04's invalid-code rule.
+- PERF.md: an M0 checklist with evidence:
+  - baseline JSON and noise committed (paths);
+  - the differential runs in `make test` (test names);
+  - H1–H6 each have a number (PERF.md anchors).
+- `make provenance-snapshot`, commit, `git push -u origin HEAD`.
+**Acceptance tests:** `make ci` and `make heavy` pass. `docs/perf/P0-13.json` is committed.
+**Out of scope:** Optimisation.
+**Verification:** `make ci && make heavy && make provenance-snapshot && git push -u origin HEAD`. Write `Manual check: NOT VERIFIED (human)` with:
+1. Confirm the GitHub Actions `ci` run is green on the pushed branch. It now also lints and tests the features.
+2. Look at `docs/perf/noise.json`. If aggregate noise exceeds 3%, re-run the baseline on a quiet machine with a fixed governor (SPEC §8).
+3. Run `make flamegraph` and sanity-check the P0-12 profile tables against the SVG.
+4. Check that the provenance log has no unexplained denied profiling commands.
+**Depends on:** P0-05, P0-06, P0-11, P0-12
+
+## Phase 1 — M1 Bit reader and symbol decoding
+
+### P1-01: Bulk bit refill with an exact give-back invariant
+**Goal:** On the Fast path, keep the bit buffer topped up a word at a time, and redefine the reader invariant so that per-call `consumed`, trailers and resumability are exactly what the Reference path produces.
+**Files touched:**
+- `crates/cleanflate/src/`: `bitreader.rs`, `inflate.rs`, `stats.rs`.
+- `crates/cleanflate/src/tests/`: `mod.rs`, `bitreader_bulk.rs` (new).
+- `docs/DESIGN.md`, `docs/PERF.md`, `docs/perf/P1-01-before.json`, `docs/perf/P1-01.json`.
+**Design constraints:** SPEC §6 M1 bullet 1, §5 (reference path; exits restore exact state per D-07/D-22), §3 (streaming contract D-11/D-13/D-20/D-25: exact `consumed`, `trailing_start`). RFC 1951 §3.1.1, §3.2.4. Global invariants apply. PT1, PT3–PT7.
+- **`BitReader::refill_bulk(&mut self, input: &[u8], pos: &mut usize)`:**
+  - If at least 8 bytes remain at `*pos`, read them as one little-endian `u64` (`input.get(*pos..*pos + 8)`, `try_into`, `u64::from_le_bytes`). OR in the low k = (63 − count) / 8 whole bytes above the current count, and advance pos by k.
+  - Otherwise load single bytes while count ≤ 55 and input remains.
+  - count never exceeds 63, so there is never a shift by ≥ 64.
+  - Update `refills` and `refill_bytes` (stats).
+- **`BitReader::give_back(&mut self, keep_bits: u32) -> usize`:** k = the number of whole bytes above `keep_bits` (0 if count < keep_bits + 8). Mask off the top 8k bits, set count −= 8k, and return k.
+- **Fast `peek_symbol`:** refills in bulk whenever fewer than 15 bits (the longest RFC 1951 code) are buffered, then decodes. If it still needs bits and input is exhausted, it returns NeedsInput exactly as today. Reference keeps the exact fill.
+- **New invariant**, recorded as a `[perf]` DESIGN entry superseding D-07's "at most 7 bits between steps":
+  - (a) NeedsInput exit: `pos == input.len()`, and the buffer holds only bits of the pending sub-step, fewer than it requires.
+  - (b) OutputFull or Done exit, through one shared exit helper used by every such `return`: give back whole bytes so the buffer keeps exactly the bits of a decoded-but-unconsumed symbol. That symbol is the pending literal at OutputFull in LitLen, and `keep_bits` is its code length. Otherwise the buffer keeps ≤ 7 bits. Then `pos −=` the returned count.
+  - (c) After LEN/NLEN in StoredLen, give back with `keep_bits = 0`; the count is a multiple of 8 after `align_to_byte`. StoredCopy drains any whole bytes still buffered before it reads input. This is defensive: add a `debug_assert!` that none remain.
+  - Consequence, to state in DESIGN: after every `step` return, the Fast reader holds exactly the bits the Reference reader holds, so per-call `consumed` is identical (P0-05 traces check this). zlib/gzip trailers after `Done` start at the right byte.
+  - Bytes given back were always loaded in the same call, because bits carried in from an earlier call are consumed by the first sub-step. Use `checked_sub` on pos with a `debug_assert!`, never a panic.
+- **Error exits:** unchanged (sticky; `consumed` is not reported).
+- The DESIGN entry cites the phase-1 P4-08 failure (gzip trailer corrupted by over-reading; a stream one byte short and stuck at NeedsInput) and explains why (a)–(c) make it impossible.
+**Acceptance tests:**
+- `crates/cleanflate/src/tests/bitreader_bulk.rs`:
+  - `refill_bulk_word_and_bytewise`: the word path with ≥ 8 bytes, the byte path with < 8, and count ≤ 63 always.
+  - `give_back_keeps_pending_bits`: keep 0, 9 and 15 at various counts.
+  - `bulk_then_giveback_bit_sequence_equals_exact_fill`: over random streams, reading n-bit fields via bulk refill plus give-back yields the same values and positions as exact `take`.
+  - `raw_done_consumed_exact_with_trailing_bytes`: a hand-built raw stream plus 0..=16 garbage bytes, at every 2-way split of the input. `consumed` at Done equals the stream length on both paths.
+  - `per_call_consumed_matches_reference`: fixed and dynamic streams with output chunks of 1 and 3 bytes. Per-call (consumed, produced, status) is identical on Fast and Reference.
+  - `stored_block_after_bulk_refill`: a compressed block followed by a stored block, at all 2-way input splits.
+- `make test` (fastslow and regressions), `make proptest-3k` and `make fastslow-full` pass.
+**Out of scope:** Table changes (P1-02). The fast loop (P2-01).
+**Verification:** PT1 (before and after), `make lint && make test && make proptest-3k && make fastslow-full && make bomb`.
+**Depends on:** P0-05, P0-06
+
+### P1-02: Two-level lookup tables for every symbol
+**Goal:** On the Fast path, decode every literal/length, distance and code-length symbol through lookup tables: a first-level table, plus second-level tables for longer codes. The bit-serial walk is kept only for the Reference path.
+**Files touched:**
+- `crates/cleanflate/src/`: `huffman.rs`, `inflate.rs`, `stats.rs`, `config.rs` (doc comments only).
+- `crates/cleanflate/src/tests/`: `huffman_table.rs`, `huffman_twolevel.rs` (new), `mod.rs`.
+- `docs/DESIGN.md`, `docs/PERF.md`, `docs/perf/P1-02-before.json`, `docs/perf/P1-02.json`.
+**Design constraints:** SPEC §6 M1 bullet 2, §4.4 H1, §5. RFC 1951 §3.2.2 (canonical codes), §3.1.1 (bit order), §3.2.7 (incomplete distance tables; the code-length alphabet's lengths are 3-bit fields, so codes are at most 7 bits). Global invariants apply. PT1, PT3–PT7.
+- `LITLEN_TABLE_BITS`/`DIST_TABLE_BITS` stay in config.rs (C8). The code-length table width is the RFC-fixed maximum of 7, a named const in huffman.rs citing the RFC; it is not a tunable.
+- **Entry:** a compact `Copy` value (for example a `u32` or a small struct) distinguishing `Symbol{symbol, len}`, `Sub{offset, bits}` (first level only) and `Invalid`.
+- **Build:**
+  - The first level has `1 << table_bits` entries, built for codes ≤ table_bits as today.
+  - For each `table_bits` prefix used by longer codes, append a subtable of width `max_len_under_prefix − table_bits` after the first level in the same Vec. Index it by the following bits (LSB-first, reversed codes) and fill it redundantly across don't-care bits.
+  - Count entries written in stats.
+- **Fast lookup,** with `a = available()` and unavailable bits reading as 0:
+  - Index the first level by `peek(table_bits)`.
+  - A `Symbol` with `len ≤ a` is the answer.
+  - A `Sub` indexes its subtable by the next `bits` bits; a `Symbol` there with `len ≤ a` is the answer.
+  - `Invalid` with `a ≥ 1` is Invalid (P0-04 rule).
+  - Anything else is NeedMoreBits.
+  - This equals `decode` for every buffer state. By prefix-freeness, a `Symbol` of length ≤ a reached through zero padding is the true code. State this argument in DESIGN.
+- **Code-length alphabet:** a single-level 7-bit table.
+- **Reference path:** keeps `decode`. The D-16 gate "only when `available() >= table_bits`" is removed from the Fast path by a `[perf]` DESIGN entry superseding D-16.
+**Acceptance tests:**
+- `crates/cleanflate/src/tests/huffman_twolevel.rs`:
+  - `lookup_equals_serial_for_all_buffer_states`: fixed tables, both exception distance tables, and ≥ 200 fixed-seed random complete length sets including 15-bit codes; every a in 0..=15 with ≥ 64 bit patterns each.
+  - `subtables_built_for_long_codes`
+  - `codelen_table_decodes_all_symbols`
+  - `table_widths_sweepable`: the build and lookup are correct for widths 7..=12, via an internal constructor that takes the width, so P4-03 can sweep safely.
+- Existing `huffman_table.rs` tests are updated, not deleted.
+- `make test`, `make proptest-3k` and `make fastslow-full` pass.
+**Out of scope:** Base/extra payloads in entries (P1-04). Per-block reuse (P1-03).
+**Verification:** PT1, `make lint && make test && make proptest-3k && make fastslow-full`.
+**Depends on:** P0-05, P0-06
+
+### P1-03: Per-block table reuse (gated)
+**Goal:** Gated per PT2. Remove per-block table costs: build the fixed tables once and reference them instead of cloning per fixed block, and rebuild dynamic tables in place, reusing their allocations.
+**Files touched:**
+- `crates/cleanflate/src/`: `inflate.rs`, `huffman.rs`, `stats.rs`.
+- `crates/cleanflate/src/tests/`: `inflate_block_tables.rs` (new), `mod.rs`.
+- `docs/DESIGN.md`, `docs/PERF.md`, `docs/perf/P1-03-before.json`, `docs/perf/P1-03.json`.
+**Design constraints:** SPEC §4.4 H5, §6 M1 bullet 4. RFC 1951 §3.2.6, §3.2.7. Global invariants apply. PT1, PT2, PT4–PT7.
+- **Gate:** run `make bench-stats` and `make profile PROFILE_FRAMING=rfc1951`. If `from_lengths`, `build_table`, table clones and the allocation frames under them together take less than max(2%, 2x aggregate noise) of samples, record the negative result and stop.
+- **Implementation:**
+  - `Inflater` selects its tables through an `ActiveTables { Fixed, Dynamic }` selector (or references) instead of cloning.
+  - `Huffman::rebuild(&mut self, lengths, kind)` reuses Vec capacity.
+  - Completing `CodeLens` slices `dyn_lengths` instead of `to_vec`.
+- This changes storage, not decoding, so both paths share it. DESIGN says so; conformance and fastslow cover it.
+**Acceptance tests:**
+- `crates/cleanflate/src/tests/inflate_block_tables.rs`:
+  - `fixed_blocks_do_not_clone_tables`: under `#[cfg(feature = "stats")]`, `fixed_table_clones == 0` after 3 fixed blocks.
+  - `dynamic_rebuild_matches_fresh_build`: after rebuilding from a different length set, lookup and serial decode equal a fresh `from_lengths`.
+  - `many_dynamic_blocks_same_output`: 100 small dynamic blocks decode to the same output on both paths.
+- If the gate stops the task: no tests; the PERF.md entry with the numbers is the deliverable.
+**Out of scope:** Table format changes.
+**Verification:** PT1/PT2, `make lint && make test && make proptest-3k`.
+**Depends on:** P0-05, P0-07, P0-10
+
+### P1-04: Length/distance payload in table entries (gated)
+**Goal:** Gated per PT2. If the profile shows length/distance base and extra-bit handling is significant, carry each length/distance symbol's base value and extra-bit count in its Fast-path table entry.
+**Files touched:**
+- `crates/cleanflate/src/`: `huffman.rs`, `inflate.rs`.
+- `crates/cleanflate/src/tests/`: `huffman_entry_payload.rs` (new), `mod.rs`.
+- `docs/DESIGN.md`, `docs/PERF.md`, `docs/perf/P1-04-before.json`, `docs/perf/P1-04.json`.
+**Design constraints:** SPEC §6 M1 bullet 3 ("if the counters show it matters"). RFC 1951 §3.2.5 (the length and distance tables). Global invariants apply. PT1–PT7.
+- **Gate:** use `perf annotate` of `Inflater::step` from `make profile`, only on the cleanflate-only binary, together with the dispatch counters. If LenExtra/DistExtra handling and base/extra table lookups take less than max(2%, 2x noise) of samples, record a negative result and stop.
+- Payload values must equal `tables.rs`, which is transcribed from RFC 1951 §3.2.5.
+- The Reference path keeps reading `tables.rs`.
+**Acceptance tests:**
+- `crates/cleanflate/src/tests/huffman_entry_payload.rs`:
+  - `entry_payload_matches_rfc_tables`: all 29 length codes and 30 distance codes.
+  - `payload_decode_equals_reference_all_codes`
+- If gated out, the PERF.md entry is the deliverable.
+**Out of scope:** The fast loop (P2-01).
+**Verification:** PT1/PT2, `make lint && make test && make proptest-3k`.
+**Depends on:** P1-02, P0-10
+
+### P1-05: M1 acceptance and push
+**Goal:** Run the M1 acceptance commands, measure the table-decode ratio and the aggregate gain, commit the bench, snapshot provenance and push.
+**Files touched:** `docs/perf/P1-05.json`, `docs/perf/P1-05-stats.json`, `docs/PERF.md` (`### M1 acceptance (P1-05)`), `provenance/tool-log.snapshot.jsonl`, and fixes of ≤ 100 lines in Phase 1 files.
+**Design constraints:** SPEC §6 M1 acceptance (≥ 99% of litlen and distance symbols decoded by table lookup on Silesia; aggregate gain measured; all correctness gates green), §6 intro, PT5, PT8.
+- Run:
+  - `make ci`;
+  - `make heavy`;
+  - `make bench BENCH_ID=P1-05 BENCH_OUT=docs/perf/P1-05.json`;
+  - `make bench-compare` against `docs/perf/baseline.json` and against `docs/perf/P0-13.json`;
+  - `make bench-stats BENCH_ID=P1-05 BENCH_OUT=docs/perf/P1-05-stats.json`.
+- PERF.md records:
+  - the table-decode % for litlen and dist (≥ 99%: MET or NOT MET);
+  - aggregate gains per framing (level 6, one-shot and streaming);
+  - REGRESSION lines, if any, as findings;
+  - the correctness gates.
+- An unmet performance criterion is recorded, not blocking. A correctness failure blocks per PT5.
+- `make provenance-snapshot`, commit, push.
+**Acceptance tests:** `make ci` and `make heavy` pass. The JSONs are committed.
+**Out of scope:** New optimisation.
+**Verification:** `make ci && make heavy && make provenance-snapshot && git push -u origin HEAD`. Write `Manual check: NOT VERIFIED (human)` with:
+1. Confirm GitHub Actions `ci` is green.
+2. Review the P1-01 and P1-02 DESIGN `[perf]` entries for clean-room wording (SPEC §2.1).
+3. Sanity-check the M1 gain on a quiet machine if the noise was high.
+**Depends on:** P1-01, P1-02
+
+## Phase 2 — M2 Fast decode loop
+
+### P2-01: Fast literal/length/distance decode loop
+**Goal:** Add the Fast-path loop for the literal/length/distance state. It is entered only with enough input and output margin, has no per-symbol state clone or outer dispatch, and exits to the state machine near buffer edges, at end of block, or on any error.
+**Files touched:**
+- `crates/cleanflate/src/`: `inflate.rs`, `fast_loop.rs` (new, optional), `bitreader.rs`, `config.rs`, `tables.rs` (a named `MAX_MATCH_LEN = 258` if absent), `stats.rs`, `lib.rs` (module declaration if a new file).
+- `crates/cleanflate/src/tests/`: `fast_loop.rs` (new), `config.rs` (new), `mod.rs`.
+- `docs/DESIGN.md`, `docs/PERF.md`, `docs/perf/P2-01-before.json`, `docs/perf/P2-01.json`.
+**Design constraints:** SPEC §6 M2, §5 (every bullet; this is where phase-1 P4-08 failed), §3. RFC 1951 §3.2.5 (lengths 3..258, distances 1..32768, extra bits) and §3.2.6. Global invariants apply. PT1–PT7.
+- **New tunables in config.rs (C8):**
+  - `FAST_LOOP_MIN_INPUT: usize = 16`: input bytes that must remain to start an iteration. It must be ≥ 8, so one word refill always succeeds.
+  - `FAST_LOOP_MIN_OUTPUT: usize = 258`: output bytes that must remain. It must be ≥ `MAX_MATCH_LEN`.
+  - Doc comments state each constraint and say "initial value; re-swept in P4-03". Never write these numbers elsewhere.
+- **Entry:** from `step` when `state == LitLen`, the path is Fast, and both margins hold.
+- **Each iteration:**
+  - Re-check both margins.
+  - Refill in bulk if fewer than 48 bits are buffered (15 + 5 + 15 + 13, the most one literal/length plus distance sequence needs), so no sub-step inside an iteration can run out of bits.
+  - A literal/length lookup (it cannot return NeedMoreBits with ≥ 48 bits buffered):
+    - A literal is written, and the loop continues.
+    - 256: consume it, set `state = next_block_state()`, and leave the loop.
+    - 257..=285: length = base + extra bits.
+      - Distance lookup. Codes 30/31 yield the same `Error::InvalidSymbol` the slow path returns, stored sticky in `State::Failed` the same way.
+      - Distance = base + extra. A distance beyond the history available yields exactly the `Error::InvalidDistance { distance, available }` values the slow path computes.
+      - Copy the whole match; it fits because the margin is ≥ 258.
+    - 286/287, or any Invalid lookup: `InvalidSymbol`.
+- **Locals:** keep the bit buffer, count and positions in locals and write them back on every exit. The exit state is `LitLen` (margin), the next-block state (EOB) or `Failed`. The outer loop then applies P1-01's exit rules unchanged.
+- **Equivalence:** errors must be the same `Error` value, returned in the same call, as on the Reference path (fastslow compares per call).
+- **Stats:** `fast_loop_entries`, `fast_loop_symbols`.
+- **DESIGN:** a PT7 entry explaining why the margins make mid-symbol exhaustion impossible, with a pointer to D-22's negative result.
+- **On any wrong result:** PT5, fixture first. If it is unresolved, block with the fixture, hypothesis and what was ruled out, and keep the fixture.
+**Acceptance tests:**
+- `crates/cleanflate/src/tests/fast_loop.rs`:
+  - `fast_loop_same_trace_as_reference_hand_built`:
+    - Streams: fixed and dynamic blocks; literals; overlapping and non-overlapping matches; EOB mid-input; several blocks; a stored block after a compressed one.
+    - Schedules: whole input, 1-byte output, 1-byte input, and 7/13.
+  - `fast_loop_input_margin_boundaries`: exactly FAST_LOOP_MIN_INPUT − 1, FAST_LOOP_MIN_INPUT and + 1 bytes left.
+  - `fast_loop_output_margin_boundaries`: 257, 258 and 259 bytes of room.
+  - `fast_loop_errors_identical_to_reference`: distance too far back, distance before stream start, fixed distance code 30, and fixed litlen 286/287. Each gives the same Error value at the same call index.
+  - `fast_loop_eob_then_trailer_consumed_exact`
+- `crates/cleanflate/src/tests/config.rs::fast_loop_margins_valid`: FAST_LOOP_MIN_INPUT ≥ 8 and FAST_LOOP_MIN_OUTPUT ≥ 258.
+- `make test` (including the `fixed-heavy-match-11k` regression seeds), `make proptest-3k`, `make fastslow-full` and `make proptest-10k` pass.
+**Out of scope:** Output-as-history and pattern doubling (P3-01, P3-02). Slow-path refactors (P2-03).
+**Verification:** PT1, `make lint && make test && make proptest-3k && make fastslow-full && make proptest-10k && make bomb`.
+**Depends on:** P1-01, P1-02
+
+### P2-02: Differential fuzz target: fast vs reference
+**Goal:** Add fuzz target `diff_fast_reference`. It decodes arbitrary bytes in all three formats on both paths, one-shot and under input-derived chunk schedules, and fails on any difference.
+**Files touched:**
+- `fuzz/`: `Cargo.toml` (the cleanflate dependency gains `features = ["test-hooks"]`; new `[[bin]]`), `Cargo.lock`, `fuzz_targets/diff_fast_reference.rs`, `seeds/diff_fast_reference/*` (≤ 10 small seeds copied from `testdata/regressions/` and `testdata/malformed/`), `README.md`.
+- `Makefile` (`FUZZ_TARGETS`), `.github/workflows/fuzz-nightly.yml` (a matrix entry).
+**Design constraints:** SPEC §5, §3 (fuzz targets keep passing), C9 (no libz in fuzz), C11 (names), CR3 (never install nightly or cargo-fuzz).
+- **Input layout:**
+  - `byte0 % 3` selects the format.
+  - `byte1` and `byte2` give the input and output chunk sizes, 1..=256.
+  - The rest is the stream.
+- `Options.max_output` is `const FUZZ_MAX_OUTPUT`, as in the other targets.
+- **Compare:**
+  - one-shot results (Debug of the Result);
+  - full per-call traces: consumed, produced and status, or the error's Debug string;
+  - `finish()`.
+- Panic on any difference, with a short description. The streaming loop has a no-progress guard.
+**Acceptance tests:**
+- `make fuzz-check` passes.
+- `make fuzz-smoke-diff_fast_reference FUZZ_SECONDS=120` has zero crashes, or is recorded as `NOT RUN: <reason>` if nightly or cargo-fuzz is unavailable. Record the exec count.
+**Out of scope:** Changing the other fuzz targets.
+**Verification:** `make fuzz-check && make fuzz-smoke-diff_fast_reference FUZZ_SECONDS=120`.
+**Depends on:** P0-04
+
+### P2-03: Copyable state in the slow path (gated)
+**Goal:** Gated per PT2. If the slow path still costs a significant share after the fast loop, remove the per-iteration `self.state.clone()` in `Inflater::step` by making `State` `Copy`. The sticky error moves into its own field.
+**Files touched:**
+- `crates/cleanflate/src/inflate.rs`.
+- `crates/cleanflate/src/tests/`: `inflate_state.rs` (new), `mod.rs`.
+- `docs/DESIGN.md`, `docs/PERF.md`, `docs/perf/P2-03-before.json`, `docs/perf/P2-03.json`.
+**Design constraints:** SPEC §4.4 H2, §6 M2 bullet 2. D-11 (errors are sticky and returned as a clone on every later call). Global invariants apply. PT1, PT2, PT4–PT7.
+- **Gate:** `Inflater::step` self time outside the fast loop plus State clone/drop frames. If they are below max(2%, 2x noise) of samples, record a negative result and stop.
+- This is a behaviour-preserving refactor used by both paths.
+**Acceptance tests:**
+- `crates/cleanflate/src/tests/inflate_state.rs::errors_remain_sticky_after_refactor`: every error kind, followed by three later calls.
+- Existing tests pass.
+- If gated out, the PERF.md entry is the deliverable.
+**Out of scope:** The fast loop.
+**Verification:** PT1/PT2, `make lint && make test && make proptest-3k`.
+**Depends on:** P0-05, P0-10
+
+### P2-04: M2 acceptance and push
+**Goal:** Run the M2 acceptance commands, including the full-corpus differential and the 10k proptest, audit repro preservation, commit the bench and push.
+**Files touched:** `docs/perf/P2-04.json`, `docs/PERF.md` (`### M2 acceptance (P2-04)`), `provenance/tool-log.snapshot.jsonl`, and fixes of ≤ 100 lines in Phase 2 files.
+**Design constraints:** SPEC §6 M2 acceptance (the fast-vs-slow differential passes on the whole corpus; the chunking proptest passes 10k; the repro rule was followed; the aggregate gain is measured), PT5, PT8.
+- Run:
+  - `make ci`;
+  - `make heavy`;
+  - `make fuzz-smoke` if nightly is available (otherwise NOT RUN with the reason);
+  - `make bench BENCH_ID=P2-04 BENCH_OUT=docs/perf/P2-04.json`;
+  - `make bench-compare` against `baseline.json` and `P1-05.json`.
+- PERF.md records:
+  - gains per framing and mode;
+  - REGRESSION lines;
+  - the repro audit: every `testdata/regressions/` fixture added in phase 2 so far, with its origin, and confirmation it passes;
+  - the fast-loop coverage (`fast_loop_symbols` share from `make bench-stats`).
+- `make provenance-snapshot`, commit, push.
+**Acceptance tests:** `make ci` and `make heavy` pass. The JSON is committed.
+**Out of scope:** New optimisation.
+**Verification:** `make ci && make heavy && make provenance-snapshot && git push -u origin HEAD`. Write `Manual check: NOT VERIFIED (human)` with:
+1. Confirm GitHub Actions `ci` is green.
+2. Run `make fuzz-long` or the nightly workflow, including `diff_fast_reference`, for the 1-hour signal.
+3. Review fast-loop code by hand, and mutation-sample it in review (SPEC §5).
+**Depends on:** P2-01
+
+## Phase 3 — M3 Output and match history
+
+### P3-01: Output as match history; window carried only across calls
+**Goal:** Write each output byte once. Within a call, the caller's output slice is the match history. The 32 KiB window keeps only history that must survive across calls, refreshed from the output tail on exit. Stored blocks and non-overlapping matches are copied as slices.
+**Files touched:**
+- `crates/cleanflate/src/`: `window.rs`, `inflate.rs`, the fast-loop file if separate, `stats.rs`.
+- `crates/cleanflate/src/tests/`: `history.rs` (new), `window.rs`, `fastpath.rs`, `mod.rs`.
+- `docs/DESIGN.md`, `docs/PERF.md`, `docs/perf/P3-01-before.json`, `docs/perf/P3-01.json`.
+**Design constraints:** SPEC §6 M3 bullets 1–2, §4.4 H3, §5, §3 (bounded memory; dictionaries per D-17; streaming contract). RFC 1951 §2 and §3.2.5 (a distance reaches back into all output so far, including bytes written earlier by the same match). Global invariants apply. PT1–PT7.
+- **`Window`:**
+  - Keeps the 32 KiB ring and `total`, the bytes ever appended including a preset dictionary.
+  - New `append(&mut self, data: &[u8])`: keeps the last ≤ 32 KiB, in at most two slice copies.
+  - New `read_back(&self, back: usize, dst: &mut [u8])`: copies `dst.len()` bytes starting `back` bytes before the end, in at most two pieces; `back ≥ dst.len()`.
+  - `available()` is unchanged.
+  - `prefill` uses `append`.
+  - The per-byte `push` leaves every hot path.
+- **History view within a call:** history is the window as of call entry followed by `output[..out_pos]`, and `history_available = min(window.available() + out_pos, WINDOW_SIZE)`. Distance validation uses it and reports it in `InvalidDistance { available }`; the numbers are the same as today.
+- **Fast match copy,** one function shared by the slow `Copy` state and the fast loop. For n = min(remaining, room), while bytes are left, with `cur` the current output position:
+  - If `dist > cur`: copy `min(left, dist − cur)` bytes from the window with `read_back(dist − cur, ..)`.
+  - Otherwise: `copy_within(cur − dist .. cur − dist + chunk, cur)` with `chunk = min(left, dist)`, which is non-overlapping by construction.
+- **Reference copy:** byte by byte through the same view: `output[cur − dist]` if `dist ≤ cur`, else `window.get_back(dist − cur)`.
+- Literals are written only to output. The stored copy is one `copy_from_slice` per call chunk on both paths; this is structural, not a switched technique.
+- **On every return from `step`** (NeedsInput, OutputFull, Done, Err), exactly once, in the shared exit helper: `window.append(&output[..out_pos])`. Only the last ≤ 32 KiB is copied.
+  - The zlib/gzip wrappers need no change.
+  - A 1-byte output buffer appends 1 byte per call.
+  - Preset dictionaries keep their semantics.
+- No new per-call heap allocation.
+- `window_bytes_written` now counts bytes appended at exit; this is the H3 evidence.
+- **DESIGN:** a PT7 entry superseding the copy mechanics of D-08/D-22. The semantics are unchanged.
+**Acceptance tests:**
+- `crates/cleanflate/src/tests/history.rs`:
+  - `history_copy_matches_vec_model`: compares against an independent model that keeps every byte in a plain `Vec<u8>` and copies byte by byte.
+    - Window fill states: empty, 100 bytes, exactly 32768, and wrapped after 100000.
+    - `out_pos`: 0..=40 and 1000.
+    - dist: 1..=40, plus {255, 256, 257, 32767, 32768} where available.
+    - len: sampled from 3..=258.
+    - Room: {1, 7, len}.
+  - `window_append_wraps_and_truncates`: appends of 0, 1, 32767, 32768, 32769 and 100000 bytes at various fill states, against the model.
+  - `dictionary_with_one_byte_output`: a hand-built raw stream whose matches reach into a preset dictionary, output chunks of 1. Fast and Reference traces are identical and the output is correct.
+  - `match_resumes_across_calls_after_window_refresh`
+  - `decompressor_size_not_grown`: `size_of::<Decompressor>()` ≤ the pre-change size + 1024. Measure the pre-change size first and write it in the test as a literal, with a comment.
+- `fastpath.rs` is updated.
+- `make test`, `make proptest-3k`, `make fastslow-full` and `make bomb` pass.
+**Out of scope:** Pattern doubling (P3-02). One-shot sizing (P3-03).
+**Verification:** PT1, `make lint && make test && make proptest-3k && make fastslow-full && make bomb`.
+**Depends on:** P0-05, P0-06
+
+### P3-02: Overlapping matches by pattern doubling
+**Goal:** On the Fast path, expand overlapping (distance < length) matches by copying the growing repeated pattern in doubling steps instead of distance-sized chunks.
+**Files touched:**
+- `crates/cleanflate/src/`: `window.rs` or `inflate.rs` (wherever the match-copy function lives), `stats.rs`.
+- `crates/cleanflate/src/tests/history.rs`.
+- `docs/DESIGN.md`, `docs/PERF.md`, `docs/perf/P3-02-before.json`, `docs/perf/P3-02.json`.
+**Design constraints:** SPEC §6 M3 bullet 2, §4.4 H4. RFC 1951 §3.2.5 (overlap semantics). Global invariants apply. PT1–PT7. Fast only; the Reference copy is unchanged.
+- Once the first `dist` bytes of the pattern sit at `[s, s + dist)` in output, repeatedly `copy_within(s .. s + k, s + k)` with k starting at `dist` and doubling, capped by the remaining length. Each step is non-overlapping and preserves the period `dist`. Derive and state this in DESIGN.
+- For `dist == 1`, `fill` is allowed.
+- A pattern whose first bytes come from the window is first materialised in output, then doubled.
+**Acceptance tests:**
+- `crates/cleanflate/src/tests/history.rs`:
+  - `pattern_doubling_matches_model_exhaustive`: dist 1..=64 × len 3..=258 × `out_pos` {0 (source in the window), dist, 1000} × room {1, 13, len}.
+  - `pattern_doubling_straddling_window`
+- `make test`, `make proptest-3k` and `make fastslow-full` pass.
+**Out of scope:** Non-overlapping copies (done in P3-01).
+**Verification:** PT1, `make lint && make test && make proptest-3k && make fastslow-full`.
+**Depends on:** P3-01
+
+### P3-03: One-shot output sizing from hints
+**Goal:** Size the one-shot output buffer from available hints so `decompress_with` rarely regrows, always within the output limit and a preallocation cap, and move the growth-floor literal into config.rs.
+**Files touched:**
+- `crates/cleanflate/src/`: `stream.rs`, `config.rs`, `stats.rs`.
+- `crates/cleanflate/src/tests/`: `oneshot_sizing.rs` (new), `mod.rs`.
+- `docs/DESIGN.md`, `docs/PERF.md`, `docs/perf/P3-03-before.json`, `docs/perf/P3-03.json`.
+**Design constraints:** SPEC §6 M3 bullet 3, §4.4 H6, §3 (bounded memory; the bomb test unchanged). D-13 and D-25: the growth loop and its empty-region backstop stay. RFC 1952 §2.3.1 (ISIZE). Global invariants apply. PT1, PT4–PT7.
+- **New tunables in config.rs (C8):**
+  - `ONESHOT_GROWTH_FLOOR: usize = 32_768`, replacing the literal in `next_len`.
+  - `ONESHOT_INITIAL_RATIO: usize = 4`.
+  - `ONESHOT_MAX_PREALLOC: usize = 64 << 20`.
+- **`pub(crate) fn initial_len(format, input: &[u8], max_output: u64) -> usize`:**
+  - Gzip with `input.len() >= 18`: the last 4 bytes as a little-endian u32. This is the last member's ISIZE, used only as a hint; multi-member streams and trailing data make it unreliable.
+  - Otherwise: `input.len().saturating_mul(ONESHOT_INITIAL_RATIO)`.
+  - The result is capped by `max_output` and by `ONESHOT_MAX_PREALLOC`.
+  - It only sets the first allocation; the existing geometric growth continues from there. Output is never affected.
+- **DESIGN:** a `[perf]` entry explaining why a hostile ISIZE cannot force a large allocation.
+**Acceptance tests:**
+- `crates/cleanflate/src/tests/oneshot_sizing.rs`:
+  - `initial_len_gzip_uses_isize`
+  - `initial_len_capped_by_limit_and_prealloc`
+  - `initial_len_raw_zlib_ratio`
+  - `initial_len_tiny_or_hostile_inputs`: empty, fewer than 18 bytes, and ISIZE = u32::MAX.
+  - `next_len_uses_config_floor`
+  - `gzip_multi_member_hint_too_small_still_correct`: a hand-built two-member gzip with literal CRCs (C16).
+- `make bomb` passes.
+- `oneshot_resizes` from `make bench-stats`, before and after, is recorded in PERF.md.
+**Out of scope:** Streaming-API changes.
+**Verification:** PT1, `make lint && make test && make proptest-3k && make bomb`.
+**Depends on:** P0-07
+
+### P3-04: M3 acceptance and push
+**Goal:** Run the M3 acceptance commands, report streaming throughput separately, confirm the bomb test and memory bounds, commit the bench and push.
+**Files touched:** `docs/perf/P3-04.json`, `docs/PERF.md` (`### M3 acceptance (P3-04)`), `provenance/tool-log.snapshot.jsonl`, and fixes of ≤ 100 lines in Phase 3 files.
+**Design constraints:** SPEC §6 M3 acceptance (as M2, plus streaming throughput reported separately; bomb test and memory bounds unchanged), §4.1 streaming target (≥ 60%), PT5, PT8.
+- Run:
+  - `make ci`;
+  - `make heavy`;
+  - `make bench BENCH_ID=P3-04 BENCH_OUT=docs/perf/P3-04.json`;
+  - `make bench-compare` against `baseline.json` and `P2-04.json`.
+- PERF.md records:
+  - a one-shot table and a separate streaming table (Silesia, level 6, all framings) with the 60% streaming target marked MET or NOT MET;
+  - the `make bomb` result;
+  - the `decompressor_size_not_grown` value;
+  - REGRESSION lines.
+- `make provenance-snapshot`, commit, push.
+**Acceptance tests:** `make ci`, `make heavy` (including bomb) pass. The JSON is committed.
+**Out of scope:** New optimisation.
+**Verification:** `make ci && make heavy && make provenance-snapshot && git push -u origin HEAD`. Write `Manual check: NOT VERIFIED (human)` with:
+1. Confirm GitHub Actions `ci` is green.
+2. Watch peak RSS of `make bomb` (for example `/usr/bin/time -v`) against a phase-1 checkout, to confirm memory bounds are unchanged.
+3. Review the history/copy DESIGN entries.
+**Depends on:** P3-01
+
+## Phase 4 — M4 Checksums, wrappers and tuning
+
+### P4-01: CRC-32 several bytes at a time
+**Goal:** Compute CRC-32 several bytes per step from multiple tables derived from the RFC 1952 polynomial, generated by `const fn`, and verified against the existing byte-wise implementation and the oracle.
+**Files touched:**
+- `crates/cleanflate/src/`: `checksum.rs`, `config.rs`.
+- `crates/cleanflate/src/tests/checksum.rs`, `crates/oracle/tests/checksums.rs`.
+- `docs/DESIGN.md`, `docs/PERF.md`, `docs/perf/P4-01-before.json`, `docs/perf/P4-01.json`.
+**Design constraints:** SPEC §6 M4 bullet 1, §2.1, §4.4 H6. RFC 1952 §8 (reflected polynomial 0xEDB88320) and D-10. Global invariants apply. PT1, PT4–PT7.
+- No `[]` indexing: use `get` with `u8`-derived indices, whose range the optimiser can prove, so it drops the check.
+- No `assert!` in const fns.
+- No lazily-initialised statics (rule `no-global-state-in-cleanflate`); build the tables in a `const`/`static` by `const fn`.
+- **New tunable:** `CRC32_SLICES: usize = 8` in config.rs; it must be ≥ 4.
+- **Tables:** `[[u32; 256]; CRC32_SLICES]`.
+  - Table 0 is today's table.
+  - Table k maps byte b to the CRC register after processing b followed by k zero bytes, so it follows from table k−1 by one more zero-byte step.
+  - Derive and prove this in DESIGN from the CRC's linearity over GF(2), in the project's own words.
+- **Update:**
+  - Process `chunks_exact(CRC32_SLICES)`, folding the current register into the first 4 bytes of each chunk.
+  - The tail uses the byte-wise step.
+  - Keep the byte-wise update as `pub(crate)` for the tail and as the test reference.
+- The public `Crc32`/`crc32` API is unchanged.
 **Acceptance tests:**
 - `crates/cleanflate/src/tests/checksum.rs`:
-  - `adler32_empty_is_one`
-  - `adler32_wikipedia` (`0x11E60398`)
-  - `crc32_empty_is_zero`
-  - `crc32_check_value_123456789` (`0xCBF43926`)
-  - `adler32_incremental_equals_oneshot`
-  - `crc32_incremental_equals_oneshot`
-  - `adler32_large_buffer_of_ff` (1 MiB of 0xFF; this exercises the modulus)
-- `crates/oracle/tests/checksums.rs`:
-  - `adler32_matches_oracle_random_buffers`
-  - `crc32_matches_oracle_random_buffers` (lengths 0..=10,000, 200 buffers, SplitMix64 seeded)
-**Out of scope:** Wrapper parsing (Phase 3). Performance tuning.
-**Verification:** `make lint && make test && make crate-checks`.
-**Depends on:** P0-01, P1-01
+  - `crc32_slices_match_bytewise`: every length 0..=64 plus random lengths to 4096, start offsets 0..=7, and split updates.
+  - `crc32_tables_follow_zero_byte_recurrence`
+  - `crc32_slices_config_valid`
+- `crates/oracle/tests/checksums.rs::crc32_matches_oracle_long`: random buffers up to 1 MiB, updated incrementally in random pieces.
+- `Measurement:` the gzip-vs-raw aggregate overhead before and after, from bench-quick.
+**Out of scope:** Adler-32 (P4-02).
+**Verification:** PT1, `make lint && make test && make proptest-3k`.
+**Depends on:** P0-09
 
-### P1-05: Error types, options, config constants, RFC tables, DESIGN.md skeleton
-**Goal:** Add the typed error model, the options and config constants, and the RFC 1951 constant tables, and start `docs/DESIGN.md` with the design-check script.
-**Files touched:** `crates/cleanflate/src/error.rs`, `crates/cleanflate/src/config.rs`, `crates/cleanflate/src/options.rs`, `crates/cleanflate/src/tables.rs`, `crates/cleanflate/src/lib.rs`, `crates/cleanflate/src/tests/{mod.rs,error.rs,tables.rs}`, `docs/DESIGN.md`, `tools/ci/design-check.sh`, `tools/ci/tests/design_check_test.sh`, `Makefile`.
-**Design constraints:** SPEC §3.3 (Errors, Limits, trailing data) and §3.4. RFC 1951 §3.2.5, §3.2.6 and §3.2.7.
-- **`error.rs`:**
-  - `pub enum Error` (`#[non_exhaustive]`, `Debug, Clone, PartialEq, Eq`) with exactly the variants:
-    - `BadHeader(HeaderError)`
-    - `PresetDictionaryRequired { dict_id: u32 }`
-    - `DictionaryMismatch { expected: u32, actual: u32 }`
-    - `BadBlockType`
-    - `InvalidStoredLength { len: u16, nlen: u16 }`
-    - `InvalidHuffmanTable(HuffmanError)`
-    - `InvalidSymbol`
-    - `InvalidDistance { distance: u32, available: u64 }`
-    - `ChecksumMismatch { kind: ChecksumKind, expected: u32, actual: u32 }`
-    - `Truncated`
-    - `TrailingData { offset: u64 }`
-    - `OutputLimitExceeded { limit: u64 }`
-  - `pub enum HeaderError { ZlibFcheck, ZlibCompressionMethod(u8), ZlibWindowSize(u8), GzipMagic, GzipCompressionMethod(u8), GzipReservedFlags(u8) }`
-  - `pub enum HuffmanError { OverSubscribed, Incomplete, TooManyLengthCodes, RepeatWithoutPrevious, RepeatOverflow, MissingEndOfBlock }`
-  - `pub enum ChecksumKind { Adler32, Crc32, Isize, GzipHeaderCrc }`
-  - `pub enum ErrorKind` with one unit variant per `Error` variant, `Error::kind()`, and `ErrorKind::as_str()` returning the variant name (e.g. `"InvalidHuffmanTable"`).
-  - `Display` and `std::error::Error` impls.
-  - Mark everything `#[non_exhaustive]` except ErrorKind.
-- **`config.rs`** (the only place tunable numbers appear, C8):
-  - `pub const DEFAULT_MAX_OUTPUT: u64 = 1 << 30;`
-  - `pub const DEFAULT_MAX_GZIP_FIELD: usize = 65_536;`
-  - Re-export both from lib.rs.
-- **`options.rs`:**
-  - `#[non_exhaustive] pub enum Format { Raw }` (Zlib and Gzip are added later)
-  - `pub enum TrailingData { Reject, Allow }`, with default Reject
-  - `pub struct Options { pub max_output: u64, pub trailing: TrailingData, pub dictionary: Option<Vec<u8>>, pub max_gzip_field: usize }`, whose `Default` uses the config constants
-- **`tables.rs`** (`pub(crate)`):
-  - `LENGTH_BASE`/`LENGTH_EXTRA` (29 entries, codes 257–285)
-  - `DIST_BASE`/`DIST_EXTRA` (30 entries)
-  - `CODE_LENGTH_ORDER` (19)
-  - `WINDOW_SIZE = 32768`, `MAX_MATCH = 258`, `END_OF_BLOCK = 256`
-  - `fixed_litlen_lengths() -> [u8; 288]` and `fixed_dist_lengths() -> [u8; 32]` per §3.2.6. All 32 fixed distance codes have length 5; codes 30/31 exist but are invalid if decoded.
-  - Derive every value from docs/rfc/rfc1951.txt.
-- **`docs/DESIGN.md`** (created here):
-  - A title, a "How to read" note, and one `### D-NN: <title>` block per decision, each with lines `RFC: <section or "n/a (API)">`, `Decision:` and `Rationale:`.
-  - Seed decisions: D-01 error model, D-02 output limit default, D-03 trailing-data policy, D-04 single resumable core, D-05 tables source.
-  - Add `D-10: checksums`, citing RFC 1950 §2.2/§9 and RFC 1952 §8 as used by `checksum.rs` from P1-04.
-- **`tools/ci/design-check.sh`:** every `### D-` heading in docs/DESIGN.md is followed, before the next heading, by a line starting `RFC:`. Exits 1 otherwise. Replace the `design-check` Makefile stub with it, and add it to `ci`.
-- C1–C10 apply.
+### P4-02: Adler-32 revisit (gated)
+**Goal:** Gated per PT2. If zlib framing still carries a significant Adler-32 cost, speed up `Adler32::update` within the proven deferred-modulo bound (D-23).
+**Files touched:**
+- `crates/cleanflate/src/checksum.rs`, `crates/cleanflate/src/tests/checksum.rs`, `crates/oracle/tests/checksums.rs`.
+- `docs/DESIGN.md`, `docs/PERF.md`, `docs/perf/P4-02-before.json`, `docs/perf/P4-02.json`.
+**Design constraints:** SPEC §6 M4 bullet 2. RFC 1950 §2.2 and §8.2. D-23. Global invariants apply. PT1–PT7.
+- **Gate:** Adler functions' share in the `PROFILE_FRAMING=rfc1950` profile. Below max(2%, 2x noise), record a negative result and stop.
+- **Allowed:** fixed-size sub-blocks with `chunks_exact`, so the compiler can unroll or auto-vectorise, still reducing once per `ADLER_NMAX`.
+- Any change to the bound must be re-derived in DESIGN.
 **Acceptance tests:**
-- `crates/cleanflate/src/tests/error.rs`:
-  - `every_variant_has_distinct_kind`
-  - `kind_names_match_variant_names`
-  - `display_is_nonempty_for_all_variants`
-- `crates/cleanflate/src/tests/tables.rs`:
-  - `length_table_spot_checks_rfc_3_2_5` (257→3/0, 265→11/1, 284→227/5, 285→258/0)
-  - `distance_table_spot_checks` (0→1/0, 4→5/1, 29→24577/13)
-  - `length_ranges_contiguous`
-  - `distance_ranges_contiguous`
-  - `fixed_litlen_lengths_rfc_3_2_6`
-  - `code_length_order_rfc_3_2_7`
-- `tools/ci/tests/design_check_test.sh`:
-  - `case_ok`
-  - `case_missing_rfc_line_fails`
-**Out of scope:** Decoding logic. Zlib/Gzip format variants.
-**Verification:** `make lint && make test && make design-check && make crate-checks`.
-**Depends on:** P0-01
+- `crates/cleanflate/src/tests/checksum.rs`:
+  - `adler32_bound_worst_case`, still passing
+  - `adler32_chunked_matches_bytewise`: lengths 0..=20000, including multiples of NMAX ± 1, and split updates.
+- `crates/oracle/tests/checksums.rs::adler32_matches_oracle_long`
+- If gated out, the PERF.md entry is the deliverable.
+**Out of scope:** CRC-32.
+**Verification:** PT1/PT2, `make lint && make test`.
+**Depends on:** P0-09, P0-10
 
-### P1-06: Resumable bit reader and 32 KiB window
-**Goal:** Implement the LSB-first bit reader and the 32 KiB history window that the resumable inflater is built on.
-**Files touched:** `crates/cleanflate/src/bitreader.rs`, `crates/cleanflate/src/window.rs`, `crates/cleanflate/src/lib.rs`, `crates/cleanflate/src/tests/{mod.rs,bitreader.rs,window.rs}`, `docs/DESIGN.md`.
-**Design constraints:** RFC 1951 §3.1.1 (bit packing) and §2 (window). SPEC §5 M1. C1–C10 apply.
-- **`BitReader`** (`pub(crate)`) holds a `u64` buffer and a `u32` bit count. Methods:
-  - `available()`
-  - `fill(&mut self, input: &[u8], pos: &mut usize, need: u32) -> bool`: loads whole bytes one at a time **only while** `available < need` and input remains. It returns whether `need` is satisfied and must never load a byte once `need` is met.
-  - `peek(n) -> u32` (n ≤ 32; unavailable high bits read as 0)
-  - `consume(n)`
-  - `take(input, pos, n) -> Option<u32>` (fill, peek and consume; `None` leaves state unchanged apart from bytes loaded)
-  - `align_to_byte()` (drops `available % 8` bits)
-  - Invariant, documented in DESIGN.md D-06: after each completed decode step the buffer holds ≤ 7 bits, so the bytes consumed always equal the exact stream length.
-- **`Window`** (`pub(crate)`) holds a 32,768-byte ring (`tables::WINDOW_SIZE`) and `total: u64` (bytes ever pushed). Methods:
-  - `push(u8)`
-  - `available() -> usize` (min(total, 32768))
-  - `get_back(distance) -> Option<u8>` (distance 1 = last byte)
-  - `prefill(&[u8])` (keeps the last 32,768 bytes)
-  - `copy_match(distance, len, out: &mut [u8]) -> usize`: writes up to `out.len()` bytes, pushing each into the ring, byte by byte, so overlapping copies (distance < len) repeat correctly. Returns the count written.
-- Record DESIGN.md D-06 (bit order and the ≤7-bit invariant) and D-07 (window ring and overlap semantics).
+### P4-03: Re-sweep tunables on the final code
+**Goal:** Re-measure every performance tunable that exists on the final code, choose each value by the noise rule, and cite the measurements in PERF.md and config.rs.
+**Files touched:** `crates/cleanflate/src/config.rs`, `docs/PERF.md`, `docs/perf/P4-03/*.json`.
+**Design constraints:** SPEC §6 M4 bullet 3, §3 (tunables only in config.rs, with the measurement that chose them), §4.2 (noise rule). C8, PT8.
+- **Keys and candidates** (sweep only keys that exist):
+  - `LITLEN_TABLE_BITS` {9, 10, 11, 12}
+  - `DIST_TABLE_BITS` {7, 8, 9, 10}
+  - `FAST_LOOP_MIN_INPUT` {8, 16, 32}
+  - `FAST_LOOP_MIN_OUTPUT` {258, 320, 512}
+  - `CRC32_SLICES` {4, 8, 16}
+  - `ONESHOT_INITIAL_RATIO` {2, 4, 8}
+- **Procedure:**
+  - Sweep one key at a time with the others at their current values.
+  - For each candidate, edit config.rs, then run `make bench-quick BENCH_ID=P4-03-<key>-<value> BENCH_OUT=docs/perf/P4-03/<key>-<value>.json`.
+  - `make bench-compare` each candidate against the current default's run.
+  - The relevant aggregates are gzip for CRC and raw for the rest, Silesia level 6.
+  - A quick `WIN` must be confirmed by `make bench` (full, background) against the latest milestone full JSON.
+  - Change a default only if the full comparison is also a `WIN` with no REGRESSION. Otherwise keep it and record a measured "no change".
+- **Safety bounds, not swept:** `DEFAULT_MAX_OUTPUT`, `DEFAULT_MAX_GZIP_FIELD`, `DEFAULT_MAX_GZIP_HEADERS`, `ONESHOT_GROWTH_FLOOR` and `ONESHOT_MAX_PREALLOC`. Say so in PERF.md.
+- **Results:**
+  - Each tunable's doc comment cites its JSON and result.
+  - PERF.md `### Tunables (P4-03)` has a table of key, candidates, winner, delta and verdict.
+  - Run `make test && make proptest-3k` on the final values.
 **Acceptance tests:**
-- `crates/cleanflate/src/tests/bitreader.rs`:
-  - `reads_lsb_first` (byte `0b1010_1100`: take 3 → `0b100`, take 5 → `0b10101`)
-  - `value_spanning_bytes`
-  - `fill_loads_only_needed_bytes`
-  - `take_short_returns_none`
-  - `align_drops_partial_byte`
-  - `peek_pads_with_zero`
-- `crates/cleanflate/src/tests/window.rs`:
-  - `push_and_get_back`
-  - `wraps_after_32768`
-  - `distance_beyond_available_is_none`
-  - `overlap_distance_1_repeats`
-  - `overlap_distance_3` (`abc` + copy(3, 7) → `abcabcabca`)
-  - `copy_respects_out_len`
-  - `prefill_keeps_last_32k`
-**Out of scope:** Huffman decoding. Fast bulk refill (P4-08).
-**Verification:** `make lint && make test && make crate-checks`.
-**Depends on:** P1-05
+- Existing boundary tests (`fast_loop_margins_valid`, `crc32_slices_config_valid`, `table_widths_sweepable`) pass on the final values.
+- `make test` and `make proptest-3k` pass.
+**Out of scope:** Code changes outside config.rs.
+**Verification:** `make lint && make test && make proptest-3k`.
+**Depends on:** P0-09
 
-### P1-07: Canonical Huffman construction and bit-serial decoder
-**Goal:** Build canonical Huffman codes from code lengths and decode symbols bit by bit, resumably.
-**Files touched:** `crates/cleanflate/src/huffman.rs`, `crates/cleanflate/src/lib.rs`, `crates/cleanflate/src/tests/{mod.rs,huffman.rs,bitwriter.rs}`, `docs/DESIGN.md`.
-**Design constraints:** RFC 1951 §3.2.2 (canonical codes) and §3.1.1 (codes packed MSB-first). C1–C10 apply.
-- **`Huffman`** (`pub(crate)`) holds `counts: [u16; 16]` and `symbols` ordered by (length, symbol value).
-- **`from_lengths(lengths: &[u8]) -> Result<Huffman, HuffmanError>`:**
-  - Lengths are 0–15.
-  - In this task, reject only over-subscription (`HuffmanError::OverSubscribed`). Incomplete-set rules arrive in P2-01; leave a `// P2-01` note.
-- **`decode(&self, br: &BitReader) -> Decoded` where `enum Decoded { Symbol { symbol: u16, len: u32 }, NeedMoreBits, Invalid }`:**
-  - Walks lengths 1..=15, building the code MSB-first from successive stream bits using `peek`, and stops at the first length where the code falls inside that length's range.
-  - If `available()` bits run out first → `NeedMoreBits`. A 15-bit miss → `Invalid`.
-  - It does not consume. The caller consumes `len` on success, or calls `fill(available+1)` on `NeedMoreBits`.
-- **`src/tests/bitwriter.rs`:** a test-only `BitWriter` with `write_bits(value, n)` (LSB-first), `write_code(code, len)` (MSB-first), `align()` and `finish() -> Vec<u8>`. Later tests reuse it.
-- Record DESIGN.md D-08 (canonical construction and bit-serial decode).
-**Acceptance tests:** `crates/cleanflate/src/tests/huffman.rs`:
-- `rfc_example_abcdefgh` (lengths 3,3,3,3,3,2,4,4 for A–H: F=00, A=010, B=011, C=100, D=101, E=110, G=1110, H=1111)
-- `fixed_litlen_codes_rfc_3_2_6` (0→00110000, 143→10111111, 144→110010000, 255→111111111, 256→0000000, 279→0010111, 280→11000000, 287→11000111)
-- `oversubscribed_rejected` ([1,1,1])
-- `need_more_bits_when_short`
-- `decode_does_not_consume`
-**Out of scope:** Validation of incomplete sets (P2-01). Table-driven decoding (P2-03).
-**Verification:** `make lint && make test && make crate-checks`.
-**Depends on:** P1-06
-
-### P1-08: Inflater state machine with block headers and stored blocks
-**Goal:** Create the resumable raw-DEFLATE `Inflater` that decodes block headers and stored blocks.
-**Files touched:** `crates/cleanflate/src/inflate.rs`, `crates/cleanflate/src/lib.rs`, `crates/cleanflate/src/tests/{mod.rs,inflate_stored.rs}`, `docs/DESIGN.md`.
-**Design constraints:** RFC 1951 §3.2.3 and §3.2.4. SPEC §3.2 and §3.3. C1–C10 apply.
-- **API** (`pub(crate)`):
-  - `Inflater::new()`
-  - `step(&mut self, input: &[u8], output: &mut [u8]) -> Result<(usize, usize, InflateStatus), Error>`, returning (consumed, produced, status)
-  - `enum InflateStatus { NeedsInput, OutputFull, Done }`
-  - `is_done()`, `total_out() -> u64`
-- **Step contract:**
-  - The state machine runs atomic sub-steps. If a sub-step lacks bits and `input` is exhausted → `NeedsInput`, with all of `input` consumed into the bit buffer and the state positioned to retry the sub-step.
-  - Output space 0 when a byte must be written → `OutputFull`.
-  - After the final block ends → `Done`, with the partial last byte discarded and `consumed` counting exactly through that byte.
-  - Errors are sticky: store the error, and return a clone of it on every later call.
-- **States:** `BlockHeader` (3 bits: BFINAL, BTYPE), `StoredLen` (align to byte, then read LEN and NLEN as 4 bytes little-endian), `StoredCopy { remaining }`, `Done`, `Failed(Error)`.
-- **Block types and errors:**
-  - LEN ≠ !NLEN → `Error::InvalidStoredLength { len, nlen }`.
-  - BTYPE 11 → `Error::BadBlockType`.
-  - BTYPE 10: return `Error::BadBlockType` with the comment `// replaced by P2-02 dynamic blocks`.
-  - BTYPE 01: implemented in P1-09; until then, return `Error::BadBlockType` with `// replaced by P1-09`.
-- **Stored copy:** copies min(remaining, input left, output left) bytes into `output` and the `Window`.
-- Record DESIGN.md D-09 (the step contract).
-**Acceptance tests:** `crates/cleanflate/src/tests/inflate_stored.rs`, where "run" helpers drive `step` to completion:
-- `stored_empty_final_block` (`01 00 00 ff ff` → empty, Done, consumed 5)
-- `stored_hello`
-- `stored_two_blocks_second_final`
-- `stored_nlen_mismatch_error`
-- `btype3_is_bad_block_type`
-- `stored_one_byte_input_and_output_chunks_same_output`
-- `truncated_input_returns_needs_input`
-- `consumed_exact_with_trailing_bytes` (appended junk is not consumed)
-- `error_is_sticky`
-**Out of scope:** Fixed/dynamic Huffman blocks. Public API (P1-10).
-**Verification:** `make lint && make test && make crate-checks`.
-**Depends on:** P1-05, P1-06
-
-### P1-09: Fixed-Huffman blocks, length/distance decoding and window copies
-**Goal:** Decode BTYPE 01 blocks: literals, end-of-block, and length/distance pairs copied through the window, including overlapping copies.
-**Files touched:** `crates/cleanflate/src/inflate.rs`, `crates/cleanflate/src/tests/{mod.rs,inflate_fixed.rs}`, `docs/DESIGN.md`.
-**Design constraints:** RFC 1951 §3.2.5, §3.2.6 and §3.2.3 (decoding loop). SPEC §5 M1. C1–C10 apply.
-- **Tables:** build the fixed tables once per Inflater via `Huffman::from_lengths` with `tables::fixed_litlen_lengths()` (288) and `fixed_dist_lengths()` (32).
-- **States:** `LitLen`, `LenExtra { sym }`, `Dist { len }`, `DistExtra { len, dsym }`, `Copy { len, dist }`. Each state is atomic and resumable using the `decode`/`NeedMoreBits` protocol from P1-07.
-- **Symbols:**
-  - 0–255: literal
-  - 256: end of block → `BlockHeader`, or `Done` if BFINAL
-  - 257–285: length
-  - 286/287: `Error::InvalidSymbol`
-  - Distance symbols 30/31: `Error::InvalidSymbol`
-  - Code 284 with extra value 31 → length 258, accepted (DESIGN.md D-11 records the interpretation).
-- **Distance check:** distance > `window.available()` → `Error::InvalidDistance { distance, available }`.
-- **Copy** writes through `Window::copy_match`, resuming from `Copy { remaining }` on `OutputFull`.
-- Use checked or saturating arithmetic wherever a sum could overflow.
-**Acceptance tests:** `crates/cleanflate/src/tests/inflate_fixed.rs` (streams built with the test BitWriter):
-- `fixed_literals_abc`
-- `fixed_empty_block` (`03 00`)
-- `fixed_overlapping_match_distance_1`
-- `fixed_match_distance_3_len_10`
-- `fixed_length_284_extra_31_is_258`
-- `fixed_symbol_286_invalid`
-- `fixed_distance_code_30_invalid`
-- `distance_before_stream_start_invalid`
-- `max_distance_32768_ok` (a stored block of 32,768 bytes, then a fixed block with distance 32768)
-- `distance_one_past_available_invalid` (distance 5 after 4 output bytes)
-- `fixed_one_byte_chunks_same_output`
-- `stored_then_fixed_multi_block`
-**Out of scope:** Dynamic blocks. The public API.
-**Verification:** `make lint && make test && make crate-checks`.
-**Depends on:** P1-07, P1-08
-
-### P1-10: Public raw API, Decompressor, output limit, trailing policy and early invariants
-**Goal:** Expose `inflate`, `decompress_with` and the streaming `Decompressor` for raw DEFLATE, with the output limit and trailing-data policy, plus the first chunking-invariance and no-panic tests.
-**Files touched:** `crates/cleanflate/src/stream.rs`, `crates/cleanflate/src/lib.rs`, `crates/cleanflate/src/tests/{mod.rs,stream_raw.rs,invariants.rs}`, `docs/DESIGN.md`.
-**Design constraints:** SPEC §3.3 (one-shot, streaming, limits, errors, trailing data) and §1 (no panics, bounded memory). C1–C10 apply.
-- **Public API:**
-  - `pub struct Decompressor`, `pub struct Progress { pub consumed: usize, pub produced: usize, pub status: Status }`, `pub enum Status { NeedsInput, OutputFull, Done }`
-  - `pub struct Decoded { pub data: Vec<u8>, pub consumed: usize }`. The `gzip_members` field is added in P3-03.
-  - `Decompressor::new(format: Format, options: Options)`
-  - `decompress(&mut self, input: &[u8], output: &mut [u8]) -> Result<Progress, Error>`
-  - `finish(&mut self) -> Result<(), Error>`
-  - `total_in() -> u64`, `total_out() -> u64`, `trailing_start() -> Option<u64>`
-  - `pub fn inflate(input: &[u8]) -> Result<Vec<u8>, Error>`
-  - `pub fn decompress_with(format: Format, input: &[u8], options: &Options) -> Result<Decoded, Error>`
-- **Streaming rules:**
-  - With status `NeedsInput`, all input was consumed.
-  - Input may be left unconsumed only with `OutputFull` or `Done`.
-  - Errors are sticky.
-  - `finish()` returns `Ok` if Done, else `Err(Truncated)`.
-- **Output limit:** pass the inflater at most `max_output - total_out` bytes of `output`. If the inflater reports `OutputFull` while that allowance was the binding limit (allowance < output.len(), or allowance == 0), return `Err(OutputLimitExceeded { limit })`. A stream of exactly `max_output` bytes succeeds, because EOB needs no output space.
-- **Trailing data (Raw):**
-  - `Reject`: any input byte after Done, in this call or a later one → `Err(TrailingData { offset })`, where offset is the absolute input offset of the first trailing byte.
-  - `Allow`: stop, and set `trailing_start()`.
-- **One-shot (`decompress_with`):**
-  - Drives a Decompressor with the whole input and a `Vec` that grows by `max(len, 32768)`, capped so its length never exceeds `max_output`.
-  - Write into the zero-extended tail with `resize`, then `truncate` to what was produced.
-  - Calls `finish()` at the end.
-  - Put growth in a pure `pub(crate) fn next_len(len: usize, limit: u64) -> usize`.
-  - Empty input → `Err(Truncated)`.
-- Record DESIGN.md decisions D-12 (streaming contract), D-02 update (limit semantics) and D-03 update.
-**Acceptance tests:**
-- `crates/cleanflate/src/tests/stream_raw.rs`:
-  - `inflate_stored_hello`
-  - `inflate_fixed_abc`
-  - `limit_exact_ok`
-  - `limit_plus_one_err`
-  - `next_len_never_exceeds_limit`
-  - `trailing_reject_default`
-  - `trailing_allow_reports_offset`
-  - `trailing_after_done_in_later_call_rejected`
-  - `empty_input_truncated`
-  - `finish_before_done_truncated`
-  - `error_is_sticky`
-  - `needs_input_consumes_everything`
-- `crates/cleanflate/src/tests/invariants.rs`:
-  - `chunking_invariance_deterministic`: ≥ 8 hand-built valid streams (stored, fixed, multi-block, overlapping copies) × 200 chunk schedules from a test-local xorshift with fixed seeds, including all-1-byte input and output. The result and output must equal one-shot.
-  - `garbage_never_panics`: 20,000 pseudo-random buffers of length 0–512 through `inflate` and through 1-byte streaming, which must return without panicking.
-**Out of scope:** Zlib/gzip. proptest (P4-02). Dictionary.
-**Verification:** `make lint && make test && make crate-checks`.
-**Depends on:** P1-09
-
-### P1-11: Conformance harness and M1 conformance test
-**Goal:** Add the manifest-driven conformance harness in `crates/oracle` and the M1 test decoding every level-0 and fixed-strategy raw stream byte-identically.
-**Files touched:** `crates/oracle/src/conformance.rs`, `crates/oracle/src/lib.rs`, `crates/oracle/Cargo.toml`, `crates/oracle/tests/conformance.rs`, `Makefile`.
-**Design constraints:** SPEC §4 and §5 M1 acceptance. C13 applies: no silent skips.
-- **Harness:**
-  - `load_manifest()`.
-  - `selected(filter) -> Vec<Entry>` limited to the tier from env `CLEANFLATE_TIER` (`quick` default, or `full`).
-  - `check_entries(entries, decode_fn) -> Report` reads each file, verifies its sha256 against the manifest (a mismatch or missing file is a failure with the message `run make corpus`), decodes it, and compares SHA-256 of the output with `input_sha256`.
-  - Collect all failures and report them together: id, error or first differing offset.
-  - A filter that selects zero entries is a failure.
-  - Resolve `testdata/` from `env!("CARGO_MANIFEST_DIR")` + `/../../testdata`, never from the process cwd.
-- **Test** `conformance_raw_stored_and_fixed`: entries with framing `raw`, no dictionary, and (`level == 0` or `strategy == fixed`), decoded with `cleanflate::inflate`.
-- **Makefile:**
-  - `conformance-full: corpus-full` then `CLEANFLATE_TIER=full cargo test --release -p oracle --test conformance`
-  - `heavy: conformance-full` (P4 adds more)
-**Acceptance tests:** `crates/oracle/tests/conformance.rs::conformance_raw_stored_and_fixed` passes on tier quick, via `make test`.
-**Out of scope:** Dynamic-Huffman entries (P2-05). Zlib/gzip entries (P3-04).
-**Verification:** `make corpus && make test`. Run `make conformance-full` too if Silesia is present, and record the count and duration.
-**Depends on:** P1-10, P1-03
-
-### P1-12: M1 acceptance and push
-**Goal:** Run the M1 acceptance commands, fix small defects found, snapshot provenance, push, and list the manual checks.
-**Files touched:** `provenance/tool-log.snapshot.jsonl`, `docs/DESIGN.md` (only if the RFC-citation audit finds gaps), plus fixes of ≤ 100 lines in files touched by P1-04…P1-11.
-**Design constraints:** SPEC §5 M1 acceptance: all oracle-generated level-0 and fixed-strategy streams decode byte-identically, and checksum unit tests pass.
-**Acceptance tests:**
-- `make ci` passes.
-- `make conformance-full` passes: record the entry count and wall time, or `NOT RUN: Silesia missing`.
-- `cargo test -p oracle --test checksums` passes.
-- Every `### D-` in DESIGN.md has an `RFC:` line.
-**Out of scope:** Starting M2 work. Fixes larger than 100 lines: block the task with the failing ids instead.
-**Verification:** `make ci && make conformance-full && make provenance-snapshot && git push -u origin HEAD`. Write `Manual check: NOT VERIFIED (human)` with this list:
-1. Read DESIGN.md D-01…D-12 for RFC grounding.
-2. Confirm GitHub CI is green.
-3. Spot-check that `provenance/tool-log.snapshot.jsonl` shows no forbidden reads.
-**Depends on:** P1-11, P1-04
-
-## Phase 2 — M2 Dynamic Huffman and complete raw inflate
-
-### P2-01: Huffman table validation, including single-code edge cases
-**Goal:** Reject over-subscribed and incomplete code sets, except the two RFC-sanctioned distance-table cases, and document the edge cases.
-**Files touched:** `crates/cleanflate/src/huffman.rs`, `crates/cleanflate/src/inflate.rs` (call sites pass a kind), `crates/cleanflate/src/tests/{mod.rs,huffman_validation.rs}`, `docs/DESIGN.md`.
-**Design constraints:** RFC 1951 §3.2.2 and §3.2.7 ("If only one distance code is used, it is encoded using one bit, not zero bits…"; "One distance code of zero bits means that there are no distance codes used at all"). SPEC §5 M2. C1–C10 apply.
-- **API change:** `from_lengths(lengths, kind: TableKind)` with `pub(crate) enum TableKind { LitLen, Distance, CodeLength }`.
-- **Rules:**
-  - Over-subscribed → `OverSubscribed`.
-  - Incomplete → `Incomplete`, **except** for `Distance`, which accepts (a) exactly one non-zero length, equal to 1, and (b) all lengths zero (an empty table).
-  - Decoding from an empty table, or hitting the unused code of a single-code table → `Decoded::Invalid`, which the inflater maps to `Error::InvalidSymbol`.
-  - Fixed tables use 288 and 32 lengths, so both are complete.
-- Record DESIGN.md D-13, which lists each edge case and its outcome, including that one lit/len code alone is rejected as incomplete.
-**Acceptance tests:** `crates/cleanflate/src/tests/huffman_validation.rs`:
-- `oversubscribed_litlen_rejected`
-- `incomplete_litlen_rejected`
-- `incomplete_codelength_rejected`
-- `single_litlen_code_rejected`
-- `distance_single_code_len1_accepted`
-- `distance_single_code_len2_rejected`
-- `distance_all_zero_accepted`
-- `distance_two_codes_incomplete_rejected`
-- `decode_unused_code_of_single_code_table_invalid`
-- `decode_from_empty_table_invalid`
-- `fixed_tables_complete`
-**Out of scope:** The dynamic block header (P2-02). Table-driven decoding (P2-03).
-**Verification:** `make lint && make test && make crate-checks`.
-**Depends on:** P1-07
-
-### P2-02: Dynamic block header and code-length alphabet decoding
-**Goal:** Decode BTYPE 10 blocks: HLIT/HDIST/HCLEN, the code-length code, repeat codes 16/17/18, and table construction. This replaces the temporary BadBlockType.
-**Files touched:** `crates/cleanflate/src/inflate.rs`, `crates/cleanflate/src/tests/{mod.rs,inflate_dynamic.rs,dynbuilder.rs,invariants.rs}`, `docs/DESIGN.md`.
-**Design constraints:** RFC 1951 §3.2.7. SPEC §5 M2. C1–C10 apply.
-- **States** (each atomic and resumable):
-  - `DynHeader`: 14 bits: HLIT (5) + 257, HDIST (5) + 1, HCLEN (4) + 4.
-  - `CodeLenLens { i }`: 3 bits each, in `CODE_LENGTH_ORDER`.
-  - `CodeLens { idx }`: decode with the CodeLength table.
-  - `Repeat { sym, ... }`: extra bits 2/3/7 for 16/17/18.
-- **Rules:**
-  - HLIT > 286 → `InvalidHuffmanTable(TooManyLengthCodes)`. HDIST up to 32 is accepted (RFC range 1–32).
-  - Code 16 as the first length → `RepeatWithoutPrevious`.
-  - A repeat running past HLIT+HDIST → `RepeatOverflow`.
-  - Repeats may cross the lit/len→distance boundary (a single sequence per §3.2.7).
-  - Lit/len length for symbol 256 is 0 → `MissingEndOfBlock`.
-  - Build lit/len with `TableKind::LitLen` and distance with `TableKind::Distance`, then reuse the P1-09 symbol states.
-- **Test helper `dynbuilder.rs`:** given lit/len and distance lengths plus a symbol list, emits a complete dynamic block with the test BitWriter. It computes canonical codes itself and emits code lengths with and without repeat codes.
-- Extend `invariants.rs::chunking_invariance_deterministic` with ≥ 4 dynamic streams.
-- Record DESIGN.md D-14.
-**Acceptance tests:** `crates/cleanflate/src/tests/inflate_dynamic.rs`:
-- `dynamic_literals_only`
-- `dynamic_with_matches`
-- `dynamic_repeat_codes_16_17_18`
-- `dynamic_repeat_crosses_boundary_ok`
-- `dynamic_hlit_287_rejected`
-- `dynamic_hdist_32_accepted`
-- `dynamic_repeat16_first_rejected`
-- `dynamic_repeat_overflow_rejected`
-- `dynamic_missing_eob_rejected`
-- `dynamic_single_distance_code_ok`
-- `dynamic_no_distance_codes_literals_ok`
-- `dynamic_no_distance_codes_then_length_invalid_symbol`
-- `dynamic_oversubscribed_codelength_rejected`
-- `dynamic_one_byte_chunks_same_output`
-**Out of scope:** Table-driven decoding (P2-03). The malformed corpus files (P2-04).
-**Verification:** `make lint && make test && make crate-checks`.
-**Depends on:** P2-01, P1-10
-
-### P2-03: Table-driven Huffman decode path
-**Goal:** Replace per-symbol bit-serial decoding with a table lookup for codes up to `LITLEN_TABLE_BITS`/`DIST_TABLE_BITS` bits, falling back to the bit-serial walk for longer codes, while staying resumable.
-**Files touched:** `crates/cleanflate/src/huffman.rs`, `crates/cleanflate/src/config.rs`, `crates/cleanflate/src/inflate.rs`, `crates/cleanflate/src/tests/{mod.rs,huffman_table.rs}`, `docs/DESIGN.md`.
-**Design constraints:** RFC 1951 §3.2.2 and §3.1.1. SPEC §5 M2 ("table-driven fast decode path"). C1–C10 apply, and C8 especially.
-- **Config:** add `pub(crate) const LITLEN_TABLE_BITS: u32 = 10;` and `pub(crate) const DIST_TABLE_BITS: u32 = 8;` to `config.rs`. They are named nowhere else with a value.
-- **Table:**
-  - A table of `1 << bits` entries, indexed by the next `bits` stream bits (the LSB-first order, i.e. codes bit-reversed), with each entry holding (symbol, length) or a LONG marker.
-  - Fill every index whose low `len` bits equal the reversed code.
-- **Decode:**
-  - Peek `bits` (missing bits read as 0).
-  - If the entry has `len ≤ available()` → `Symbol`.
-  - If the entry is LONG → the bit-serial walk.
-  - If `len > available()` → `NeedMoreBits`.
-  - Unused index (incomplete-allowed tables) → `Invalid`.
-- Keep the bit-serial decoder as the reference used by tests.
-- Record DESIGN.md D-15 (table layout, why padded lookups are safe).
-**Acceptance tests:** `crates/cleanflate/src/tests/huffman_table.rs`:
-- `table_equals_bitserial_fixed_tables`
-- `table_equals_bitserial_random_complete_codes` (1,000 random complete length sets built by splitting leaves up to depth 15, every symbol followed by random padding bits)
-- `table_handles_codes_longer_than_table_bits`
-- `table_partial_bits_need_more`
-- `table_single_distance_code_unused_is_invalid`
-All earlier inflate tests still pass.
-**Out of scope:** Bulk bit refill and fast loops (P4-08). Tuning the table bits (P4-09).
-**Verification:** `make lint && make test && make crate-checks`.
-**Depends on:** P2-02
-
-### P2-04: Malformed corpus builder, raw cases and malformed test
-**Goal:** Hand-build the raw-DEFLATE malformed corpus from RFC rules into `testdata/malformed/rfc1951/`, with `testdata/malformed/EXPECTED.tsv`, and test that every file yields its expected `ErrorKind`.
-**Files touched:** `crates/oracle/src/malformed.rs`, `crates/oracle/src/main.rs`, `crates/oracle/src/lib.rs`, `crates/oracle/tests/malformed.rs`, `testdata/malformed/EXPECTED.tsv`, `testdata/malformed/rfc1951/*.bin`, `testdata/malformed/README.md`, `Makefile` (target `malformed`: `cargo run -q -p oracle -- malformed`).
-**Design constraints:** SPEC §4 (malformed corpus: hand-built from RFC rules, each file records its expected error variant) and §5 M2 acceptance.
-- **Builder:**
-  - Uses its own `BitWriter` in `malformed.rs`. Do not import cleanflate test code.
-  - Checksums, where needed, come from `oracle::ffi` (libz), never from cleanflate, to keep the corpus independent.
-- **`EXPECTED.tsv`:**
-  - `#` comment lines, then `path<TAB>expected<TAB>rule`.
-  - `expected` is an `ErrorKind::as_str()` name or `OK`.
-  - Sweep rows use `sweep:<path>` in the path column with expected `Truncated`: every strict prefix (lengths 0..len-1) must fail with Truncated.
-- **Raw cases**, at minimum:
-  - `btype3` BadBlockType
-  - `stored_nlen_mismatch` InvalidStoredLength
-  - `fixed_litlen_286` InvalidSymbol
-  - `fixed_dist_code_30` InvalidSymbol
-  - `fixed_distance_too_far` InvalidDistance
-  - `fixed_distance_at_start` InvalidDistance
-  - `dynamic_hlit_287` InvalidHuffmanTable
-  - `dynamic_codelength_oversubscribed` InvalidHuffmanTable
-  - `dynamic_codelength_incomplete` InvalidHuffmanTable
-  - `dynamic_litlen_oversubscribed` InvalidHuffmanTable
-  - `dynamic_litlen_incomplete` InvalidHuffmanTable
-  - `dynamic_dist_oversubscribed` InvalidHuffmanTable
-  - `dynamic_dist_incomplete_two_codes` InvalidHuffmanTable
-  - `dynamic_repeat16_first` InvalidHuffmanTable
-  - `dynamic_repeat_overflow` InvalidHuffmanTable
-  - `dynamic_missing_eob` InvalidHuffmanTable
-  - `dynamic_no_dist_then_length` InvalidSymbol
-  - `dynamic_single_dist_code` OK
-  - `dynamic_no_dist_literals` OK
-  - `fixed_len284_extra31` OK
-  - `valid_stored_trailing_byte` TrailingData
-  - sweeps over `valid_small_stored`, `valid_small_fixed` and `valid_small_dynamic`
-- **Test:** `malformed_raw_cases` runs every `rfc1951/` row through `cleanflate::inflate` and asserts `err.kind().as_str()` (or Ok) equals expected, reporting all mismatches together. `malformed_corpus_is_up_to_date` regenerates into a temp dir and byte-compares with the committed files and TSV.
-**Acceptance tests:**
-- `crates/oracle/tests/malformed.rs::malformed_raw_cases`
-- `crates/oracle/tests/malformed.rs::malformed_corpus_is_up_to_date`
-**Out of scope:** Zlib/gzip malformed cases (P3-05). Changing decoder semantics. If a case disagrees with the decoder, the RFC wins: fix whichever side is wrong and explain under Interpretation.
-**Verification:** `make malformed && make test && git status --porcelain testdata/malformed` (empty after the commit).
-**Depends on:** P2-02, P1-01
-
-### P2-05: Full raw conformance
-**Goal:** Assert that 100% of raw-DEFLATE conformance entries decode byte-identically, both one-shot and streamed with odd chunk sizes.
-**Files touched:** `crates/oracle/tests/conformance.rs`, `crates/oracle/src/conformance.rs`, plus decoder fixes if needed in `crates/cleanflate/src/*.rs` (≤ 150 lines).
-**Design constraints:** SPEC §5 M2 acceptance. C1–C10 and C13 apply.
-- `conformance_raw_all`: every `raw` entry, one-shot.
-- `conformance_raw_all_streaming_odd_chunks`: every `raw` entry, decoded with `Decompressor` using 1,021-byte input chunks and 997-byte output chunks.
-**Acceptance tests:**
-- `crates/oracle/tests/conformance.rs::conformance_raw_all`
-- `crates/oracle/tests/conformance.rs::conformance_raw_all_streaming_odd_chunks`
-**Out of scope:** Wrappers. Performance.
-**Verification:** `make corpus && make test`. Run `make conformance-full` too if Silesia is present, and record the counts.
-**Depends on:** P2-03, P1-11
-
-### P2-06: M2 acceptance and push
-**Goal:** Run the M2 acceptance commands, fix small defects, snapshot provenance, push, and list the manual checks.
-**Files touched:** `provenance/tool-log.snapshot.jsonl`, `docs/DESIGN.md` (audit), plus fixes of ≤ 100 lines in Phase 2 files.
-**Design constraints:** SPEC §5 M2 acceptance: 100% of the raw conformance corpus is byte-identical, and every malformed file returns its expected variant with no panic.
-**Acceptance tests:**
-- `make ci` passes.
-- `make conformance-full` passes (record count and time, or `NOT RUN: Silesia missing`).
-- `cargo test -p oracle --test malformed` passes.
-- DESIGN.md D-13 lists every single-code edge case.
-**Out of scope:** M3 work. Fixes larger than 100 lines (block with details instead).
-**Verification:** `make ci && make conformance-full && make provenance-snapshot && git push -u origin HEAD`. Write `Manual check: NOT VERIFIED (human)` with this list:
-1. Review DESIGN.md D-13/D-14 against RFC 1951 §3.2.7.
-2. Confirm GitHub CI is green.
-**Depends on:** P2-04, P2-05
-
-## Phase 3 — M3 zlib and gzip wrappers
-
-### P3-01: Preset dictionary support and the zlib wrapper
-**Goal:** Add `Format::Zlib` with full RFC 1950 header and trailer handling, including preset dictionaries, and expose `zlib_decompress`.
-**Files touched:** `crates/cleanflate/src/zlib.rs`, `crates/cleanflate/src/inflate.rs` (`Inflater::with_dictionary`), `crates/cleanflate/src/options.rs`, `crates/cleanflate/src/stream.rs`, `crates/cleanflate/src/lib.rs`, `crates/cleanflate/src/tests/{mod.rs,zlib.rs}`, `docs/DESIGN.md`.
-**Design constraints:** RFC 1950 §2.2 (CMF, FLG, FCHECK, FDICT/DICTID, ADLER32 big-endian over uncompressed data excluding the dictionary) and §2.3. SPEC §3.2 (zlib bullet) and §3.3. C1–C10 apply.
-- **Header** (resumable byte state machine), checked in the order FCHECK → CM → CINFO:
-  - `(CMF*256 + FLG) % 31 != 0` → `BadHeader(ZlibFcheck)`
-  - `CM != 8` → `BadHeader(ZlibCompressionMethod(cm))`
-  - `CINFO > 7` → `BadHeader(ZlibWindowSize(cinfo))`
-  - FLEVEL is ignored.
-- **FDICT set:** read DICTID (4 bytes, big-endian).
-  - `options.dictionary` is None → `PresetDictionaryRequired { dict_id }`.
-  - `adler32(dict) != dict_id` → `DictionaryMismatch { expected: dict_id, actual }`.
-  - Otherwise `Inflater::with_dictionary(dict)` prefills the window with the last ≤ 32,768 bytes.
-  - FDICT clear with a dictionary supplied → the dictionary is ignored.
-  - For `Format::Raw`, a supplied dictionary prefills the window.
-- **Trailer:** Adler-32 over the produced bytes, big-endian. Mismatch → `ChecksumMismatch { kind: Adler32, expected, actual }`.
-- **Other rules:** do not bound distances by CINFO (DESIGN.md D-16). Trailing policy is as for Raw, after the trailer.
-- Add `Format::Zlib` and `pub fn zlib_decompress(input: &[u8]) -> Result<Vec<u8>, Error>`.
-**Acceptance tests:** `crates/cleanflate/src/tests/zlib.rs`:
-- `zlib_minimal_empty` (`78 9c 03 00 00 00 00 01` → empty)
-- `zlib_stored_hello`
-- `zlib_bad_fcheck`
-- `zlib_cm_7_rejected`
-- `zlib_cinfo_8_rejected`
-- `zlib_fdict_without_dictionary`
-- `zlib_fdict_wrong_dictionary`
-- `zlib_fdict_with_dictionary_copies_from_dictionary`
-- `raw_with_dictionary_prefill`
-- `zlib_adler_mismatch`
-- `zlib_trailing_reject`
-- `zlib_trailing_allow_offset`
-- `zlib_truncated_in_trailer`
-- `zlib_one_byte_chunks_same_output`
-**Out of scope:** Gzip. Conformance corpus runs (P3-04).
-**Verification:** `make lint && make test && make crate-checks`.
-**Depends on:** P1-10, P1-04, P2-02
-
-### P3-02: Gzip member header parser
-**Goal:** Implement a resumable RFC 1952 member-header parser that exposes MTIME, XFL, OS and the optional fields with bounded memory.
-**Files touched:** `crates/cleanflate/src/gzip.rs`, `crates/cleanflate/src/lib.rs`, `crates/cleanflate/src/tests/{mod.rs,gzip_header.rs}`, `docs/DESIGN.md`.
-**Design constraints:** RFC 1952 §2.3 and §2.3.1 (ID1/ID2, CM, FLG bits FTEXT/FHCRC/FEXTRA/FNAME/FCOMMENT, reserved bits, MTIME, XFL, OS, XLEN, CRC16). SPEC §3.2 (gzip bullet) and §1 (bounded memory). C1–C10 apply.
-- **Public type:** `#[non_exhaustive] pub struct GzipHeader { pub text: bool, pub mtime: u32, pub xfl: u8, pub os: u8, pub extra: Option<Vec<u8>>, pub name: Option<Vec<u8>>, pub comment: Option<Vec<u8>>, pub header_crc: bool, pub truncated_fields: bool }`.
-- **Parser:** `pub(crate) struct GzipHeaderParser` with `feed(&mut self, input: &[u8]) -> Result<(usize, Option<GzipHeader>), Error>`. It consumes bytes until the header completes.
-- **Errors:**
-  - Magic ≠ 1f 8b → `BadHeader(GzipMagic)`
-  - CM ≠ 8 → `BadHeader(GzipCompressionMethod(cm))`
-  - `FLG & 0xE0 != 0` → `BadHeader(GzipReservedFlags(flg))`
-- **FHCRC:** the low 16 bits of the CRC-32 over every header byte before the CRC16 field. A mismatch → `ChecksumMismatch { kind: GzipHeaderCrc, expected, actual }`.
-- **Field limit:** each of extra/name/comment keeps at most `options.max_gzip_field` bytes. The rest is parsed and discarded, and `truncated_fields = true`. FNAME and FCOMMENT are zero-terminated, and the terminator is not stored.
-- Record DESIGN.md D-17.
-**Acceptance tests:** `crates/cleanflate/src/tests/gzip_header.rs`:
-- `minimal_header`
-- `all_flags_header`
-- `fextra_parsed`
-- `fname_and_comment_parsed`
-- `fhcrc_ok`
-- `fhcrc_mismatch`
-- `bad_magic`
-- `bad_cm`
-- `reserved_flag_bits_rejected`
-- `field_longer_than_limit_truncated_not_rejected`
-- `byte_by_byte_equals_all_at_once`
-- `truncated_header_needs_more`
-**Out of scope:** Member body, trailer, multi-member (P3-03).
-**Verification:** `make lint && make test && make crate-checks`.
-**Depends on:** P1-04, P1-05
-
-### P3-03: Gzip members, trailer, multi-member streams and gzip API
-**Goal:** Add `Format::Gzip`: decode members with CRC-32/ISIZE verification, concatenate multi-member output, apply trailing-data rules, and expose `gzip_decompress` and the parsed headers.
-**Files touched:** `crates/cleanflate/src/gzip.rs`, `crates/cleanflate/src/stream.rs`, `crates/cleanflate/src/options.rs`, `crates/cleanflate/src/lib.rs`, `crates/cleanflate/src/tests/{mod.rs,gzip.rs}`, `docs/DESIGN.md`.
-**Design constraints:** RFC 1952 §2.2 (members concatenated), §2.3 and §2.3.1 (CRC32, ISIZE little-endian, ISIZE = size mod 2^32). SPEC §3.2 (multi-member) and §3.3 (trailing data). C1–C10 apply.
-- **Decompressor gzip states:** `MemberHeader` → `Body` (new Inflater per member) → `Trailer` (8 bytes) → `Boundary`.
-- **Trailer checks:**
-  - CRC mismatch → `ChecksumMismatch { kind: Crc32 }`
-  - ISIZE mismatch → `ChecksumMismatch { kind: Isize }`
-- **Boundary rules:**
-  - Next bytes 1f 8b → a new member; its errors are real errors.
-  - One byte 0x1f then input ends → buffer it and return `NeedsInput`.
-  - Any other byte: under `Reject` → `Err(TrailingData { offset })`; under `Allow` → `Done` with `trailing_start()` = end of last member.
-  - Input ends at a boundary → `NeedsInput`. `finish()` returns Ok at a boundary once ≥ 1 member is complete. A buffered lone 0x1f gives `TrailingData` under Reject and Ok under Allow.
-  - Empty input → `Truncated`.
-- **API additions:**
-  - `Decompressor::gzip_headers() -> &[GzipHeader]`
-  - `Decoded.gzip_members: Vec<GzipHeader>` (empty for other formats)
-  - `pub fn gzip_decompress(input: &[u8]) -> Result<Vec<u8>, Error>`
-  - Add `Format::Gzip`.
-- Record DESIGN.md D-18 (boundary rules).
-**Acceptance tests:** `crates/cleanflate/src/tests/gzip.rs`:
-- `gzip_minimal_empty_member`
-- `gzip_hello`
-- `gzip_two_members_concatenate`
-- `gzip_empty_member_between`
-- `gzip_crc_mismatch`
-- `gzip_isize_mismatch`
-- `gzip_trailing_zeros_rejected_by_default`
-- `gzip_trailing_allowed_reports_offset`
-- `gzip_second_member_bad_header`
-- `gzip_lone_1f_trailing_reject`
-- `gzip_lone_1f_trailing_allow`
-- `gzip_one_byte_chunks_multi_member`
-- `gzip_headers_exposed`
-- `gzip_truncated_in_trailer`
-**Out of scope:** Conformance corpus runs (P3-04). Malformed files (P3-05).
-**Verification:** `make lint && make test && make crate-checks`.
-**Depends on:** P3-01, P3-02
-
-### P3-04: Zlib and gzip conformance, dictionary and multi-member tests
-**Goal:** Assert 100% byte-identical decoding of every zlib and gzip conformance entry, including dictionary entries, plus oracle-built multi-member streams.
-**Files touched:** `crates/oracle/tests/conformance.rs`, `crates/oracle/tests/wrappers.rs`, `crates/oracle/src/conformance.rs`, plus decoder fixes ≤ 150 lines in `crates/cleanflate/src/*.rs`.
-**Design constraints:** SPEC §5 M3 acceptance and §4. C13 applies.
-- `conformance_zlib_all`: zlib entries without a dictionary.
-- `conformance_zlib_dictionary`: dictionary entries, decoded with `Options { dictionary: Some(first dictionary.len bytes of the manifest's dictionary input) }`.
-- `conformance_gzip_all`.
-- `conformance_wrappers_streaming_odd_chunks`: 1,021 in / 997 out.
-- `crates/oracle/tests/wrappers.rs`:
-  - `gzip_multi_member_oracle`: 200 cases concatenating 2–5 oracle gzip members of random inputs, varied params, including empty inputs. Must equal the concatenated inputs, and `gzip_headers().len()` must equal the member count.
-  - `zlib_dictionary_required_on_oracle_stream`: the error's `dict_id` equals `oracle::ffi::adler32(dict)`.
-  - `zlib_wrong_dictionary_mismatch`.
-**Acceptance tests:**
-- `crates/oracle/tests/conformance.rs`:
-  - `conformance_zlib_all`
-  - `conformance_zlib_dictionary`
-  - `conformance_gzip_all`
-  - `conformance_wrappers_streaming_odd_chunks`
-- `crates/oracle/tests/wrappers.rs`:
-  - `gzip_multi_member_oracle`
-  - `zlib_dictionary_required_on_oracle_stream`
-  - `zlib_wrong_dictionary_mismatch`
-**Out of scope:** The malformed wrapper corpus (P3-05).
-**Verification:** `make corpus && make test`. Run `make conformance-full` too if Silesia is present.
-**Depends on:** P3-03, P1-11
-
-### P3-05: Malformed zlib and gzip cases
-**Goal:** Extend the malformed corpus with RFC 1950 and RFC 1952 cases and assert their expected error kinds.
-**Files touched:** `crates/oracle/src/malformed.rs`, `crates/oracle/tests/malformed.rs`, `testdata/malformed/EXPECTED.tsv`, `testdata/malformed/rfc1950/*.bin`, `testdata/malformed/rfc1952/*.bin`.
-**Design constraints:** SPEC §4 (bad headers, bad checksums, invalid gzip flags, truncation at every offset) and §5 M3 acceptance. Checksums come from `oracle::ffi` only.
-- **rfc1950 cases:**
-  - `bad_fcheck` BadHeader
-  - `cm_7` BadHeader
-  - `cinfo_8` BadHeader
-  - `fdict_no_dictionary` PresetDictionaryRequired
-  - `adler_mismatch` ChecksumMismatch
-  - `trailing_byte` TrailingData
-  - `valid_small` OK
-  - `sweep:rfc1950/valid_small.bin` Truncated
-- **rfc1952 cases:**
-  - `bad_magic` BadHeader
-  - `cm_7` BadHeader
-  - `reserved_flag_bit5` BadHeader
-  - `reserved_flag_bit7` BadHeader
-  - `fhcrc_mismatch` ChecksumMismatch
-  - `crc32_mismatch` ChecksumMismatch
-  - `isize_mismatch` ChecksumMismatch
-  - `trailing_garbage` TrailingData
-  - `second_member_bad_cm` BadHeader
-  - `all_flags_valid` OK
-  - `two_members_valid` OK
-  - `sweep:rfc1952/all_flags_valid.bin` Truncated
-- **Test:** `malformed_wrapper_cases` runs rfc1950 rows through `zlib_decompress` and rfc1952 rows through `gzip_decompress`. `malformed_corpus_is_up_to_date` still passes.
-**Acceptance tests:**
-- `crates/oracle/tests/malformed.rs::malformed_wrapper_cases`
-- `crates/oracle/tests/malformed.rs::malformed_corpus_is_up_to_date`
-**Out of scope:** Decoder changes beyond ≤ 50-line fixes (explain under Interpretation).
-**Verification:** `make malformed && make test`.
-**Depends on:** P3-03, P2-04
-
-### P3-06: M3 acceptance and push
-**Goal:** Run the M3 acceptance commands, fix small defects, snapshot provenance, push, and list the manual checks.
-**Files touched:** `provenance/tool-log.snapshot.jsonl`, `docs/DESIGN.md` (audit), plus fixes of ≤ 100 lines in Phase 3 files.
-**Design constraints:** SPEC §5 M3 acceptance: 100% of the zlib and gzip conformance corpus passes, multi-member tests pass, and wrapper malformed cases match.
-**Acceptance tests:**
-- `make ci` passes.
-- `make conformance-full` passes (record, or `NOT RUN: Silesia missing`).
-- `cargo test -p oracle --test wrappers --test malformed` passes.
-**Out of scope:** M4 work. Fixes larger than 100 lines.
-**Verification:** `make ci && make conformance-full && make provenance-snapshot && git push -u origin HEAD`. Write `Manual check: NOT VERIFIED (human)` with this list:
-1. Review DESIGN.md D-16…D-18 against RFC 1950/1952.
-2. Confirm GitHub CI is green.
-**Depends on:** P3-04, P3-05
-
-## Phase 4 — M4 Streaming, limits, fuzzing, performance pass
-
-### P4-01: Finalise the streaming contract for all formats
-**Goal:** Harden and document the public `Decompressor` contract across Raw, Zlib and Gzip, and prove it with deterministic tests, including error-kind invariance under 1-byte chunking.
-**Files touched:** `crates/cleanflate/src/stream.rs`, `crates/cleanflate/src/lib.rs` (crate docs with a streaming example using `?`), `crates/cleanflate/src/tests/{mod.rs,stream_contract.rs}`, `crates/oracle/tests/malformed.rs`, `docs/DESIGN.md`.
-**Design constraints:** SPEC §3.3 (streaming bullet: arbitrary chunks including 1 byte, caller-provided output, consumed/produced/status, identical output regardless of chunking). C1–C10 apply.
-- The contract, written into rustdoc and DESIGN.md D-12:
-  - `NeedsInput` ⇒ all input consumed.
-  - `OutputFull` ⇒ the output slice is full, or the limit allowance is exhausted (which is an error).
-  - `Done` ⇒ the stream is complete and `consumed` stops at its end.
-  - Errors are sticky.
-  - Output written during a call that returns `Err` is unspecified.
-  - `finish()` semantics are per format (Raw/Zlib: Ok iff Done; Gzip: rules from P3-03).
-  - Calling `decompress` after `Done` with non-empty input: Reject → TrailingData, Allow → `Ok(Progress{0,0,Done})`.
-- Fix any deviation found.
-**Acceptance tests:**
-- `crates/cleanflate/src/tests/stream_contract.rs`:
-  - `one_byte_in_one_byte_out_all_formats`
-  - `output_full_then_resume`
-  - `needs_input_consumes_all_formats`
-  - `done_consumed_exact_raw_and_zlib`
-  - `after_done_reject_and_allow`
-  - `error_sticky_all_formats`
-  - `finish_semantics_table`
-  - `zero_length_output_slice_makes_header_progress`
-- `crates/oracle/tests/malformed.rs::malformed_one_byte_chunks_same_kind`: every malformed row is streamed 1 byte in / 1 byte out, then `finish()`, and the result must give the same ErrorKind or OK as one-shot.
-**Out of scope:** proptest (P4-02). The bomb fixture (P4-03). Performance.
-**Verification:** `make lint && make test && make crate-checks`.
-**Depends on:** P3-03
-
-### P4-02: Chunking-invariance property test (proptest)
-**Goal:** Add the proptest chunking-invariance property: random input and output chunk sizes, including 1, produce output identical to one-shot, across random oracle-compressed streams.
-**Files touched:** `crates/oracle/Cargo.toml` (`[dev-dependencies] proptest = "1"`), `Cargo.lock`, `crates/oracle/tests/chunking.rs`, `Makefile`.
-**Design constraints:** SPEC §5 M4 (proptest in dev-deps of oracle only, SPEC §3.1). The case count is config: env `CLEANFLATE_CHUNKING_CASES`, falling back to `const DEFAULT_CASES: u32 = 512;` in the test file only.
-- **Strategy:**
-  - Data is 0–16,384 bytes, a mix of random and repetitive.
-  - Params cover all framings, levels 0–9, all strategies, wb 9–15 and mem 1–9.
-  - Input and output chunk-size vectors each hold elements 1–64, with a 10% chance of an all-1s schedule.
-- **Assertions:**
-  - The streamed output equals the one-shot output, which equals the data.
-  - For a copy with one random byte flipped, streamed and one-shot give the same Ok/ErrorKind and the same output when Ok.
-- Makefile: `proptest-10k: CLEANFLATE_CHUNKING_CASES=10000 cargo test --release -p oracle --test chunking`. Add `proptest-10k` to `heavy`.
-**Acceptance tests:**
-- `crates/oracle/tests/chunking.rs::chunking_invariance`
-- `crates/oracle/tests/chunking.rs::chunking_invariance_on_corrupted_streams`
-- `make proptest-10k` passes: record the duration.
-**Out of scope:** Fuzzing. Changing decoder semantics (fix bugs only, ≤ 100 lines, and report them in `Defects-caught:`).
-**Verification:** `make test && make proptest-10k`.
-**Depends on:** P4-01, P1-01
-
-### P4-03: Output-limit hardening and zip-bomb fixture
-**Goal:** Prove the output limit fails fast with bounded memory against a decompression-bomb fixture in all three formats.
-**Files touched:** `crates/oracle/tests/bomb.rs`, `crates/cleanflate/src/stream.rs` (fixes only), `docs/DESIGN.md`, `Makefile`.
-**Design constraints:** SPEC §3.3 (Limits) and §5 M4. The fixture ratio follows the Decisions entry ("~1 MiB → DEFAULT_MAX_OUTPUT + 1 MiB"). Refer to the limit only as `cleanflate::DEFAULT_MAX_OUTPUT` (C8: no `1 << 30` literal).
-- `bomb_streaming_default_limit` (`#[ignore]`):
-  - `oracle::ffi::deflate_zeros(DEFAULT_MAX_OUTPUT + (1 << 20), level 9, Raw)`; record the compressed size, asserting it is < 2 MiB.
-  - Stream it with a fixed 64 KiB output buffer and default Options.
-  - Expect `Err(OutputLimitExceeded { limit: DEFAULT_MAX_OUTPUT })` with `total_out() == DEFAULT_MAX_OUTPUT`.
-- `bomb_oneshot_small_limit`: 64 MiB of zeros, `decompress_with` with `max_output = 16 << 20` → OutputLimitExceeded, for Raw, Zlib and Gzip.
-- `limit_exact_boundary_all_formats`: output of exactly the limit → Ok.
-- Makefile: `bomb: cargo test --release -p oracle --test bomb -- --include-ignored`. Add it to `heavy`.
-- Record DESIGN.md D-19, which explains why the SPEC's 1 KiB example is impossible (the maximum DEFLATE ratio is about 1032:1).
-**Acceptance tests:**
-- `crates/oracle/tests/bomb.rs`:
-  - `bomb_streaming_default_limit`
-  - `bomb_oneshot_small_limit`
-  - `limit_exact_boundary_all_formats`
-- `make bomb` passes: record the wall time and the compressed size.
-**Out of scope:** Changing the default limit value.
-**Verification:** `make test && make bomb`.
-**Depends on:** P4-01, P1-01
-
-### P4-04: Fuzz crate and never-panic targets
-**Goal:** Create the cargo-fuzz crate with never-panic targets for each of the three entry points, compile-check it in verify, and run smoke fuzzing if a nightly toolchain can be installed.
-**Files touched:** `fuzz/Cargo.toml`, `fuzz/fuzz_targets/never_panic_raw.rs`, `fuzz/fuzz_targets/never_panic_rfc1950.rs`, `fuzz/fuzz_targets/never_panic_rfc1952.rs`, `fuzz/seeds/<target>/*` (≤ 10 small seeds each, copied from `testdata/malformed/`), `fuzz/README.md`, `Makefile`.
-**Design constraints:** SPEC §5 M4 (a). File names avoid forbidden words (C11). C9: fuzz uses `oracle::ffi`, never libz-sys directly.
-- **`fuzz/Cargo.toml`:**
-  - Package `cleanflate-fuzz`, `publish = false`, `[package.metadata] cargo-fuzz = true`.
-  - Deps: `libfuzzer-sys = "0.4"`, `cleanflate = { path = "../crates/cleanflate" }`, `oracle = { path = "../crates/oracle" }`.
-  - `[workspace] members = ["."]`.
-  - One `[[bin]]` per target with `test = false, doc = false, bench = false`.
-- **Each target:**
-  - Calls the one-shot function with `Options { max_output: 1 << 24, ..Default::default() }`. `1 << 24` is not a tunable; name it `const FUZZ_MAX_OUTPUT` in each target.
-  - Then runs streaming with input and output chunk sizes derived from the first two bytes (1–256).
-  - Results are ignored. Only panics and timeouts are failures.
-- **Makefile:**
-  - `fuzz-check: cargo check --manifest-path fuzz/Cargo.toml --bins` (replaces the P0-01 stub)
-  - `FUZZ_SECONDS ?= 60`
-  - `fuzz-smoke:` for each target `cargo +nightly fuzz run <t> fuzz/seeds/<t> -- -max_total_time=$(FUZZ_SECONDS) -rss_limit_mb=2048`
-- **Toolchain:** try `rustup toolchain install nightly --profile minimal` and `cargo install cargo-fuzz --locked`. If either fails, record `fuzz-smoke NOT RUN: <reason>` and still complete the task.
-**Acceptance tests:**
-- `make fuzz-check` passes.
-- `make fuzz-smoke` exits 0 with zero crashes, or is recorded NOT RUN with the reason. Record per-target exec counts.
-**Out of scope:** Differential targets (P4-05). CI workflow (P4-06).
-**Verification:** `make fuzz-check`, then `make fuzz-smoke` if the tooling is available.
+### P4-04: M4 acceptance and push
+**Goal:** Run the M4 acceptance commands, report zlib and gzip framing overhead relative to raw, confirm the tunables are cited, commit the bench and push.
+**Files touched:** `docs/perf/P4-04.json`, `docs/PERF.md` (`### M4 acceptance (P4-04)`), `provenance/tool-log.snapshot.jsonl`, and fixes of ≤ 100 lines in Phase 4 files.
+**Design constraints:** SPEC §6 M4 acceptance (gzip and zlib framing overhead relative to raw reported; tunables' measurements in PERF.md and cited in config.rs), PT5, PT8.
+- Run:
+  - `make ci`;
+  - `make heavy`;
+  - `make bench BENCH_ID=P4-04 BENCH_OUT=docs/perf/P4-04.json`;
+  - `make bench-compare` against `baseline.json` and `P3-04.json`.
+- PERF.md:
+  - a framing-overhead table: zlib vs raw and gzip vs raw, Silesia level 6, one-shot and streaming, baseline against now;
+  - REGRESSION lines.
+- `make provenance-snapshot`, commit, push.
+**Acceptance tests:** `make ci` and `make heavy` pass. The JSON is committed.
+**Out of scope:** New optimisation.
+**Verification:** `make ci && make heavy && make provenance-snapshot && git push -u origin HEAD`. Write `Manual check: NOT VERIFIED (human)` with:
+1. Confirm GitHub Actions `ci` is green.
+2. Review the CRC derivation in DESIGN.
+3. Confirm the config.rs citations point at committed JSONs.
 **Depends on:** P4-01
 
-### P4-05: Differential fuzz targets against the oracle
-**Goal:** Add fuzz target (b), a round-trip differential that must never diverge, and target (c), an arbitrary-bytes accept/reject differential that logs divergences for triage instead of failing.
-**Files touched:** `fuzz/Cargo.toml`, `fuzz/fuzz_targets/diff_oracle_roundtrip.rs`, `fuzz/fuzz_targets/diff_oracle_arbitrary.rs`, `fuzz/seeds/...`, `fuzz/README.md`, `Makefile`.
-**Design constraints:** SPEC §5 M4 (b) and (c). C9 applies.
-- **(b):**
-  - Parameters come from the first 5 bytes: framing, level 0–9, strategy, wb 9–15, mem 1–9. The data is the rest, at most 64 KiB.
-  - Compress with `oracle::ffi::deflate_bytes`. Decompress with cleanflate one-shot, cleanflate streaming (chunk sizes from the data length), and `oracle::ffi::inflate_bytes`.
-  - `panic!` if any output differs from the data. That panic is the fuzz failure.
-- **(c):**
-  - For each framing, run cleanflate with `Options { trailing: TrailingData::Allow, max_output: FUZZ_MAX_OUTPUT }` and the oracle with `max_output = FUZZ_MAX_OUTPUT`.
-  - Classify the pair as `both_ok_same`, `both_ok_differ`, `both_err`, `clean_ok_oracle_err` or `clean_err_oracle_ok`.
-  - Append a JSON line `{framing, class, clean_kind, oracle_status, input_hex (≤ 4096 bytes)}` to `$CLEANFLATE_DIVERGENCE_LOG` (default `fuzz/artifacts/divergences.jsonl`) for any class except `both_ok_same` and `both_err`.
-  - Never panic on divergence. `both_ok_differ` is also logged; it is not an automatic failure, per SPEC.
-- **Makefile:**
-  - Add both targets to `fuzz-smoke`.
-  - `fuzz-divergences:` prints counts per class using `jq`.
+## Phase 5 — M5 Report and hand-off
+
+### P5-01: Phase-scoped provenance summary and build report
+**Goal:** Let `make provenance-summary` and `make build-report` cover only phase-2 activity, and read the phase-2 result line from PERF.md.
+**Files touched:**
+- `tools/cleanroom/`: `summarize.py`, `build_report.py`.
+- `tools/cleanroom/tests/`: `test_summarize.py`, `test_build_report.py`, fixtures as needed.
+- `Makefile`.
+**Design constraints:** SPEC §6 M5 (regenerate `docs/BUILD_REPORT.md` and `provenance/SUMMARY.md` for phase 2), §2 (the logger and guard are unchanged). Stdlib Python only, as today.
+- **`summarize.py --since-commit REV`:**
+  - Keeps log entries with a timestamp ≥ REV's commit time (`git show -s --format=%cI REV`).
+  - The header names the range.
+- **`build_report.py --since REV`:**
+  - Uses only commits in `REV..HEAD`.
+  - `read_perf_result_line` returns the last `**Result:**` paragraph in PERF.md, not the first.
+- Without the flags, behaviour is unchanged and the existing tests pass.
+- **Makefile:** `PHASE_BASE ?= 599ca51` (the last phase-1 commit). `provenance-summary` passes `--since-commit $(PHASE_BASE)` and `build-report` passes `--since $(PHASE_BASE)`.
 **Acceptance tests:**
-- `make fuzz-check` passes.
-- `make fuzz-smoke` exits 0, or is recorded NOT RUN. Record the divergence counts by class in the progress log.
-**Out of scope:** Triage fixes. If (c) reveals a real decoder bug, fix it only if ≤ 50 lines and add a regression test in the right test file. Otherwise record it for review.
-**Verification:** `make fuzz-check && make fuzz-smoke`.
-**Depends on:** P4-04, P1-01
+- `tools/cleanroom/tests/test_summarize.py::test_since_commit_filters_entries`
+- `tools/cleanroom/tests/test_build_report.py::test_since_limits_commits`
+- `tools/cleanroom/tests/test_build_report.py::test_reads_last_result_line`
+- `make tools-check` passes.
+**Out of scope:** Changing any other summary section.
+**Verification:** `make tools-check`.
+**Depends on:** none
 
-### P4-06: Nightly fuzz workflow and long-run target
-**Goal:** Provide the 1-hour-per-target fuzz runs as a GitHub Actions nightly workflow and a `make fuzz-long` target.
-**Files touched:** `.github/workflows/fuzz-nightly.yml`, `Makefile`, `fuzz/README.md`.
-**Design constraints:** SPEC §5 M4 acceptance: (a) and (b) each run 1 hour with zero crashes and zero divergences.
-- **Makefile:** `fuzz-long:` runs `$(MAKE) fuzz-smoke FUZZ_SECONDS=3600`.
-- **Workflow:**
-  - Triggers: `schedule` (daily cron) and `workflow_dispatch`.
-  - A matrix job per target: the three never-panic targets, `diff_oracle_roundtrip` and `diff_oracle_arbitrary`.
-  - Steps: install nightly and cargo-fuzz (`cargo install cargo-fuzz --locked`), then run the target for 3,600 s.
-  - Upload `fuzz/artifacts/` on failure, and always upload the divergence log for `diff_oracle_arbitrary`.
-  - No third-party actions except `actions/checkout` and `actions/upload-artifact`.
-**Acceptance tests:** The YAML parses (use the same validator approach as P0-09, or record NOT CHECKED). `make -n fuzz-long` prints the five 3,600-second runs.
-**Out of scope:** Running the 1-hour fuzzing inside this task.
-**Verification:** `make -n fuzz-long`, plus the YAML parse check.
-**Depends on:** P4-05
+### P5-02: Final PERF.md phase-2 report and DESIGN audit
+**Goal:** Run the final full bench and write the phase-2 report: numbers against every SPEC §4.1 target, per-milestone gains, hypothesis verdicts, negative results and reverted attempts with their fixtures, and the result line.
+**Files touched:** `docs/PERF.md`, `docs/perf/P5-02.json`, `docs/DESIGN.md` (audit fixes only).
+**Design constraints:** SPEC §6 M5 bullet 1, §4.1, §9 (every optimisation written up in DESIGN.md with its measurement), §8 (record conditions), C10, C14, PT8.
+- Run `make bench BENCH_ID=P5-02 BENCH_OUT=docs/perf/P5-02.json` and `make bench-compare A=docs/perf/baseline.json B=docs/perf/P5-02.json`.
+- **PERF.md `### Final (P5-02)`:**
+  - Targets table: raw, zlib and gzip one-shot level-6 Silesia ratios against 70% (primary) and 90% (stretch); streaming against 60%; each MET or NOT MET.
+  - Per-milestone gains from the JSONs that exist: baseline, P1-05, P2-04, P3-04, P4-04, P5-02.
+  - H1–H6 final verdicts.
+  - Negative results and reverted attempts, each with its fixture name.
+  - Per-file regression check against the baseline.
+  - A level 1 and level 9 summary.
+  - Conditions.
+  - If a target is missed: the measured shortfall and the next most promising step, with its counter or profile evidence.
+- **Final line, exactly one:** `**Result:** phase 2: cleanflate / C zlib (Silesia, level 6, one-shot) = R% raw, Z% zlib, G% gzip (target 70%: MET|NOT MET); streaming 64 KiB = S% raw (target 60%: MET|NOT MET).`
+- **DESIGN audit:** every phase-2 technique has a `[perf]` entry that passes design-check and cites its JSON.
+**Acceptance tests:** `make design-check` passes, PERF.md contains the result line, and the JSON is committed.
+**Out of scope:** Code changes.
+**Verification:** `make design-check && make bench-md J=docs/perf/P5-02.json`.
+**Depends on:** P0-11
 
-### P4-07: Benchmark harness and baseline
-**Goal:** Add `oracle bench`, which measures single-thread decompression throughput for cleanflate and C zlib, and record the baseline in `docs/PERF.md`.
-**Files touched:** `crates/oracle/src/bench.rs`, `crates/oracle/src/main.rs`, `crates/oracle/src/lib.rs`, `Makefile`, `docs/PERF.md`.
-**Design constraints:** SPEC §5 M4 (performance pass; target ≥ 70% of C zlib on Silesia; report either way) and §2.2 (no reference-implementation reading; C10 applies to PERF.md).
-- **CLI:** `oracle bench [--corpus silesia|canterbury] [--iters N (default 5)] [--level L (default 6)]`.
-- **Method:**
-  - For each corpus file, compress with the oracle, raw and zlib framing.
-  - Time best-of-N `cleanflate::decompress_with` against `oracle::ffi::inflate_bytes` with `std::time::Instant`, single-threaded and release-only. The bench refuses to run in a debug build.
-  - Throughput is uncompressed bytes per second.
-- **Output:** a markdown table per file plus aggregate MB/s and ratio (cleanflate / zlib), for raw and zlib.
-- **Makefile:** `bench: cargo run --release -q -p oracle -- bench --corpus silesia`. Fall back to canterbury, with a printed warning, if Silesia is missing.
-- **`docs/PERF.md`:** method, machine (`uname -srm`, CPU model from `/proc/cpuinfo`, rustc version), and a "Baseline (P4-07)" table.
-**Acceptance tests:**
-- `crates/oracle/src/bench.rs` unit test `throughput_math`, as a `#[cfg(test)]` in the oracle crate (this is allowed; C6 only covers cleanflate).
-- `make bench` runs and writes numbers into PERF.md.
-**Out of scope:** Any optimisation.
-**Verification:** `make bench && make lint`.
-**Depends on:** P3-03, P1-03
-
-### P4-08: Performance pass 1 — bulk refill and fast decode loop
-**Goal:** Speed up the hot decode loop with a bulk bit refill and a fast path used when ample input and output remain, measured before and after.
-**Files touched:** `crates/cleanflate/src/bitreader.rs`, `crates/cleanflate/src/inflate.rs`, `crates/cleanflate/src/window.rs`, `crates/cleanflate/src/tests/{mod.rs,fastpath.rs}`, `docs/PERF.md`, `docs/DESIGN.md`.
-**Design constraints:** SPEC §5 M4 (profiling- and RFC-guided only, never by reference implementations; CR1) and SPEC §1 (safety first). C1–C10 apply: no unsafe and no indexing panics, so use `get`, `chunks_exact` and `copy_within`.
-- **Fast path:**
-  - Entered only when ≥ 16 input bytes and ≥ 258 output bytes remain.
-  - Refills the u64 bit buffer several bytes at a time.
-  - Decodes symbols without returning to the outer state dispatch.
-  - Copies non-overlapping matches in bulk (`copy_from_slice` or `copy_within` on the ring or output).
-- **On exit:** it must restore the P1-06 invariant by returning unconsumed whole bytes from the bit buffer to the input position. `consumed` stays exact and resumability is unchanged.
-- **Measurement:** run `make bench` before any change and after; put both tables in PERF.md under "Pass 1", and both aggregate numbers in the commit `Measurement:` line.
-- **Outcome:** if the change is slower or breaks any test, revert it and record the negative result instead.
-**Acceptance tests:**
-- `crates/cleanflate/src/tests/fastpath.rs`:
-  - `fastpath_equals_slowpath_on_all_test_streams`
-  - `fastpath_consumed_exact_at_done`
-  - `fastpath_boundary_input_16_bytes`
-- `make ci`, `make conformance-full` and `make proptest-10k` still pass.
-**Out of scope:** Checksum and table-size tuning (P4-09). Any unsafe code or SIMD (SPEC §7).
-**Verification:** `make bench` before and after, `make ci`, `make heavy`.
-**Depends on:** P4-07, P2-03
-
-### P4-09: Performance pass 2 — measured hotspot and table-bits tuning
-**Goal:** Measure where time goes, optimise the top remaining hotspot, tune `LITLEN_TABLE_BITS`/`DIST_TABLE_BITS` by measurement, and record the final ratio against the 70% target.
-**Files touched:** `crates/cleanflate/src/checksum.rs` and/or `crates/cleanflate/src/huffman.rs`, `crates/cleanflate/src/config.rs`, `crates/cleanflate/src/tests/*`, `docs/PERF.md`, `docs/DESIGN.md`.
-**Design constraints:** SPEC §5 M4. CR1 applies. C1–C10 apply, and C8 especially: table bits change only in config.rs.
-- **Profiling:**
-  - If `perf` exists, use `perf record -g` on `make bench` and include `perf report --stdio` top-10 in PERF.md.
-  - Otherwise, time component micro-benchmarks via `oracle bench`: raw vs zlib framing isolates Adler-32 cost, and Canterbury vs Silesia isolates the rest.
-- **Candidates** (derive from the RFC definitions and arithmetic; consult no implementation):
-  - Adler-32 deferred modulo with a bound you derive and prove in DESIGN.md.
-  - CRC-32 multi-table (slice-by-N) derived from the polynomial.
-  - Table-bits sweep: {9,10,11} × {7,8,9}; keep the best.
-- **Measurement:** before and after for every change kept. Put the numbers in PERF.md "Pass 2", the commit `Measurement:` line and the progress log.
-- **Final result:** PERF.md ends with a "Result" line: `cleanflate / C zlib = X% on Silesia (target 70%): MET|NOT MET`.
-**Acceptance tests:**
-- Checksum tests from P1-04 and `crates/oracle/tests/checksums.rs` still pass.
-- New `crates/cleanflate/src/tests/checksum.rs::adler32_bound_worst_case` (max-length run of 0xFF crossing the deferred-modulo bound).
-- `make ci` and `make heavy` pass.
-**Out of scope:** Unsafe code, SIMD and threads (SPEC §7). Changing semantics.
-**Verification:** `make bench` before and after, `make ci`, `make heavy`.
-**Depends on:** P4-08
-
-### P4-10: M4 acceptance and push
-**Goal:** Run the M4 acceptance commands, record fuzz, property and performance results, snapshot provenance, push, and list the manual checks.
-**Files touched:** `provenance/tool-log.snapshot.jsonl`, `docs/PERF.md` (final numbers only), plus fixes of ≤ 100 lines in Phase 4 files.
-**Design constraints:** SPEC §5 M4 acceptance: fuzz targets (a) and (b) each run 1 hour with zero crashes and divergences, and the chunking property test passes 10k cases.
-**Acceptance tests:**
-- `make ci` passes.
-- `make heavy` passes: conformance-full, proptest-10k and bomb.
-- `make fuzz-smoke` passes, or NOT RUN with the reason.
-- Record `make fuzz-divergences` counts.
-**Out of scope:** Running the 1-hour fuzzing unattended. It is a manual check.
-**Verification:** `make ci && make heavy && make fuzz-smoke && make provenance-snapshot && git push -u origin HEAD`. Write `Manual check: NOT VERIFIED (human)` with this list:
-1. Run `make fuzz-long`, or trigger `fuzz-nightly`, and confirm 1 hour each for (a) ×3 and (b) with zero crashes.
-2. Triage `divergences.jsonl` from (c).
-3. Re-run `make bench` on a quiet machine and confirm the PERF.md result line.
-4. Confirm GitHub CI is green.
-**Depends on:** P4-02, P4-03, P4-06, P4-09
-
-## Phase 6 — M6 Freeze and hand-off
-
-### P6-01: Provenance summary generator
-**Goal:** Generate `provenance/SUMMARY.md` from the tool log, the human-interventions file and git history, with every section SPEC §5 M6 requires.
-**Files touched:** `tools/cleanroom/summarize.py`, `tools/cleanroom/tests/test_summarize.py`, `tools/cleanroom/tests/fixtures/tool-log.sample.jsonl`, `Makefile` (target `provenance-summary`), `provenance/SUMMARY.md`.
-**Design constraints:** SPEC §5 M6 (total tool calls, denied calls with reasons, every file and URL read grouped, per-stage wall clock, models per stage, human interventions) and §2.3. Python 3 stdlib only.
-- **Input:** `provenance/tool-log.jsonl` if present, else `provenance/tool-log.snapshot.jsonl`. `--log` overrides.
-- **Sections:**
-  - Source and line count.
-  - Totals by tool and by stage.
-  - Denied calls: a table of ts, stage, task, tool, target and reason.
-  - Files read, grouped by top-level repo dir. Paths outside the repo are listed under a separate "Outside repository" heading.
-  - URLs fetched.
-  - Per-stage wall clock: first ts, last ts, span, and active time summing inter-call gaps under 15 minutes.
-  - Models per stage, with counts, and null reported as "unknown".
-  - Human interventions: the table from `provenance/human-interventions.md`, verbatim.
-  - Known gaps, copied from the `provenance/README.md` "Known gaps" section.
-- Lines that fail to parse are counted and reported, never dropped silently.
-**Acceptance tests:** `tools/cleanroom/tests/test_summarize.py`:
-- `test_totals`
-- `test_denied_table`
-- `test_files_grouped_and_outside_repo_flagged`
-- `test_urls_listed`
-- `test_stage_wall_clock_active_time`
-- `test_models_unknown_for_null`
-- `test_bad_lines_counted`
-- `test_includes_human_interventions`
-**Out of scope:** Transcript backfill (see Decisions). Tagging.
-**Verification:** `make tools-check && make provenance-summary`.
-**Depends on:** P0-10
-
-### P6-02: Build report generator and DESIGN.md audit
-**Goal:** Produce `docs/BUILD_REPORT.md` from git history and the docs via a re-runnable script, and audit DESIGN.md for complete RFC citations.
-**Files touched:** `tools/cleanroom/build_report.py`, `tools/cleanroom/tests/test_build_report.py`, `Makefile` (target `build-report`), `docs/BUILD_REPORT.md`, `docs/DESIGN.md` (fill any missing `RFC:` lines).
-**Design constraints:** SPEC §5 M6 (milestones, review rounds per milestone, defects caught in review vs by tests vs by fuzzing, known limitations) and §6 (DESIGN.md cites RFC sections for all core decisions).
-- **Milestones:** per phase, the task count and commit count, from `git log --format=%H%x00%s%x00%b` matching `[task:P<n>-`.
-- **Defects:** aggregate `Defects-caught:` lines from commit bodies, classified by keyword into tests / conformance / fuzz / review, with commits carrying `[stage:fix]` counted as review.
-- **Review rounds:** count `review:` commits. If there are none yet, write "Pending: regenerate with `make build-report` after the Foundry review converges".
-- **Known limitations:**
-  - M5 deferred (no_std, compressor)
-  - the PERF.md result line
-  - the provenance gaps from `provenance/README.md`
-  - open divergence classes, if any are recorded
-  - C ABI out of scope (SPEC §7)
-**Acceptance tests:** `tools/cleanroom/tests/test_build_report.py`:
-- `test_counts_tasks_per_phase` (temp git repo fixture)
-- `test_defects_classified`
-- `test_review_pending_when_no_review_commits`
-- `test_known_limitations_include_perf_result`
-Also, `make design-check` passes.
-**Out of scope:** Tagging. Editing SPEC.md.
-**Verification:** `make tools-check && make build-report && make design-check`.
-**Depends on:** P6-01, P4-09
-
-### P6-03: Freeze and hand-off push
-**Goal:** Run the final full verification, regenerate the provenance summary and build report, snapshot the log, push, and list the human steps for tagging `v0.1.0-cleanroom`.
-**Files touched:** `provenance/tool-log.snapshot.jsonl`, `provenance/SUMMARY.md`, `docs/BUILD_REPORT.md`.
-**Design constraints:** SPEC §5 M6 and §6 (definition of done). Per Decisions, the implementer does not create the tag.
-**Acceptance tests:**
-- `make ci` passes.
-- `make heavy` passes.
-- `make provenance-summary` and `make build-report` regenerate without error.
-- `make crate-checks` passes.
-**Out of scope:** Creating or pushing tags. Merging.
-**Verification:** `make ci && make heavy && make provenance-snapshot && make provenance-summary && make build-report && git push -u origin HEAD`. Write `Manual check: NOT VERIFIED (human)` with this list:
-1. After the Foundry review converges and the branch merges, run `make provenance-snapshot provenance-summary build-report`, commit, then `git tag v0.1.0-cleanroom && git push origin v0.1.0-cleanroom`.
-2. Complete `provenance/human-interventions.md`.
-3. Confirm the 1-hour fuzz results from P4-10 are recorded in BUILD_REPORT.md.
-**Depends on:** P6-01, P6-02
+### P5-03: Provenance, build report and hand-off push
+**Goal:** Regenerate the phase-2 build report and provenance summary, update the human-interventions log, snapshot provenance, run the final gates, push, and list the manual checks.
+**Files touched:** `docs/BUILD_REPORT.md` (generated), `provenance/SUMMARY.md` (generated), `provenance/human-interventions.md`, `provenance/tool-log.snapshot.jsonl`, and fixes of ≤ 100 lines anywhere, recorded in `Defects-caught:`.
+**Design constraints:** SPEC §6 M5 (regenerate BUILD_REPORT and SUMMARY; update human interventions; the implementer does not tag), §9, PT8.
+- Run `make provenance-snapshot`, `make provenance-summary` and `make build-report`.
+- `human-interventions.md`: add rows only for interventions this phase's progress log records, or relayed operator actions the implementer knows of. If there are none, add one dated sentence under the table saying the pipeline recorded none in phase 2.
+- Run `make ci` and `make heavy`, commit, and `git push -u origin HEAD`.
+**Acceptance tests:** `make ci` and `make heavy` pass. SUMMARY.md and BUILD_REPORT.md are regenerated for the phase-2 range.
+**Out of scope:** Tagging.
+**Verification:** `make ci && make heavy && make provenance-snapshot provenance-summary build-report && git push -u origin HEAD`. Write `Manual check: NOT VERIFIED (human)` with:
+1. Run the final `make bench` on a quiet machine with a fixed governor (SPEC §8), record the conditions, and compare with `docs/perf/P5-02.json`.
+2. Run `make fuzz-long` or the nightly workflow for all six targets and triage `make fuzz-divergences`.
+3. Confirm GitHub Actions `ci` is green.
+4. Review the PERF.md result line and the negative results.
+5. After review and merge into `feature/perf` (and on to `main`), tag `v0.2.0-cleanroom`.
+6. Complete `provenance/human-interventions.md`.
+**Depends on:** P5-01, P5-02
 
 ## Spec issues
-- **§2.3 hooks mid-session.** Claude Code may snapshot hooks when a session starts, so hooks written by M0 may not govern the rest of the same flight. Resolution: P0-10/P0-11 record whether the log is live, and a restart is a manual check. For the strongest record, a human should run Phase 0, restart Claude Code, then resume the flight.
-- **§2.3 logger vs denied calls.** PostToolUse does not fire for calls that PreToolUse blocked. Resolution: the guard logs its own denials.
-- **§2.3/§2.4 tracked log vs clean tree.** A tracked log that grows on every tool call conflicts with Foundry's clean-tree requirement. Resolution: the live log is gitignored, and a snapshot is committed at each phase end.
-- **§2.3 forbidden-word paths.** The literal rule forbids natural names such as fuzz targets or testdata folders containing "zlib". Resolution: naming convention (rfc1950/rfc1951/rfc1952), enforced by `make crate-checks`.
-- **§2.4 commit tags.** Foundry requires `<ID>: <title>` subjects and authors its own bookkeeping commits. Resolution: tags go in the body, and a `commit-msg` hook adds them to any commit lacking them. Commits created with `--no-verify` would be untagged; this is documented as a gap.
-- **§2.1 provenance start.** The plan stage (this document) ran before the harness existed, so there is no tool log for it. The planner read only docs/SPEC.md, the repo's README and Foundry's own plugin docs. Record this in `provenance/README.md` (P0-10).
-- **§2.1 zlib manual signatures.** §2.1 and §4 refer to "the zlib manual's documented function signatures written in the SPEC below", but SPEC contains none. Resolution: P1-01 lists the signatures and constants from the public API.
-- **§3.1 dev-dependencies.** Allowing dev-dependencies only in oracle/fuzz means cleanflate's own tests cannot use proptest. Resolution: property tests live in `crates/oracle/tests/`, and cleanflate tests use deterministic std-only generators.
-- **§3.1 MSRV pin.** "MSRV pinned in rust-toolchain.toml" requires rustup to install the exact `1.89.0` toolchain (a download) even though stable 1.89.0 is present. This is accepted.
-- **§4 generation matrix.** Levels 0–9 × 5 strategies × windowBits 9–15 × memLevel 1–9 × 3 framings is 9,450 streams per input and infeasible on Silesia. Resolution: the bounded matrix in P1-02 still covers every value.
-- **§4 corpus hosting.** SPEC does not say whether corpora and the generated corpus are committed. Resolution: neither is committed. Hashes are committed and CI fetches Canterbury.
-- **§5 M4 bomb ratio.** "1 KiB → >1 GiB" is impossible for single-layer DEFLATE (maximum about 1032:1). Resolution: about 1 MiB of compressed zeros expanding past `DEFAULT_MAX_OUTPUT` (P4-03).
-- **§5 per-milestone review.** "Each milestone ends with a Foundry review stage" does not match Foundry's single review loop per flight. Resolution: phase-end acceptance tasks. The human may run one flight per milestone.
-- **§5 M4 fuzz duration.** 1-hour runs per target cannot run inside per-task verify, and nightly/cargo-fuzz are not installed. Resolution: smoke runs in-flight, a nightly workflow, and a manual check.
-- **§5 M6 ordering.** The tag and "review rounds per milestone" can only exist after the Foundry review. Resolution: re-runnable generators, with the human tagging after merge.
-- **§3.2 incomplete codes.** RFC 1951 is silent on incomplete code sets, HDIST 31/32 usage, and length code 284 with extra value 31. Resolution: see Decisions, recorded in DESIGN.md D-11/D-13/D-14. Differential fuzz target (c) logs any disagreement with C zlib for human triage.
-- **§3.3 gzip FNAME/FCOMMENT.** These fields are unbounded, which conflicts with bounded memory. Resolution: store-and-truncate at `DEFAULT_MAX_GZIP_FIELD` without rejecting.
-- **§3.3 default output limit.** SPEC gives no value. Resolution: 1 GiB (Decisions).
+- **§4.1 streaming target denominator:** not stated. Resolved as C zlib one-shot, so no new FFI is needed (§10), and it is a conservative bar.
+- **§4.3 "time or calls spent building tables" vs phase-1 C7** (no clocks in the library): resolved as counts only. Time comes from profiles.
+- **§4.4 / M0 "order the remaining milestones' tasks by measured cost":** a plan executed unattended cannot be reordered. Resolved with a fixed milestone order plus gated tasks (PT2) and a recorded ranking (P0-12).
+- **§5 "cfg(test)-only or feature-gated switch":** `cfg(test)` cannot reach the oracle's integration tests. Resolved with feature `test-hooks`, enabled only in the oracle's dev-dependencies.
+- **§5 "identical ... consumed":** requires the Fast path to hold exactly the Reference path's buffered bits at every return. Made an explicit invariant in P1-01 and checked per call.
+- **Phase-1 D-16 vs the serial walk:** they disagree on when an incomplete distance table's unused code is `Invalid`, and the table's answer depends on the `DIST_TABLE_BITS` tunable. This is not in SPEC, but it blocks a well-defined differential. Resolved in P0-04 with a width-independent rule; accept/reject and the malformed expectations are unchanged. Consider noting it in SPEC §3's "identical accept/reject behaviour" (ErrorKind may move from `Truncated` to `InvalidSymbol` only for streams that are both truncated and invalid).
+- **§4.2 full bench runtime:** the full bench is about 10–15 minutes at baseline, so each run exceeds the agent's 10-minute foreground tool limit. Run in the background (PT8). A second full run for noise doubles it.
+- **§4.1 "no per-file regression ... more than the measured noise":** tiny Canterbury files have high relative noise. The threshold is max(file noise, aggregate noise), and each sample lasts ≥ 20 ms.
+- **§6 M3 "gzip ISIZE when trustworthy":** ISIZE is never trustworthy for allocation (multi-member streams, trailing data, hostile input). It is used only as a hint, capped by `max_output` and `ONESHOT_MAX_PREALLOC`.
+- **§3 "Additive, documented changes are allowed only if a measurement shows they are needed":** the `stats` and `test-hooks` APIs are required by SPEC itself (§4.3, §5) and are opt-in features. They are treated as allowed.
+- **§4.2 "Canterbury plus a fixed Silesia subset":** the subset is not named. Chosen as dickens, mr, ooffice, sao and xml (text, image, binary, low-ratio and high-ratio).
+- **§6 M5 regenerating BUILD_REPORT and SUMMARY "for phase 2":** the phase-1 generators count all history and phase-2 task IDs collide with phase-1 IDs. Resolved with `--since` scoping (P5-01).
+- **§8 dates:** the profiler install is dated 2026-09-30, but SPEC was committed 2026-09-29. It is cosmetic, and `perf`/`cargo flamegraph` are confirmed present at `/usr/bin/perf` and `~/.cargo/bin/cargo-flamegraph`.
+- **Phase-1 carry-overs** (review notes, not SPEC): the `32768` literal in `stream.rs` is fixed by P3-03. The stale `#[allow(dead_code)]` note and the garbled R1-01 comments are left for review to judge.
 
 ## Review fixes (round 1)
 
-### R1-01: Independent checksums in cleanflate unit-test fixtures (C16) plus a mechanical rule
-**Goal:** Stop cleanflate's unit-test fixture builders from computing trailer/header checksums with cleanflate's own crate::checksum, so a checksum bug can no longer hide itself, and add a docs/foundry.json rule so the same shape cannot pass again.
-**Files touched:** crates/cleanflate/src/tests/stream_contract.rs, crates/cleanflate/src/tests/zlib.rs, crates/cleanflate/src/tests/gzip.rs, crates/cleanflate/src/tests/gzip_header.rs, docs/foundry.json, CLAUDE.md
-**Design constraints:** C16: every checksum embedded in a fixture is either a hard-coded literal whose value was computed once with oracle::ffi::{crc32,adler32} (with a comment naming the call that produced it), or the test moves to crates/oracle/tests/ and calls oracle::ffi directly. cleanflate keeps zero dependencies (C3). Only crates/cleanflate/src/tests/checksum.rs may import crate::checksum under src/tests/. New foundry.json rule id `no-cleanflate-checksums-in-fixtures`: paths [crates/cleanflate/src/tests/], exclude [crates/cleanflate/src/tests/checksum.rs], pattern `\bcrate::checksum\b`, shouldMatch must include the diff's own lines `use crate::checksum::{adler32, crc32};` and `use crate::checksum::crc32;` and `use crate::checksum::adler32;`; shouldNotMatch includes `use crate::tests::bitwriter::BitWriter;` and `use crate::error::Error;`. Tag C16 in CLAUDE.md with [rule:no-cleanflate-checksums-in-fixtures]. Assertions that compare the decoder's reported `actual`/`dict_id` values must also use the independent (literal) value, not crate::checksum.
-**Acceptance tests:** All existing zlib/gzip/gzip_header/stream_contract tests keep passing with independent checksums. The new constraint rule's self-test fixtures pass in foundry_verify. Would-have-caught check: foundry_mutate on crates/cleanflate/src/checksum.rs replacing `            s2 = (s2 + s1) % ADLER_MOD;` with `            s2 = (s2 + s1) % (ADLER_MOD - 1);` must now fail at least one test in tests/zlib.rs (e.g. zlib_stored_hello), not only tests/checksum.rs.
-**Out of scope:** Changing checksum.rs itself. Changing decoder behaviour. Moving tests that do not build checksummed fixtures.
-**Verification:** make test && make lint && foundry_verify (constraints show the new rule ok with 0 hits)
+### R1-01: Pin the pending-literal give-back and keep the Reference path exact-fill
+**Goal:** Make the D-27 (b) exit invariant observable. An OutputFull exit must keep exactly the pending literal's code bits, and the Reference path must never give bytes back, so the fast-vs-reference differential stays an independent oracle for per-call consumed. Today, mutating `self.keep_bits = len;` (crates/cleanflate/src/inflate.rs:675) to `len.min(7)` survives make test and make proptest-3k.
+**Files touched:** crates/cleanflate/src/tests/bitreader_bulk.rs, crates/cleanflate/src/tests/stats.rs, crates/cleanflate/src/inflate.rs, crates/cleanflate/src/bitreader.rs, crates/cleanflate/src/huffman.rs
+**Design constraints:** SPEC 3 (exact consumed accounting), SPEC 5, CLAUDE.md PT3/C20, DESIGN D-27. Global invariants apply: no unsafe, no panicking calls or [] indexing in library code; debug_assert! is allowed.
+- Library changes are limited to:
+  - an optional `debug_assert!(self.path == DecodePath::Fast || k == 0, ...)` at the shared exit in `Inflater::step`;
+  - the two stale doc comments: bitreader.rs:11 ('at most 7 bits', superseded by D-27) and huffman.rs:121 (the Decoded::Invalid doc, superseded by D-26).
+- No behaviour change.
+- The consumed model in the new test must come from the test's own bit accounting (header bits + 9 bits per literal), never from cleanflate.
+**Acceptance tests:** - crates/cleanflate/src/tests/bitreader_bulk.rs::pending_literal_bits_kept_at_output_full:
+  - input: a hand-built fixed block of literals 144..=255 (9-bit codes, at least 64 literals) plus EOB, decoded with 1-byte output on both DecodePath::Fast and DecodePath::Reference;
+  - after every call returning OutputFull, cumulative consumed == ceil((3 header bits + 9 * literals_written + 9) / 8);
+  - repeat with output chunks of 3.
+- crates/cleanflate/src/tests/stats.rs::reference_path_never_gives_back (#[cfg(feature = "stats")]):
+  - streams: the same fixed literal stream plus the existing hand-built fixed and dynamic streams;
+  - output chunks 1 and 3;
+  - on DecodePath::Reference, Decompressor stats().given_back_bytes == 0.
+- Both tests must fail when crates/cleanflate/src/inflate.rs `self.keep_bits = len;` is mutated to `self.keep_bits = len.min(7);` (check with foundry_mutate or by reasoning in the commit).
+**Out of scope:** Any change to decoding behaviour, the fast loop, or the give-back algorithm itself. Performance work.
+**Verification:** make lint && make test && make proptest-3k. Then confirm by mutation that the keep_bits = len.min(7) mutant is killed by make test.
 **Depends on:** none
 
-### R1-02: Output limit: empty output slice must be OutputFull, and cover the streaming limit arithmetic
-**Goal:** Make Decompressor::decompress raise OutputLimitExceeded only when the remaining max_output allowance (not the caller's output slice length) bounded the call, so a zero-length output slice yields a resumable Ok(OutputFull), and add streaming tests that pin the limit arithmetic.
-**Files touched:** crates/cleanflate/src/stream.rs, crates/cleanflate/src/tests/stream_raw.rs, docs/DESIGN.md
-**Design constraints:** C4/C5/C8 apply (no panics, no indexing, limit only via Options/config constants). The limit error fires iff remaining_allowance < output.len() or remaining_allowance == 0, and the backend reported OutputFull. Exact-limit streams still succeed; limit+1 still fails with total_out() == limit. Update DESIGN.md D-13/D-20 wording if it describes the old condition.
-**Acceptance tests:** crates/cleanflate/src/tests/stream_raw.rs::empty_output_slice_is_output_full_not_limit: a stored or fixed stream that must emit bytes, decompress(&input, &mut []) returns Ok with status OutputFull and produced 0 (currently Err(OutputLimitExceeded)), then a 16-byte buffer finishes with the right bytes and Done. crates/cleanflate/src/tests/stream_raw.rs::streaming_limit_with_large_buffer: max_output 4 with a 64-byte output buffer on stored "hello" returns Err(OutputLimitExceeded{limit:4}) with total_out()==4; max_output 5 returns Done with "hello". Would-have-caught check: foundry_mutate on stream.rs replacing `let remaining_allowance = self.options.max_output.saturating_sub(already_out);` with `let remaining_allowance = self.options.max_output.saturating_add(1).saturating_sub(already_out);` must be killed by make test.
-**Out of scope:** decompress_with's growth schedule (next_len). The default limit value. Bomb tests.
-**Verification:** make test && make lint && make bomb
+### R1-02: Fast-loop error equivalence for an incomplete distance table's unused code
+**Goal:** Deterministically cover the fast loop's distance-lookup Invalid exit (crates/cleanflate/src/fast_loop.rs:137). Its error value can change today without make test noticing; only a random corrupted stream in proptest-3k catches it.
+**Files touched:** crates/cleanflate/src/tests/fast_loop.rs
+**Design constraints:** SPEC 5 (identical errors on both paths, mutation-check the fast path), RFC 1951 S3.2.7 (a single distance code of length 1 leaves one unused code). The test is hand-built with the existing bitwriter/dynbuilder helpers. No library change.
+**Acceptance tests:** - Extend crates/cleanflate/src/tests/fast_loop.rs::fast_loop_errors_identical_to_reference (or add fast_loop_incomplete_distance_table_invalid_code) with this case:
+  - a dynamic block whose distance table has exactly one code of length 1;
+  - at least FAST_LOOP_MIN_INPUT + 8 bytes of valid literals/matches, so the fast loop is entered;
+  - then a length symbol followed by the unused distance code (bit 1).
+- Assert the same Error value (InvalidSymbol) at the same call index on Fast and Reference. Use a whole-input call with >= 258 bytes of output room, plus the 7/13 schedule.
+- The test must fail when fast_loop.rs line 137 `Decoded::Invalid => return FastExit::Error(Error::InvalidSymbol),` is mutated to return `Error::BadBlockType`.
+**Out of scope:** Library changes; other error kinds already covered by fast_loop_errors_identical_to_reference.
+**Verification:** make lint && make test && make proptest-3k. Confirm by mutation that the BadBlockType mutant of the distance-Invalid arm is killed by make test.
 **Depends on:** none
-
-### R1-03: Gzip: exact consumed at Done under TrailingData::Allow
-**Goal:** Make gzip's member-boundary lookahead not count trailing bytes as consumed, so Progress.consumed at Done and Decoded.consumed stop exactly at the end of the last member (PLAN Decisions: 'Under Allow, consumed and trailing_start() report the exact offset'; P4-01 contract; lib.rs streaming docs; DESIGN.md D-20).
-**Files touched:** crates/cleanflate/src/gzip.rs, crates/cleanflate/src/stream.rs, crates/cleanflate/src/lib.rs, crates/cleanflate/src/tests/gzip.rs, crates/cleanflate/src/tests/stream_contract.rs, docs/DESIGN.md
-**Design constraints:** RFC 1952 S2.2 boundary rules from P3-03 stay as they are (1f 8b means a new member; anything else is trailing; a lone 0x1f that is the last byte offered is buffered and resolved by finish()). Decide at the boundary by peeking at bytes already in the current call's input rather than consuming them; only a lone trailing 0x1f at the end of a call may be consumed ahead of the decision. Document that single case as the one exception in lib.rs and D-19/D-20. decompress_with's Decoded.consumed equals trailing_start() whenever that is set. Reject-mode offsets are unchanged. C4/C5 apply.
-**Acceptance tests:** crates/cleanflate/src/tests/gzip.rs::gzip_trailing_allow_consumed_exact: one valid member of length N followed by b"XYZ" under Allow: decompress_with(..).consumed == N, and one streaming decompress call with the whole input returns Progress{consumed: N, status: Done} with trailing_start()==Some(N) (currently 27 vs 26 for a 26-byte member). Same for trailing bytes [0x1f, b'Z'] (currently overshoots by 2). crates/cleanflate/src/tests/stream_contract.rs::done_consumed_exact_all_formats extends done_consumed_exact_raw_and_zlib to Format::Gzip.
-**Out of scope:** Changing the 1f 8b rule. Raw/zlib trailing handling. Header parsing.
-**Verification:** make test && make lint
-**Depends on:** R1-01
-
-### R1-04: Bound retained gzip member headers during streaming
-**Goal:** Keep a streaming gzip Decompressor's memory bounded (SPEC S1) by capping how many GzipHeader values are retained, while still decoding every member and reporting how many members were seen.
-**Files touched:** crates/cleanflate/src/config.rs, crates/cleanflate/src/options.rs, crates/cleanflate/src/gzip.rs, crates/cleanflate/src/stream.rs, crates/cleanflate/src/tests/gzip.rs, docs/DESIGN.md, docs/foundry.json, CLAUDE.md
-**Design constraints:** New tunable DEFAULT_MAX_GZIP_HEADERS gets its value only in config.rs (C8), is re-exported beside DEFAULT_MAX_GZIP_FIELD, and Options gains max_gzip_headers initialised from it (option-defaults-not-literal). Add DEFAULT_MAX_GZIP_HEADERS to the tunables-defined-only-in-config pattern and add max_gzip_headers to the option-defaults-not-literal pattern in docs/foundry.json, each with a matching shouldMatch fixture. Headers past the cap are parsed and validated (including FHCRC) but not stored. Add Decompressor::gzip_member_count() -> u64 counting every member started. Decoded.gzip_members holds the retained headers only. New DESIGN.md decision with an RFC: line (RFC 1952 S2.2) and SPEC S1. Update CLAUDE.md's config.rs module-map line.
-**Acceptance tests:** crates/cleanflate/src/tests/gzip.rs::gzip_many_members_headers_bounded: 10 concatenated valid members with max_gzip_headers = 3 decode to the concatenation of all 10 payloads, gzip_headers().len() == 3, and gzip_member_count() == 10. crates/cleanflate/src/tests/gzip.rs::gzip_default_header_cap_from_config: Options::default().max_gzip_headers == DEFAULT_MAX_GZIP_HEADERS.
-**Out of scope:** Changing the per-field max_gzip_field cap. Output-limit logic.
-**Verification:** make test && make lint && foundry_verify
-**Depends on:** R1-03
-
-### R1-05: Make stream_contract test drivers fail instead of hang on no progress
-**Goal:** Make every chunk-driving loop in stream_contract.rs fail with a clear message when a call on empty input makes no progress and does not return Done, so a decoder regression turns into a red test instead of a hang in make test.
-**Files touched:** crates/cleanflate/src/tests/stream_contract.rs
-**Design constraints:** Test-only change. Use a no-progress guard (consumed == 0 && produced == 0 && input empty && status != Done → panic with format and state), not a wall-clock timeout. Keep every existing assertion.
-**Acceptance tests:** Would-have-caught check: foundry_mutate on crates/cleanflate/src/gzip.rs replacing `if expected_isize != actual_isize {` with `if false && expected_isize != actual_isize {` must report killed within the normal make test time. It currently hangs forever in stream_contract::error_sticky_all_formats.
-**Out of scope:** Decoder changes. Loops in other test files, unless they share a helper.
-**Verification:** make test && make lint
-**Depends on:** R1-03
-
-### R1-06: Commit fuzz/Cargo.lock instead of gitignoring it to dodge libz-only-in-oracle
-**Goal:** Restore reproducible fuzz builds by tracking fuzz/Cargo.lock, and scope the libz-only-in-oracle rule so an unavoidable transitive lockfile entry is not a violation.
-**Files touched:** .gitignore, fuzz/Cargo.lock, docs/foundry.json
-**Design constraints:** Remove the /fuzz/Cargo.lock ignore and its comment. Add `exclude: ["fuzz/Cargo.lock"]` to libz-only-in-oracle and update its description to say lockfiles are exempt; keep every existing fixture. fuzz/Cargo.lock must pin the same libz-sys version as the workspace Cargo.lock. C11: the lockfile path contains no forbidden word.
-**Acceptance tests:** foundry_verify constraints show libz-only-in-oracle ok with 0 hits while fuzz/Cargo.lock is tracked. make crate-checks passes (forbidden-paths). make fuzz-check passes using the committed lockfile.
-**Out of scope:** Changing fuzz targets. Workflow changes beyond what the lockfile needs.
-**Verification:** make fuzz-check && make crate-checks && foundry_verify
-**Depends on:** none
-
-### R1-07: Multi-member-aware oracle for differential fuzz target (c)
-**Goal:** Make diff_oracle_arbitrary compare cleanflate's RFC 1952 S2.2 multi-member gzip decoding against an oracle that also concatenates members, so gzip divergences in the log mean something instead of being background noise.
-**Files touched:** crates/oracle/src/ffi.rs, crates/oracle/tests/ffi_roundtrip.rs, fuzz/fuzz_targets/diff_oracle_arbitrary.rs, fuzz/README.md
-**Design constraints:** C9: fuzz reaches C zlib only through oracle::ffi. Add oracle::ffi::inflate_gzip_members(input, max_output) -> InflateOutcome. It calls inflate_bytes repeatedly while the remaining input starts with 1f 8b and the previous member hit StreamEnd, concatenates outputs, stops at the first non-1f8b remainder (trailing, allowed), and reports an error status if any member fails. The target uses it for Framing::Gzip only; raw/zlib are unchanged. Divergences are still logged, never panicked on.
-**Acceptance tests:** crates/oracle/tests/ffi_roundtrip.rs::gzip_multi_member_matches_concatenation: two oracle-compressed gzip members, concatenated, give the concatenated payloads with consumed == total length; appending b"XYZ" still gives StreamEnd with consumed == member bytes; a second member with a corrupt CRC gives an error status. After a make fuzz-smoke run (if nightly is available), make fuzz-divergences shows no gzip both_ok_differ entries caused by multi-member concatenation; record the per-class counts in the progress log, or record NOT RUN with the reason.
-**Out of scope:** Changing cleanflate. Target (b). Workflow changes.
-**Verification:** make test && make fuzz-check (plus make fuzz-smoke and make fuzz-divergences if nightly is available)
-**Depends on:** R1-03, R1-06
-
-### R1-08: Complete the provenance record: intervention row, denial notes, bootstrap gaps
-**Goal:** Record in provenance/ what this run actually did that the log alone does not explain: the human browser download for P0-08, the guard denials that were never noted as CR6 requires (including P1-01's blocked search for libz-sys source), the untagged bootstrap commits, and the phases that ran before LOCKDOWN existed. Also make sources-check enforce that manual fetches have an intervention row.
-**Files touched:** provenance/human-interventions.md, provenance/README.md, tools/ci/sources-check.sh, tools/ci/tests/sources_check_test.sh
-**Design constraints:** Do not delete or rewrite any log or git history. human-interventions.md keeps P0-10's table format and gains a row: the Canterbury archive downloaded by a human operator in a browser from the allowlisted URL (Cloudflare 403 for automated requests), stage/task implement/P0-08, sha256 f140e8a5b73d3f53198555a63bfb827889394a42f20825df33c810c3d5e3f8fb. provenance/README.md gains two sections. 'Denied calls during build' lists each denied entry in provenance/tool-log.jsonl with its ts, task and reason, and says explicitly that the P1-01 `find / -path '*/libz-sys-*/src/lib.rs'` attempt was blocked by the guard and that no libz-sys source was read. 'Known gaps' adds: commits c1bbaa9 4015214 8edc633 956d6d7 44f624e f776879 predate the commit-msg hook and carry no [stage:][task:] tags; LOCKDOWN was not written before Phases 1-4 ran because P0-10 was skipped; the P0-08 retries used a browser User-Agent against the allowlisted URL. sources-check fails when any testdata/corpora/SOURCES.json entry has a fetched_by value other than the automated default and human-interventions.md has no row mentioning that entry's archive_sha256.
-**Acceptance tests:** tools/ci/tests/sources_check_test.sh::case_manual_fetch_requires_intervention_row: on a temp copy, a SOURCES.json entry with fetched_by "human-operator-browser" and no matching row fails; adding the row passes. The real repo passes make sources-check.
-**Out of scope:** Generating provenance/SUMMARY.md (P6-01). Changing guard behaviour.
-**Verification:** make tools-check && make sources-check
-**Depends on:** P0-10
 
 ## Review fixes (round 2)
 
-### R2-01: C5: CRC-32 table without indexing, plus a rule against panic-lint suppression in cleanflate lib
-**Goal:** Remove the only #[allow(clippy::indexing_slicing)] in cleanflate library code (checksum.rs crc32_table) by building the table without [] indexing, and add a docs/foundry.json rule so a local clippy allow can never again hide a C4/C5 violation.
-**Files touched:** crates/cleanflate/src/checksum.rs, crates/cleanflate/src/tests/checksum.rs, docs/foundry.json, CLAUDE.md
-**Design constraints:** C5: no [] indexing or slicing in cleanflate library code, and no #[allow]/#![allow] of clippy::indexing_slicing, unwrap_used, expect_used or panic anywhere under crates/cleanflate/src/ outside src/tests/. Keep CRC32_TABLE a compile-time const. Acceptable constructions: an array literal expanded by a macro from a `const fn crc32_entry(n: u32) -> u32` (while-loop over the 8 bit steps, RFC 1952 S8), or a const walk using split_first_mut (const-stable on the pinned 1.89 toolchain). C4/C8/C10 apply. New foundry.json rule id `no-panic-lint-allow-in-cleanflate-lib`: paths [crates/cleanflate/src/], exclude [crates/cleanflate/src/tests/], pattern matching `allow(` followed (within the same attribute) by clippy::unwrap_used|expect_used|panic|indexing_slicing, e.g. `allow\s*\([^)]*clippy::(unwrap_used|expect_used|panic|indexing_slicing)\b`. shouldMatch must include this diff's own line `#[allow(clippy::indexing_slicing)]` plus `#![allow(clippy::unwrap_used, clippy::indexing_slicing)]`; shouldNotMatch must include `#[allow(dead_code)]` and `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]`. Tag C5 in CLAUDE.md with [rule:no-panic-lint-allow-in-cleanflate-lib] while keeping the clippy/make lint mention.
-**Acceptance tests:** crates/cleanflate/src/tests/checksum.rs::crc32_table_matches_bitwise_reference: for every n in 0..256, the table entry used by crc32 (exercise via crc32 of a single byte, or expose the table pub(crate)) equals a bit-at-a-time reflected 0xEDB88320 computation written in the test. Existing crc32 tests and crates/oracle/tests/checksums.rs keep passing. foundry_verify shows the new rule ok with 0 hits and its fixtures passing; before the fix the rule would hit checksum.rs:100.
-**Out of scope:** Adler-32. Performance changes to CRC (slice-by-N). The allow(dead_code) attributes in tables.rs.
-**Verification:** make lint && make test && foundry_verify (constraints: no-panic-lint-allow-in-cleanflate-lib ok, 0 hits)
-**Depends on:** none
-
-### R2-02: Gzip finish(): member-seen test must use member_count, not retained headers
-**Goal:** Make GzipDecoder::finish decide 'at least one member completed' from member_count rather than !headers.is_empty(), so Options { max_gzip_headers: 0 } still decodes valid gzip input instead of failing with Truncated.
-**Files touched:** crates/cleanflate/src/gzip.rs, crates/cleanflate/src/tests/gzip.rs
-**Design constraints:** RFC 1952 S2.2 boundary rules unchanged. Audit gzip.rs for any other place that uses headers (len/is_empty) as a proxy for members seen and switch it to member_count. Headers stay capped by max_gzip_headers. C4/C5/C15 apply.
-**Acceptance tests:** crates/cleanflate/src/tests/gzip.rs::gzip_zero_header_cap_still_decodes: with Options { max_gzip_headers: 0, ..Default }, one valid member decodes via decompress_with to its payload with gzip_members empty; two concatenated members decode to the concatenation; a streaming Decompressor over the two members finishes Ok with gzip_headers().len() == 0 and gzip_member_count() == 2. (Currently decompress_with returns Err(Truncated).) A truncated first member with max_gzip_headers 0 still returns Truncated.
-**Out of scope:** Changing the default cap. Output-limit logic. decompress_with's consumed reporting (R2-03).
-**Verification:** make test && make lint
-**Depends on:** none
-
-### R2-03: decompress_with: exact consumed at a lone trailing 0x1f, and fail instead of spinning when the buffer cannot grow
-**Goal:** Make decompress_with's Decoded.consumed equal trailing_start() whenever that is set (including an input ending in a lone 0x1f under TrailingData::Allow), and make its loop return OutputLimitExceeded rather than spin forever if an OutputFull comes back for an empty write region.
-**Files touched:** crates/cleanflate/src/stream.rs, crates/cleanflate/src/tests/gzip.rs, crates/cleanflate/src/tests/stream_raw.rs, docs/DESIGN.md
-**Design constraints:** PLAN R1-03: 'decompress_with's Decoded.consumed equals trailing_start() whenever that is set' -- the lone-0x1f exception in lib.rs/D-19 applies to streaming callers only, since the one-shot API sees the whole input; update the lib.rs/D-19/D-20 wording to say so. In decompress_with, when the write region passed to decompress was empty (buffer already at next_len's cap) and the call returns OutputFull, return Err(Error::OutputLimitExceeded { limit: options.max_output }) instead of continue. No change to Decompressor::decompress's limit logic. C4/C5/C8/C15 apply; the growth step constant is out of scope.
-**Acceptance tests:** crates/cleanflate/src/tests/gzip.rs::gzip_trailing_allow_lone_1f_one_shot: one valid member of length N followed by the single byte 0x1f under Allow: decompress_with(..).consumed == N (currently N+1) and data is the member payload; under Reject the error is TrailingData { offset: N }. Would-have-caught check for the hang: foundry_mutate on crates/cleanflate/src/stream.rs replacing `let remaining_allowance = self.options.max_output.saturating_sub(already_out);` with `let remaining_allowance = self.options.max_output.saturating_add(1).saturating_sub(already_out);` must report killed with timedOut false (today tests::stream_raw::limit_plus_one_err never terminates). Existing limit_exact_ok / limit_plus_one_err / streaming_limit_with_large_buffer keep passing.
-**Out of scope:** Streaming Progress.consumed for a lone 0x1f at the end of a call (documented exception). next_len's growth schedule. Gzip header cap (R2-02).
-**Verification:** make test && make lint && make bomb && make design-check
-**Depends on:** R2-02
-
-### R2-04: Oracle multi-member gzip: test a 0x1f-not-0x8b trailer
-**Goal:** Cover inflate_gzip_members' 1f 8b new-member check so a regression that treats any 0x1f as a new member (reintroducing spurious fuzz target (c) gzip divergences) fails make test.
-**Files touched:** crates/oracle/tests/ffi_roundtrip.rs
-**Design constraints:** Test-only. C9: reach C zlib only through oracle::ffi. Keep every existing assertion in gzip_multi_member_matches_concatenation.
-**Acceptance tests:** crates/oracle/tests/ffi_roundtrip.rs::gzip_multi_member_matches_concatenation (extended) or a new gzip_multi_member_1f_trailer_is_trailing: two oracle gzip members followed by [0x1f, b'Z'] give status StreamEnd, output b"helloworld", consumed == both.len(). Would-have-caught check: foundry_mutate on crates/oracle/src/ffi.rs replacing `let starts_new_member = next.first() == Some(&0x1f) && next.get(1) == Some(&0x8b);` with `let starts_new_member = next.first() == Some(&0x1f);` must report killed (it currently survives).
-**Out of scope:** Changing inflate_gzip_members' behaviour. Fuzz targets. cleanflate.
-**Verification:** make test
-**Depends on:** none
-
-### R2-05: Provenance summary: list URLs fetched via Bash, and state the Bash-read gap
-**Goal:** Make provenance/SUMMARY.md's 'URLs fetched' section include every http(s) URL in allowed Bash tool calls (curl/wget and fetch-script invocations), not only WebFetch, so the summary no longer claims no URL was fetched when the log shows curl fetches (SPEC S5 M6).
-**Files touched:** tools/cleanroom/summarize.py, tools/cleanroom/tests/test_summarize.py, tools/cleanroom/tests/fixtures/tool-log.sample.jsonl, provenance/README.md, provenance/SUMMARY.md
-**Design constraints:** Python 3 stdlib only. Extract URLs with a regex over allowed Bash targets; group the section by tool (WebFetch, Bash). Denied fetches stay in the Denied calls table only. Add a provenance/README.md 'Known gaps' bullet: files read through Bash commands (cat/sed/grep/head) appear in the log as commands, not under 'Files read', which lists Read/Write/Edit targets only. Regenerate provenance/SUMMARY.md with make provenance-summary. Never edit or filter tool-log entries.
-**Acceptance tests:** tools/cleanroom/tests/test_summarize.py::test_urls_listed extended (or test_urls_from_bash_curl): a fixture line with tool Bash, decision allowed, target 'curl -sSfL -o x https://corpus.canterbury.ac.nz/resources/cantrbry.tar.gz' makes that URL appear under URLs fetched; a denied Bash curl URL does not appear there. After regeneration, provenance/SUMMARY.md lists https://corpus.canterbury.ac.nz/resources/cantrbry.tar.gz.
-**Out of scope:** Parsing file paths out of arbitrary Bash commands. build_report.py. Guard behaviour.
-**Verification:** make tools-check && make provenance-summary
-**Depends on:** none
-
-## Review fixes (round 3)
-
-### R3-01: Provenance summary: list URLs fetched by the fetch scripts (RFC and corpus manifests)
-**Goal:** Make provenance/SUMMARY.md's 'URLs fetched' section list the URLs fetched by allowed invocations of the RFC and corpus fetch scripts under tools/cleanroom/ (taken from the tracked manifests they write: docs/rfc/SOURCES.json and testdata/corpora/SOURCES.json), so the three rfc-editor.org RFC URLs and the corpus URLs appear, as R2-05's goal ('curl/wget and fetch-script invocations') and SPEC S5 M6 ('every file and URL read') require.
-**Files touched:** tools/cleanroom/summarize.py, tools/cleanroom/tests/test_summarize.py, tools/cleanroom/tests/fixtures/tool-log.sample.jsonl, provenance/SUMMARY.md
-**Design constraints:** Python 3 stdlib only. Keep the existing ### WebFetch and ### Bash groups and the allowed-only rule (denied calls never contribute a URL). Add a '### Fetch scripts' group: for each fetch script *invoked* by an allowed Bash call (e.g. 'bash tools/cleanroom/<script>.sh ...' or './tools/cleanroom/<script>.sh'), NOT one that merely mentions it (grep/sed/cat/shellcheck/chmod-only/git add), list every url recorded in that script's manifest (docs/rfc/SOURCES.json is a list of {file,url,...}; testdata/corpora/SOURCES.json is keyed by corpus with url/archive fields and optional fetched_by), naming the manifest path and including fetched_by when present (Canterbury: human-operator-browser). Manifest paths resolved relative to the repo root passed to/derived by summarize.py so tests can point at fixture manifests. A missing manifest for an invoked script must be reported in the section as missing, never silently skipped. Never edit or filter tool-log entries. GUARD WARNING (CR6): after lockdown, guard.py denies any Bash command whose text contains either fetch-script filename or CLEANROOM_ALLOW_CORPUS_FETCH -- including git commit message bodies and greps. Create/edit fixtures and code with Write/Edit only, and keep those literal filenames out of every Bash command string (commit messages included; say 'the RFC fetch script'/'the corpus fetch script'). If a needed Bash command would be denied, do not work around it; note it and continue.
-**Acceptance tests:** tools/cleanroom/tests/test_summarize.py::TestUrlsListed.test_urls_from_fetch_scripts (new): fixture log with (a) an allowed Bash line invoking the RFC fetch script, (b) an allowed Bash line that only greps the corpus fetch script, and (c) a denied Bash line invoking the corpus fetch script, plus fixture RFC and corpus manifests -> the RFC manifest's URLs appear under '### Fetch scripts' with the manifest path; the corpus manifest's URLs do NOT appear (only mentioned in (b), denied in (c)). A second case with an allowed corpus-script invocation lists its URLs and its fetched_by value. Would-have-caught: against today's summarize.py the RFC-manifest URL assertion fails (no such section). After regeneration, provenance/SUMMARY.md lists https://www.rfc-editor.org/rfc/rfc1950.txt, rfc1951.txt and rfc1952.txt.
-**Out of scope:** Parsing file paths out of arbitrary Bash commands. build_report.py. Guard behaviour (guard.py substring match). The fetch scripts themselves and the SOURCES.json manifests (read-only inputs).
-**Verification:** make tools-check && make provenance-summary && grep -c 'rfc-editor.org/rfc/rfc195' provenance/SUMMARY.md (expect >= 3)
+### R2-01: Pin the decode path through the zlib and raw-dictionary inflater constructors
+**Goal:** Make the DecodePath plumbing into ZlibDecoder (initial inflater and FDICT dictionary inflater) and into the raw-with-dictionary Decompressor backend observable by tests, so a regression cannot silently turn the SPEC 5 fast-vs-reference differential into Fast-vs-Fast for zlib-framed and dictionary streams. Today, hard-coding DecodePath::Fast at crates/cleanflate/src/zlib.rs:47 (`inflater: Inflater::new_with_path(path)`), zlib.rs:150 (`Inflater::with_dictionary(dict, self.path)`) or stream.rs:172 (`Backend::Raw(Inflater::with_dictionary(dict, path))`) survives make test; the zlib.rs:150 mutant is caught only incidentally by the dead_code lint.
+**Files touched:** crates/cleanflate/src/zlib.rs, crates/cleanflate/src/stream.rs, crates/cleanflate/src/tests/decode_path.rs
+**Design constraints:** SPEC 5 (differential decodes the entire corpus both ways), PLAN P0-04 plumbing ('pass it to every Inflater they create', dictionary variant takes a path). Global invariants apply: no unsafe, no panicking calls or [] indexing in library code. Library changes are limited to two pub(crate) read-only accessors: `ZlibDecoder::inflater_path(&self) -> DecodePath` (mirroring GzipDecoder::inflater_path) and a Decompressor accessor returning the current backend inflater's path; both get `#[cfg_attr(not(test), allow(dead_code))]` exactly like the gzip accessor (dead_code only; never allow clippy panic/indexing lints, C5). No behaviour change; no public API change.
+**Acceptance tests:** crates/cleanflate/src/tests/decode_path.rs::zlib_decoder_uses_same_path: ZlibDecoder::new(None, DecodePath::Reference) reports Reference before and after stepping a plain zlib header; a zlib FDICT stream (hand-built, DICTID from oracle-independent hard-coded Adler-32 bytes or computed by the test's own arithmetic per C16, not crate::checksum) decoded with the matching dictionary reports Reference after the DICTID is accepted and output is produced. crates/cleanflate/src/tests/decode_path.rs::decompressor_passes_path_every_format: Decompressor::new_with_path(format, options, DecodePath::Reference) reports Reference for Raw, Raw with Options.dictionary set, Zlib and Gzip (after one decompress call on a valid stream). Each of these three mutants must be killed by make test: zlib.rs `inflater: Inflater::new_with_path(path),` -> `Inflater::new_with_path(DecodePath::Fast),`; zlib.rs `Inflater::with_dictionary(dict, self.path)` -> `Inflater::with_dictionary(dict, DecodePath::Fast)`; stream.rs `Backend::Raw(Inflater::with_dictionary(dict, path))` -> `Backend::Raw(Inflater::with_dictionary(dict, DecodePath::Fast))`.
+**Out of scope:** Any change to decoding behaviour, the fast loop, or the oracle differential harness. Performance work. Changing how GzipDecoder exposes its path.
+**Verification:** make lint && make test && make proptest-3k. Then confirm by foundry_mutate (commands: make test) that each of the three mutants listed under tests is killed.
 **Depends on:** none

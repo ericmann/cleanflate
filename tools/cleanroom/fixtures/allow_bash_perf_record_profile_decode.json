@@ -1,0 +1,1 @@
+{"tool_name": "Bash", "tool_input": {"command": "perf record --call-graph dwarf -o target/profile/perf.data target/release/examples/profile_decode --dir testdata/perf-inputs/silesia/rfc1951-l6"}, "cwd": "__ROOT__"}

@@ -9,8 +9,13 @@
 
 use proptest::prelude::*;
 
+mod common;
+use common::{
+    chunk_schedule_strategy, data_strategy, dump_candidate, params_strategy, to_cleanflate_format,
+};
+
 use cleanflate::{decompress_with, Decompressor, Error, Format, Options, Status};
-use oracle::ffi::{deflate_bytes, DeflateParams, Framing, Strategy as ZlibStrategy};
+use oracle::ffi::{deflate_bytes, DeflateParams};
 
 /// Case count, overridable for the heavy `make proptest-10k` target;
 /// falls back to a small default for ordinary `make test` runs.
@@ -28,63 +33,6 @@ fn config() -> ProptestConfig {
         cases: case_count(),
         ..ProptestConfig::default()
     }
-}
-
-fn to_cleanflate_format(framing: Framing) -> Format {
-    match framing {
-        Framing::Raw => Format::Raw,
-        Framing::Zlib => Format::Zlib,
-        Framing::Gzip => Format::Gzip,
-    }
-}
-
-fn framing_strategy() -> impl Strategy<Value = Framing> {
-    prop_oneof![Just(Framing::Raw), Just(Framing::Zlib), Just(Framing::Gzip),]
-}
-
-fn zlib_strategy_strategy() -> impl Strategy<Value = ZlibStrategy> {
-    prop_oneof![
-        Just(ZlibStrategy::Default),
-        Just(ZlibStrategy::Filtered),
-        Just(ZlibStrategy::HuffmanOnly),
-        Just(ZlibStrategy::Rle),
-        Just(ZlibStrategy::Fixed),
-    ]
-}
-
-/// 0..=16384 bytes, a mix of fully random data and short repeated
-/// patterns (which exercise DEFLATE's match-copying much harder than
-/// uniform random noise would).
-fn data_strategy() -> impl Strategy<Value = Vec<u8>> {
-    prop_oneof![
-        proptest::collection::vec(any::<u8>(), 0..=16384),
-        (
-            proptest::collection::vec(any::<u8>(), 1..=64),
-            0..=16384usize
-        )
-            .prop_map(|(pattern, len)| pattern.iter().cycle().take(len).copied().collect()),
-    ]
-}
-
-/// A chunk-size schedule: elements 1..=64, cycled as needed; a 1-in-10
-/// chance of an all-1s schedule (the harshest case -- every call moves
-/// exactly one byte).
-fn chunk_schedule_strategy() -> impl Strategy<Value = Vec<usize>> {
-    prop_oneof![
-        1 => proptest::collection::vec(Just(1usize), 1..=32),
-        9 => proptest::collection::vec(1usize..=64, 1..=32),
-    ]
-}
-
-#[allow(clippy::too_many_arguments)]
-fn params_strategy() -> impl Strategy<Value = (Framing, u8, ZlibStrategy, u8, u8)> {
-    (
-        framing_strategy(),
-        0u8..=9,
-        zlib_strategy_strategy(),
-        9u8..=15,
-        1u8..=9,
-    )
 }
 
 /// Feed `compressed` to a fresh `Decompressor` using `in_schedule`
@@ -149,13 +97,22 @@ proptest! {
         };
         let format = to_cleanflate_format(framing);
 
-        let one_shot = decompress_with(format, &compressed, &Options::default())
-            .map_err(|e| TestCaseError::fail(format!("one-shot decode failed: {e:?}")))?;
-        prop_assert_eq!(&one_shot.data, &data, "one-shot output must equal the original data");
+        let result = (|| -> Result<(), TestCaseError> {
+            let one_shot = decompress_with(format, &compressed, &Options::default())
+                .map_err(|e| TestCaseError::fail(format!("one-shot decode failed: {e:?}")))?;
+            prop_assert_eq!(&one_shot.data, &data, "one-shot output must equal the original data");
 
-        let streamed = stream_decode(format, &compressed, &in_schedule, &out_schedule)
-            .map_err(|e| TestCaseError::fail(format!("streamed decode failed: {e:?}")))?;
-        prop_assert_eq!(&streamed, &data, "streamed output must equal the original data");
+            let streamed = stream_decode(format, &compressed, &in_schedule, &out_schedule)
+                .map_err(|e| TestCaseError::fail(format!("streamed decode failed: {e:?}")))?;
+            prop_assert_eq!(&streamed, &data, "streamed output must equal the original data");
+            Ok(())
+        })();
+        if let Err(e) = result {
+            // Shrinking calls the test last with the minimal case, so the
+            // final dump is the minimal one.
+            let path = dump_candidate("chunking", format, &compressed, &in_schedule, &out_schedule, &e.to_string());
+            return Err(TestCaseError::fail(format!("{e} (saved {})", path.display())));
+        }
     }
 
     #[test]
@@ -181,26 +138,33 @@ proptest! {
         }
         let format = to_cleanflate_format(framing);
 
-        let one_shot = decompress_with(format, &compressed, &Options::default());
-        let streamed = stream_decode(format, &compressed, &in_schedule, &out_schedule);
+        let result = (|| -> Result<(), TestCaseError> {
+            let one_shot = decompress_with(format, &compressed, &Options::default());
+            let streamed = stream_decode(format, &compressed, &in_schedule, &out_schedule);
 
-        match (&one_shot, &streamed) {
-            (Ok(a), Ok(b)) => {
-                prop_assert_eq!(&a.data, b, "Ok/Ok: streamed and one-shot output must match");
+            match (&one_shot, &streamed) {
+                (Ok(a), Ok(b)) => {
+                    prop_assert_eq!(&a.data, b, "Ok/Ok: streamed and one-shot output must match");
+                }
+                (Err(a), Err(b)) => {
+                    prop_assert_eq!(
+                        a.kind(),
+                        b.kind(),
+                        "Err/Err: streamed and one-shot must fail with the same ErrorKind"
+                    );
+                }
+                _ => {
+                    prop_assert!(
+                        false,
+                        "streamed and one-shot disagree on Ok/Err: one_shot={one_shot:?} streamed={streamed:?}"
+                    );
+                }
             }
-            (Err(a), Err(b)) => {
-                prop_assert_eq!(
-                    a.kind(),
-                    b.kind(),
-                    "Err/Err: streamed and one-shot must fail with the same ErrorKind"
-                );
-            }
-            _ => {
-                prop_assert!(
-                    false,
-                    "streamed and one-shot disagree on Ok/Err: one_shot={one_shot:?} streamed={streamed:?}"
-                );
-            }
+            Ok(())
+        })();
+        if let Err(e) = result {
+            let path = dump_candidate("chunking-corrupt", format, &compressed, &in_schedule, &out_schedule, &e.to_string());
+            return Err(TestCaseError::fail(format!("{e} (saved {})", path.display())));
         }
     }
 }

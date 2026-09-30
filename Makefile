@@ -1,6 +1,6 @@
-.PHONY: fmt-check lint test corpus corpus-full crate-checks cleanroom-selftest \
-        tools-check design-check ci proptest-10k bomb heavy \
-        fuzz-check fuzz-smoke fuzz-long fuzz-divergences bench \
+.PHONY: regress-seed fmt-check lint test corpus corpus-full crate-checks cleanroom-selftest \
+        tools-check design-check ci proptest-10k proptest-3k fastslow-full bomb heavy \
+        fuzz-check fuzz-smoke fuzz-long fuzz-divergences bench bench-quick bench-compare bench-noise bench-md bench-stats profile-prep profile flamegraph \
         provenance-snapshot provenance-summary build-report hooks-install \
         sources-check conformance-full malformed
 
@@ -9,9 +9,15 @@ fmt-check:
 
 lint:
 	cargo clippy --workspace --all-targets -- -D warnings
+	cargo clippy -p cleanflate --lib -- -D warnings
+	cargo clippy -p cleanflate --all-targets --features stats -- -D warnings
+	cargo clippy -p cleanflate --all-targets --features stats,test-hooks -- -D warnings
+	cargo clippy -p oracle --all-targets --features stats -- -D warnings
 
 test:
 	cargo test --workspace
+	cargo test -p cleanflate
+	cargo test -p cleanflate --features stats
 
 corpus:
 	cargo run --release -q -p oracle -- generate --tier quick
@@ -65,7 +71,7 @@ fuzz-check:
 
 FUZZ_SECONDS ?= 60
 FUZZ_TARGETS := never_panic_raw never_panic_rfc1950 never_panic_rfc1952 \
-                 diff_oracle_roundtrip diff_oracle_arbitrary
+                 diff_oracle_roundtrip diff_oracle_arbitrary diff_fast_reference
 FUZZ_SMOKE_TARGETS := $(addprefix fuzz-smoke-,$(FUZZ_TARGETS))
 
 fuzz-smoke-%:
@@ -91,19 +97,31 @@ fuzz-divergences:
 	fi
 
 proptest-10k:
-	CLEANFLATE_CHUNKING_CASES=10000 cargo test --release -p oracle --test chunking
+	CLEANFLATE_CHUNKING_CASES=10000 CLEANFLATE_FASTSLOW_CASES=10000 cargo test --release -p oracle --test chunking --test fastslow
 
 bomb:
 	cargo test --release -p oracle --test bomb -- --include-ignored
 
-heavy: proptest-10k bomb conformance-full
+heavy: proptest-10k bomb conformance-full fastslow-full
 	@echo "heavy: proptest-10k, bomb and conformance-full passed. fuzz-long (5 x 1h) is not run as part of heavy -- use 'make fuzz-long' or the fuzz-nightly workflow directly."
 
 malformed:
 	cargo run -q -p oracle -- malformed
 
+BENCH_ID ?= adhoc
+BENCH_OUT ?= target/bench/$(BENCH_ID).json
+
 bench:
-	cargo run --release -q -p oracle -- bench --corpus silesia
+	mkdir -p $(dir $(BENCH_OUT))
+	cargo run --release -q -p oracle -- bench --kind full --corpus silesia,canterbury \
+		--framings raw,zlib,gzip --levels 1,6,9 --modes oneshot,streaming --iters 7 \
+		--task $(BENCH_ID) --json $(BENCH_OUT)
+
+bench-quick:
+	mkdir -p $(dir $(BENCH_OUT))
+	cargo run --release -q -p oracle -- bench --kind quick --subset quick --corpus silesia,canterbury \
+		--framings raw,zlib,gzip --levels 6 --modes oneshot,streaming --iters 5 \
+		--task $(BENCH_ID) --json $(BENCH_OUT)
 
 sources-check:
 	bash tools/ci/sources-check.sh
@@ -111,13 +129,66 @@ sources-check:
 provenance-snapshot:
 	bash tools/cleanroom/snapshot-log.sh
 
+# The last phase-1 commit: phase-2 summaries and reports cover PHASE_BASE..HEAD.
+PHASE_BASE ?= 599ca51
+
 provenance-summary:
-	python3 tools/cleanroom/summarize.py
+	python3 tools/cleanroom/summarize.py --since-commit $(PHASE_BASE)
 
 build-report:
-	python3 tools/cleanroom/build_report.py
+	python3 tools/cleanroom/build_report.py --since $(PHASE_BASE)
 
 hooks-install:
 	git config core.hooksPath tools/git-hooks
 
 ci: fmt-check lint corpus test crate-checks cleanroom-selftest tools-check design-check
+
+proptest-3k:
+	CLEANFLATE_CHUNKING_CASES=3000 CLEANFLATE_FASTSLOW_CASES=3000 cargo test --release -p oracle --test chunking --test fastslow
+
+fastslow-full: corpus-full
+	CLEANFLATE_TIER=full cargo test --release -p oracle --test fastslow
+
+regress-seed:
+	cargo run --release -q -p oracle -- regress-seed
+
+bench-compare:
+	@test -n "$(A)" -a -n "$(B)" || { echo "usage: make bench-compare A=before.json B=after.json [NOISE=noise.json]"; exit 2; }
+	cargo run --release -q -p oracle -- bench-compare $(A) $(B) $(if $(NOISE),--noise $(NOISE))
+
+bench-noise:
+	@test -n "$(A)" -a -n "$(B)" -a -n "$(OUT)" || { echo "usage: make bench-noise A=run1.json B=run2.json OUT=docs/perf/noise.json"; exit 2; }
+	cargo run --release -q -p oracle -- bench-noise $(A) $(B) --out $(OUT)
+
+bench-md:
+	@test -n "$(J)" || { echo "usage: make bench-md J=results.json"; exit 2; }
+	cargo run --release -q -p oracle -- bench-md $(J)
+
+bench-stats:
+	mkdir -p $(dir $(BENCH_OUT))
+	cargo run --release -q -p oracle --features stats -- bench --stats --iters 0 --kind custom --corpus silesia \
+		--framings raw,zlib,gzip --levels 6 --modes oneshot,streaming --task $(BENCH_ID) --json $(BENCH_OUT)
+
+PROFILE_CORPUS ?= silesia
+PROFILE_FRAMING ?= rfc1951
+PROFILE_LEVEL ?= 6
+PROFILE_ITERS ?= 3
+PROFILE_MODE ?= oneshot
+PROFILE_PERF_FLAGS ?= --call-graph dwarf -F 499
+PROFILE_DIR := testdata/perf-inputs/$(PROFILE_CORPUS)/$(PROFILE_FRAMING)-l$(PROFILE_LEVEL)
+PROFILE_ARGS = --dir $(PROFILE_DIR) --format $(PROFILE_FRAMING) --iters $(PROFILE_ITERS) --mode $(PROFILE_MODE)
+
+profile-prep:
+	cargo run --release -q -p oracle -- perf-prep --corpus $(PROFILE_CORPUS) --framing $(PROFILE_FRAMING) --level $(PROFILE_LEVEL) --out testdata/perf-inputs
+
+profile: profile-prep
+	CARGO_PROFILE_RELEASE_DEBUG=true cargo build --release -p cleanflate --example profile_decode
+	mkdir -p target/profile
+	perf record $(PROFILE_PERF_FLAGS) -o target/profile/perf.data target/release/examples/profile_decode $(PROFILE_ARGS)
+	perf report -i target/profile/perf.data --stdio --no-children -g none --sort symbol --percent-limit 0.5 > target/profile/top.txt
+	head -n 60 target/profile/top.txt
+
+flamegraph: profile-prep
+	mkdir -p target/profile
+	CARGO_PROFILE_RELEASE_DEBUG=true cargo flamegraph -p cleanflate --example profile_decode -o target/profile/flamegraph.svg -- $(PROFILE_ARGS)
+	@if [ -f perf.data ]; then mv -f perf.data target/profile/flamegraph-perf.data; fi

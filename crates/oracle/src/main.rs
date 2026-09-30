@@ -6,7 +6,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use oracle::bench::{self, BenchArgs, BenchCorpus};
+use oracle::bench;
+use oracle::bench_compare;
 use oracle::generate;
 use oracle::malformed;
 use oracle::matrix::CorpusTier;
@@ -35,9 +36,33 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some("bench-noise") => report(run_bench_noise(&args[2..]), "bench-noise"),
+        Some("bench-compare") => match run_bench_compare(&args[2..]) {
+            Ok(code) => ExitCode::from(code),
+            Err(e) => {
+                eprintln!("oracle bench-compare: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Some("perf-prep") => report(run_perf_prep(&args[2..]), "perf-prep"),
+        Some("bench-md") => report(run_bench_md(&args[2..]), "bench-md"),
+        Some("regress-add") => match oracle::regress::run_add(&args[2..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("oracle regress-add: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Some("regress-seed") => match oracle::regress::run_seed() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("oracle regress-seed: {e}");
+                ExitCode::FAILURE
+            }
+        },
         _ => {
             eprintln!(
-                "usage: oracle malformed | oracle generate --tier quick|full [--write-manifest] [--out DIR] | oracle bench [--corpus silesia|canterbury] [--iters N] [--level L]"
+                "usage: oracle regress-add --input PATH --format raw|zlib|gzip --name NAME [--in-chunks LIST] [--out-chunks LIST] [--expect ok|err:KIND] --origin TEXT | oracle regress-seed | oracle malformed | oracle generate --tier quick|full [--write-manifest] [--out DIR] | oracle bench [--kind full|quick|custom] [--corpus LIST] [--subset quick] [--framings LIST] [--levels LIST] [--modes LIST] [--iters N] [--task ID] [--json PATH]"
             );
             ExitCode::FAILURE
         }
@@ -159,106 +184,149 @@ fn run_malformed() -> Result<(), String> {
     Ok(())
 }
 
-fn parse_bench_args(args: &[String]) -> Result<BenchArgs, String> {
-    let mut result = BenchArgs::default();
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--corpus" => {
-                let v = args
-                    .get(i + 1)
-                    .ok_or_else(|| "--corpus requires a value".to_string())?;
-                result.corpus = match v.as_str() {
-                    "silesia" => BenchCorpus::Silesia,
-                    "canterbury" => BenchCorpus::Canterbury,
-                    other => return Err(format!("unknown --corpus value: {other}")),
-                };
-                i += 2;
-            }
-            "--iters" => {
-                let v = args
-                    .get(i + 1)
-                    .ok_or_else(|| "--iters requires a value".to_string())?;
-                result.iters = v.parse().map_err(|e| format!("--iters: {e}"))?;
-                i += 2;
-            }
-            "--level" => {
-                let v = args
-                    .get(i + 1)
-                    .ok_or_else(|| "--level requires a value".to_string())?;
-                result.level = v.parse().map_err(|e| format!("--level: {e}"))?;
-                i += 2;
-            }
-            other => return Err(format!("unknown argument: {other}")),
+fn run_bench(args: &[String]) -> Result<(), String> {
+    let bench_args = bench::parse_args(args)?;
+    let corpora_root = generate::default_corpora_root();
+    let outcome = bench::run(&bench_args, &corpora_root)?;
+    print!("{}", bench::render_markdown(&outcome.json));
+
+    if let Some(path) = &bench_args.json {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("creating {}: {e}", parent.display()))?;
+        }
+        let text = serde_json::to_string_pretty(&outcome.json)
+            .map_err(|e| format!("serializing results: {e}"))?;
+        fs::write(path, text + "\n").map_err(|e| format!("writing {}: {e}", path.display()))?;
+        println!("\noracle bench: wrote {}", path.display());
+    }
+    Ok(())
+}
+
+fn report(result: Result<(), String>, name: &str) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("oracle {name}: {e}");
+            ExitCode::FAILURE
         }
     }
-    Ok(result)
 }
 
-fn command_output(command: &str, args: &[&str]) -> String {
-    std::process::Command::new(command)
-        .args(args)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|| format!("<{command} unavailable>"))
-}
-
-fn cpu_model() -> String {
-    fs::read_to_string("/proc/cpuinfo")
-        .ok()
-        .and_then(|text| {
-            text.lines()
-                .find(|l| l.starts_with("model name"))
-                .and_then(|l| l.split(':').nth(1))
-                .map(|s| s.trim().to_string())
-        })
-        .unwrap_or_else(|| "<unknown CPU>".to_string())
-}
-
-fn run_bench(args: &[String]) -> Result<(), String> {
-    let mut bench_args = parse_bench_args(args)?;
-    let corpora_root = generate::default_corpora_root();
-
-    if bench_args.corpus == BenchCorpus::Silesia
-        && oracle::inputs::silesia_inputs(&corpora_root).is_empty()
-    {
-        eprintln!(
-            "oracle bench: Silesia corpus missing, falling back to Canterbury \
-             (run tools/cleanroom/fetch-corpora.sh silesia for the SPEC S5 M4 target corpus)"
-        );
-        bench_args.corpus = BenchCorpus::Canterbury;
+fn run_bench_noise(args: &[String]) -> Result<(), String> {
+    let mut paths = Vec::new();
+    let mut out = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args.get(i).map(String::as_str) {
+            Some("--out") => {
+                out = args.get(i + 1).cloned();
+                i += 2;
+            }
+            Some(p) => {
+                paths.push(p.to_string());
+                i += 1;
+            }
+            None => break,
+        }
     }
-
-    let report = bench::run(&bench_args, &corpora_root)?;
-    let table = bench::render_markdown(&report);
-
-    let uname = command_output("uname", &["-srm"]);
-    let rustc = command_output("rustc", &["--version"]);
-    let cpu = cpu_model();
-
-    let doc = format!(
-        "# PERF.md\n\n\
-         Single-thread decompression throughput, cleanflate vs C zlib \
-         (SPEC S5 M4). Method: `oracle bench` compresses each corpus file \
-         with C zlib at the given level (raw and zlib framing), then times \
-         best-of-{iters} `cleanflate::decompress_with` against \
-         `oracle::ffi::inflate_bytes` with `std::time::Instant`, \
-         single-threaded, release build only. Throughput is uncompressed \
-         MiB/s; ratio is cleanflate / zlib (>= 1.0 means cleanflate is at \
-         least as fast).\n\n\
-         Machine: {uname}\n\
-         CPU: {cpu}\n\
-         Compiler: {rustc}\n\n\
-         ## Baseline (P4-07)\n\n\
-         {table}",
-        iters = bench_args.iters,
+    let [a, b] = paths.as_slice() else {
+        return Err("usage: oracle bench-noise A B --out PATH".to_string());
+    };
+    let out = out.ok_or("--out PATH is required")?;
+    let (ja, jb) = (
+        bench_compare::load_json(Path::new(a))?,
+        bench_compare::load_json(Path::new(b))?,
     );
+    let noise = bench_compare::noise_from(&ja, &jb, [a, b]);
+    let text = serde_json::to_string_pretty(&noise).map_err(|e| e.to_string())?;
+    if let Some(parent) = Path::new(&out).parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("creating {}: {e}", parent.display()))?;
+    }
+    fs::write(&out, text + "\n").map_err(|e| format!("writing {out}: {e}"))?;
+    println!(
+        "oracle bench-noise: aggregate max {:.2}% -> {out}",
+        noise.aggregate_max_pct
+    );
+    Ok(())
+}
 
-    let path = Path::new("docs/PERF.md");
-    fs::write(path, doc).map_err(|e| format!("writing {}: {e}", path.display()))?;
+fn run_bench_compare(args: &[String]) -> Result<u8, String> {
+    let mut paths = Vec::new();
+    let mut noise_path = None;
+    let mut fail = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args.get(i).map(String::as_str) {
+            Some("--noise") => {
+                noise_path = args.get(i + 1).cloned();
+                i += 2;
+            }
+            Some("--fail-on-regression") => {
+                fail = true;
+                i += 1;
+            }
+            Some(p) => {
+                paths.push(p.to_string());
+                i += 1;
+            }
+            None => break,
+        }
+    }
+    let [a, b] = paths.as_slice() else {
+        return Err(
+            "usage: oracle bench-compare A B [--noise PATH] [--fail-on-regression]".to_string(),
+        );
+    };
+    let (ja, jb) = (
+        bench_compare::load_json(Path::new(a))?,
+        bench_compare::load_json(Path::new(b))?,
+    );
+    let noise_path =
+        noise_path.or_else(|| bench_compare::default_noise_path(&ja, &jb).map(String::from));
+    let noise = match &noise_path {
+        Some(p) => bench_compare::load_noise(Path::new(p))?,
+        None => None,
+    };
+    let comparison = bench_compare::compare(&ja, &jb, noise.as_ref())?;
+    print!("{}", bench_compare::render_comparison(&comparison));
+    Ok(bench_compare::exit_code(&comparison, fail) as u8)
+}
 
-    println!("oracle bench: wrote {}", path.display());
+fn run_bench_md(args: &[String]) -> Result<(), String> {
+    let mut path = None;
+    let mut files = false;
+    let mut filter = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args.get(i).map(String::as_str) {
+            Some("--files") => {
+                files = true;
+                i += 1;
+            }
+            Some("--filter") => {
+                filter = args.get(i + 1).cloned();
+                i += 2;
+            }
+            Some(p) => {
+                path = Some(p.to_string());
+                i += 1;
+            }
+            None => break,
+        }
+    }
+    let path = path.ok_or("usage: oracle bench-md JSON [--files] [--filter PREFIX]")?;
+    let json = bench_compare::load_json(Path::new(&path))?;
+    print!(
+        "{}",
+        bench_compare::render_md(&json, files, filter.as_deref())
+    );
+    Ok(())
+}
+
+fn run_perf_prep(args: &[String]) -> Result<(), String> {
+    let parsed = oracle::perf_prep::parse_args(args)?;
+    let dir = oracle::perf_prep::run(&parsed, &generate::default_corpora_root())?;
+    println!("oracle perf-prep: {}", dir.display());
     Ok(())
 }

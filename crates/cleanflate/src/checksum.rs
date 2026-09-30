@@ -89,6 +89,8 @@ pub fn adler32(data: &[u8]) -> u32 {
     a.finish()
 }
 
+use crate::config::CRC32_SLICES;
+
 /// Reflected CRC-32 polynomial (RFC 1952 S8): 0xEDB88320.
 const CRC32_POLY: u32 = 0xEDB8_8320;
 
@@ -108,24 +110,86 @@ const fn crc32_entry(n: u32) -> u32 {
     c
 }
 
-// Walks `table` with `split_first_mut` instead of `table[n] = ...`: each
-// step peels the first remaining element off the *tail*, so there is
-// never a `[]` index to get wrong, and the borrow checker (not a runtime
-// bounds check) is what proves this terminates and never panics.
-// `split_first_mut` is const-stable on the pinned 1.89 toolchain.
-const fn crc32_table() -> [u32; 256] {
-    let mut table = [0u32; 256];
-    let mut rest: &mut [u32] = &mut table;
-    let mut n = 0u32;
-    while let Some((first, tail)) = rest.split_first_mut() {
-        *first = crc32_entry(n);
-        n += 1;
-        rest = tail;
+/// One step of the register over a zero byte: XORing 0 into the low byte
+/// leaves it alone, so this is just the eight shifts of `crc32_entry`.
+const fn crc32_zero_byte_step(mut c: u32) -> u32 {
+    let mut k = 0;
+    while k < 8 {
+        if c & 1 != 0 {
+            c = CRC32_POLY ^ (c >> 1);
+        } else {
+            c >>= 1;
+        }
+        k += 1;
     }
-    table
+    c
 }
 
-const CRC32_TABLE: [u32; 256] = crc32_table();
+/// Table entry `b` of slice table `k`: the register after processing the
+/// byte `b` followed by `k` zero bytes (DESIGN.md D-32).
+const fn crc32_slice_entry(b: u32, k: usize) -> u32 {
+    let mut c = crc32_entry(b);
+    let mut i = 0;
+    while i < k {
+        c = crc32_zero_byte_step(c);
+        i += 1;
+    }
+    c
+}
+
+// Walks the tables and their rows with `split_first_mut` instead of
+// `table[n] = ...`: each step peels the first remaining element off the
+// *tail*, so there is never a `[]` index to get wrong, and the borrow
+// checker (not a runtime bounds check) is what proves this terminates and
+// never panics. `split_first_mut` is const-stable on the pinned 1.89
+// toolchain.
+const fn crc32_tables() -> [[u32; 256]; CRC32_SLICES] {
+    let mut tables = [[0u32; 256]; CRC32_SLICES];
+    let mut rest: &mut [[u32; 256]] = &mut tables;
+    let mut k = 0usize;
+    while let Some((row, tail)) = rest.split_first_mut() {
+        let mut cells: &mut [u32] = row;
+        let mut b = 0u32;
+        while let Some((cell, cells_tail)) = cells.split_first_mut() {
+            *cell = crc32_slice_entry(b, k);
+            b += 1;
+            cells = cells_tail;
+        }
+        k += 1;
+        rest = tail;
+    }
+    tables
+}
+
+/// The slice tables; table 0 is the classic byte-at-a-time table.
+pub(crate) static CRC32_TABLES: [[u32; 256]; CRC32_SLICES] = crc32_tables();
+
+/// Fold `data` into the (inverted) register one byte at a time with table
+/// 0. Used for the tail of `update` and as the test reference.
+pub(crate) fn crc32_update_bytewise(mut crc: u32, data: &[u8]) -> u32 {
+    let table = CRC32_TABLES.first();
+    for &byte in data {
+        let index = ((crc ^ byte as u32) & 0xFF) as usize;
+        let entry = table.and_then(|t| t.get(index)).copied().unwrap_or(0);
+        crc = entry ^ (crc >> 8);
+    }
+    crc
+}
+
+/// Fold one `CRC32_SLICES`-byte chunk into the register: the register is
+/// XORed into the chunk's first four bytes, and byte `i` then looks up
+/// table `CRC32_SLICES - 1 - i` (DESIGN.md D-32).
+fn crc32_fold_chunk(crc: u32, chunk: &[u8; CRC32_SLICES]) -> u32 {
+    let mut bytes = *chunk;
+    for (b, c) in bytes.iter_mut().zip(crc.to_le_bytes()) {
+        *b ^= c;
+    }
+    let mut acc = 0u32;
+    for (table, &b) in CRC32_TABLES.iter().rev().zip(bytes.iter()) {
+        acc ^= table.get(b as usize).copied().unwrap_or(0);
+    }
+    acc
+}
 
 /// Incremental CRC-32 (RFC 1952 S2.3.1, S8).
 #[derive(Debug, Clone)]
@@ -143,13 +207,12 @@ impl Crc32 {
 
     /// Fold `data` into the running checksum.
     pub fn update(&mut self, data: &[u8]) {
+        let (chunks, tail) = data.as_chunks::<CRC32_SLICES>();
         let mut crc = self.crc;
-        for &byte in data {
-            let index = ((crc ^ byte as u32) & 0xFF) as usize;
-            let table_entry = CRC32_TABLE.get(index).copied().unwrap_or(0);
-            crc = table_entry ^ (crc >> 8);
+        for chunk in chunks {
+            crc = crc32_fold_chunk(crc, chunk);
         }
-        self.crc = crc;
+        self.crc = crc32_update_bytewise(crc, tail);
     }
 
     /// The current checksum value.

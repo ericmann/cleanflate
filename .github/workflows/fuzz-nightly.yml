@@ -21,6 +21,7 @@ jobs:
           - never_panic_rfc1952
           - diff_oracle_roundtrip
           - diff_oracle_arbitrary
+          - diff_fast_reference
     steps:
       - uses: actions/checkout@v4
 
