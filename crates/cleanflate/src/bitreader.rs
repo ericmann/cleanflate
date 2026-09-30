@@ -22,6 +22,9 @@ pub(crate) struct BitReader {
     /// Bytes loaded by those fills.
     #[cfg(feature = "stats")]
     pub(crate) refill_bytes: u64,
+    /// Bytes returned unread to the input by `give_back`.
+    #[cfg(feature = "stats")]
+    pub(crate) given_back_bytes: u64,
 }
 
 impl BitReader {
@@ -61,6 +64,78 @@ impl BitReader {
             }
         }
         self.count >= need
+    }
+
+    /// Top the buffer up a word at a time (Fast path only). With at least
+    /// 8 input bytes left, one little-endian 64-bit read supplies as many
+    /// whole bytes as fit above the buffered bits; with fewer, single bytes
+    /// are loaded while at most 55 bits are buffered. The count never
+    /// exceeds 63, so no shift reaches 64.
+    pub(crate) fn refill_bulk(&mut self, input: &[u8], pos: &mut usize) {
+        #[cfg(feature = "stats")]
+        let start = *pos;
+        let end = pos.saturating_add(8);
+        let word = input
+            .get(*pos..end)
+            .and_then(|s| <[u8; 8]>::try_from(s).ok())
+            .map(u64::from_le_bytes);
+        match word {
+            Some(word) if self.count <= 63 => {
+                let k = (63 - self.count) / 8;
+                let bits = 8 * k;
+                let mask = if bits >= 64 {
+                    u64::MAX
+                } else {
+                    (1u64 << bits) - 1
+                };
+                self.buffer |= (word & mask) << self.count;
+                self.count += bits;
+                *pos += k as usize;
+            }
+            _ => {
+                while self.count <= 55 {
+                    let Some(&byte) = input.get(*pos) else {
+                        break;
+                    };
+                    self.buffer |= (byte as u64) << self.count;
+                    self.count += 8;
+                    *pos += 1;
+                }
+            }
+        }
+        #[cfg(feature = "stats")]
+        {
+            let loaded = pos.saturating_sub(start);
+            if loaded > 0 {
+                stat!(self.refills, 1);
+                stat!(self.refill_bytes, loaded);
+            }
+        }
+    }
+
+    /// Return the whole bytes buffered above the low `keep_bits` bits to
+    /// the input: `k` = whole bytes above `keep_bits` (0 when fewer than
+    /// `keep_bits + 8` bits are buffered). The top `8k` bits are dropped
+    /// and `k` is returned; the caller moves its input position back by
+    /// `k`. Bytes sit in the buffer in load order, so the top bytes are
+    /// the last ones loaded.
+    pub(crate) fn give_back(&mut self, keep_bits: u32) -> usize {
+        let Some(extra) = self.count.checked_sub(keep_bits) else {
+            return 0;
+        };
+        let k = extra / 8;
+        if k == 0 {
+            return 0;
+        }
+        self.count -= 8 * k;
+        let mask = if self.count >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << self.count) - 1
+        };
+        self.buffer &= mask;
+        stat!(self.given_back_bytes, k);
+        k as usize
     }
 
     /// Peek at the low `n` bits (n <= 32) without consuming them.

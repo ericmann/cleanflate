@@ -6,6 +6,7 @@
 )]
 
 mod bitreader;
+mod bitreader_bulk;
 #[allow(dead_code)] // write_code is reused by later Huffman/inflate tests
 pub(crate) mod bitwriter;
 mod checksum;

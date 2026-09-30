@@ -498,3 +498,21 @@ Checklist with evidence:
 Provenance: `make provenance-snapshot` was run. The log holds three denied commands from this phase, all mine and benign (two recursive `grep` at the repository root without `--exclude-dir=target`, and one `sed` whose regular expression contained a forbidden word as a path-like argument); each was re-run another way. No denied profiling command appears.
 
 Push: see the progress log for this task.
+
+### P1-01
+
+Bulk bit refill with an exact give-back invariant (D-27). `make bench-quick`, before (`docs/perf/P1-01-before.json`) and after (`docs/perf/P1-01.json`), same session, `make bench-compare` with `docs/perf/noise-quick.json`:
+
+| key | before MiB/s | after MiB/s | delta % | 2x noise % | verdict |
+|---|---:|---:|---:|---:|---|
+| silesia/raw/l6/oneshot | 51.1 | 79.3 | +55.1 | 7.2 | WIN |
+| silesia/raw/l6/streaming | 50.6 | 78.2 | +54.6 | 8.7 | WIN |
+| silesia/zlib/l6/oneshot | 49.7 | 75.5 | +52.1 | 13.0 | WIN |
+| silesia/zlib/l6/streaming | 51.5 | 75.5 | +46.6 | 7.1 | WIN |
+| silesia/gzip/l6/oneshot | 45.3 | 57.8 | +27.7 | 1.4 | WIN |
+| silesia/gzip/l6/streaming | 47.1 | 61.6 | +30.7 | 2.2 | WIN |
+| canterbury/raw/l6/oneshot | 74.6 | 104.2 | +39.7 | 5.2 | WIN |
+| canterbury/zlib/l6/oneshot | 76.2 | 93.7 | +23.0 | 0.2 | WIN |
+| canterbury/gzip/l6/oneshot | 65.2 | 77.5 | +18.9 | 6.0 | WIN |
+
+All twelve aggregates are WIN and there is no per-file REGRESSION. The machine was in a slow phase for this pair (the "before" raw figure is well below the M0 baseline), so the absolute numbers are not comparable with `baseline.json`; the before/after pair was taken back to back. The effect is far larger than the noise, which is what the table-lookup hypothesis (H1) predicted: the table now serves nearly every symbol.

@@ -14,6 +14,9 @@ use crate::tables::{
 };
 use crate::window::Window;
 
+/// The longest Huffman code RFC 1951 allows, in bits (S3.2.7).
+const MAX_CODE_BITS: u32 = 15;
+
 /// What happened during one [`Inflater::step`] call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InflateStatus {
@@ -86,6 +89,9 @@ pub(crate) struct Inflater {
     /// BFINAL of the block currently being decoded; consulted when that
     /// block's end-of-block is reached.
     bfinal: bool,
+    /// Bits of a decoded-but-unconsumed literal the exit of the current
+    /// `step` call must leave buffered (0 when there is none).
+    keep_bits: u32,
     /// The fixed literal/length table (RFC 1951 S3.2.6), built once.
     fixed_litlen: Huffman,
     /// The fixed distance table (RFC 1951 S3.2.6), built once.
@@ -139,6 +145,7 @@ impl Inflater {
             state: State::BlockHeader,
             total_out: 0,
             bfinal: false,
+            keep_bits: 0,
             fixed_litlen: fixed_litlen.clone(),
             fixed_dist: fixed_dist.clone(),
             litlen_table: fixed_litlen,
@@ -178,6 +185,7 @@ impl Inflater {
         s.output_bytes = self.total_out;
         s.refills = self.br.refills;
         s.refill_bytes = self.br.refill_bytes;
+        s.given_back_bytes = self.br.given_back_bytes;
         s.window_bytes_written = self.window.written;
         s
     }
@@ -221,6 +229,9 @@ impl Inflater {
         pos: &mut usize,
     ) -> Option<SymbolOutcome> {
         loop {
+            if path == DecodePath::Fast && br.available() < MAX_CODE_BITS {
+                br.refill_bulk(input, pos);
+            }
             #[cfg(feature = "stats")]
             let (decoded, via_table) = match path {
                 DecodePath::Fast => table.decode_table_method(br),
@@ -254,7 +265,27 @@ impl Inflater {
     /// Advance the state machine as far as `input` and `output` allow.
     /// Returns `(consumed, produced, status)`: bytes read from `input`,
     /// bytes written to `output`, and what stopped this call.
+    ///
+    /// Every non-`NeedsInput` return goes through the one exit below, which
+    /// gives whole unneeded bytes back to the input so the bit buffer holds
+    /// exactly what the exact-fill reader would hold (DESIGN: bulk refill).
     pub(crate) fn step(
+        &mut self,
+        input: &[u8],
+        output: &mut [u8],
+    ) -> Result<(usize, usize, InflateStatus), Error> {
+        self.keep_bits = 0;
+        let (mut pos, out_pos, status) = self.step_inner(input, output)?;
+        if status != InflateStatus::NeedsInput {
+            let k = self.br.give_back(self.keep_bits);
+            debug_assert!(k <= pos, "gave back bytes that were never loaded this call");
+            pos = pos.saturating_sub(k);
+        }
+        Ok((pos, out_pos, status))
+    }
+
+    /// The state machine proper; see [`Self::step`].
+    fn step_inner(
         &mut self,
         input: &[u8],
         output: &mut [u8],
@@ -324,6 +355,11 @@ impl Inflater {
                                 self.state = State::Failed(e.clone());
                                 return Err(e);
                             }
+                            // Whole bytes still buffered belong to the stored
+                            // payload: hand them back so it is read from `input`.
+                            let k = self.br.give_back(0);
+                            debug_assert!(k <= pos, "gave back bytes that were never loaded");
+                            pos = pos.saturating_sub(k);
                             self.state = State::StoredCopy {
                                 remaining: len as u32,
                             };
@@ -337,6 +373,23 @@ impl Inflater {
                     }
                     if out_pos >= output.len() {
                         return Ok((pos, out_pos, InflateStatus::OutputFull));
+                    }
+                    if self.br.available() >= 8 {
+                        // Defensive: StoredLen hands every whole byte back, so
+                        // this cannot happen; drain rather than skip payload.
+                        debug_assert!(false, "whole bytes still buffered in a stored block");
+                        if let Some(byte) = self.br.take(input, &mut pos, 8) {
+                            if let Some(slot) = output.get_mut(out_pos) {
+                                *slot = byte as u8;
+                            }
+                            self.window.push(byte as u8);
+                            out_pos += 1;
+                            self.total_out += 1;
+                            self.state = State::StoredCopy {
+                                remaining: remaining - 1,
+                            };
+                            continue;
+                        }
                     }
                     if pos >= input.len() {
                         return Ok((pos, out_pos, InflateStatus::NeedsInput));
@@ -580,6 +633,7 @@ impl Inflater {
                                 // room, so a retry re-decodes the same
                                 // (still-buffered) bits for free.
                                 if out_pos >= output.len() {
+                                    self.keep_bits = len;
                                     return Ok((pos, out_pos, InflateStatus::OutputFull));
                                 }
                                 self.br.consume(len);

@@ -712,3 +712,48 @@ bit-serial path answered `NeedMoreBits` for the same buffer, so the two
 could disagree about the error for a stream that is both truncated and
 invalid. The rule can only turn `Truncated` into `InvalidSymbol` for such
 a stream; whether a stream is accepted or rejected is unchanged.
+
+### D-27: [perf] Bulk bit refill with an exact give-back invariant
+
+RFC: RFC 1951 S3.1.1, S3.2.4
+Decision: On the Fast path the bit reader tops its buffer up a word at a
+time (`refill_bulk`: one 64-bit little-endian read when at least 8 input
+bytes remain, single bytes otherwise, never more than 63 buffered bits)
+whenever fewer than 15 bits (the longest RFC 1951 code) are buffered, and
+then decodes. This supersedes D-07's "at most 7 bits between steps" with
+an invariant stated at the exits of `Inflater::step`:
+(a) a `NeedsInput` exit has consumed all of `input`, and the buffer holds
+only bits of the pending sub-step, fewer than it requires;
+(b) an `OutputFull` or `Done` exit goes through one shared exit helper
+that gives back (`give_back`) every whole buffered byte above the bits of
+a decoded-but-unconsumed symbol. That symbol is the pending literal when
+`LitLen` stops for lack of output room, and its code length is the number
+of bits kept; otherwise at most 7 bits stay. The input position moves
+back by the number of bytes returned;
+(c) after LEN and NLEN of a stored block the reader gives back every
+whole byte, so the stored payload is read straight from `input` (a
+defensive drain remains for any byte that would still be buffered).
+Consequence: after every `step` return the Fast reader holds exactly the
+bits the exact-fill Reference reader holds, so the per-call `consumed`
+count is identical on both paths, and a zlib or gzip trailer that follows
+`Done` starts at the right byte. Bytes given back were always loaded in
+the same call, because bits carried in from an earlier call are consumed
+by the first sub-step. Error exits are unchanged: they are sticky and
+report no `consumed`.
+Rationale: The buffer was refilled one byte at a time and held at most 7
+bits between steps, so the table lookup, which needs 10 bits, was skipped
+for about half of all symbols (46% of literal/length and 48% of distance
+symbols took the bit-serial walk, one refill per 1.08 bytes). Loading a
+word at a time removes that, but a reader that holds bytes it does not
+yet need must hand them back at every point where the caller regains
+control. The phase-1 attempt at a faster loop failed exactly there: it
+over-read, corrupted a gzip trailer, and left a stream that was one byte
+short stuck at `NeedsInput`. Stating the invariant at the exits, giving
+back through one helper instead of at each return, and comparing per-call
+`consumed`, `produced` and status against the Reference path (the
+differential traces and `tests/bitreader_bulk.rs`) make that class of bug
+visible at the call where it happens.
+Provenance: general technique; not derived from any specific implementation.
+Measurement: docs/perf/P1-01.json against docs/perf/P1-01-before.json:
+Silesia level 6 one-shot raw 51.1 -> 79.3 MiB/s (WIN), zlib 49.7 -> 75.5,
+gzip 45.3 -> 57.8; streaming raw 50.6 -> 78.2.
