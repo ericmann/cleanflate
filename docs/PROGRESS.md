@@ -22,7 +22,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P1-04 Length/distance payload in table entries (gated)
 - [x] P1-05 M1 acceptance and push
 - [x] P2-01 Fast literal/length/distance decode loop
-- [ ] P2-02 Differential fuzz target: fast vs reference
+- [x] P2-02 Differential fuzz target: fast vs reference
 - [ ] P2-03 Copyable state in the slow path (gated)
 - [ ] P2-04 M2 acceptance and push
 - [ ] P3-01 Output as match history; window carried only across calls
@@ -98,3 +98,6 @@ Manual check: NOT VERIFIED (human): (1) GitHub Actions ci green on the pushed br
 
 ### P2-01 — 7ade00d
 fast_loop.rs (FastCtx/FastExit, run with local bit buffer/positions, 48-bit iteration refill), config FAST_LOOP_MIN_INPUT=16 / FAST_LOOP_MIN_OUTPUT=258, integration in step_inner (skip_fast flag: one slow dispatch after a Margin exit), stats count_decode/record_match moved to stats.rs and shared, fast_loop_entries/symbols counted. D-29 [perf] added. 5 tests in tests/fast_loop.rs + tests/config.rs (mutation-checked). PT1: all 12 aggregates WIN: silesia l6 oneshot raw 83.1->132.2, zlib 80.2->131.0, gzip 66.1->92.6; streaming raw 83.8->135.5; no per-file REGRESSION. make test, proptest-3k, proptest-10k, fastslow-full (200s), bomb pass. Interpretation: Margin retry policy via skip_fast; Copy exit defensive.
+
+### P2-02 — 9963364
+fuzz/fuzz_targets/diff_fast_reference.rs (byte0%3 format, byte1/2 chunk sizes; compares one-shot results and full per-call traces + finish/total_in/total_out/trailing_start; panics on any difference), fuzz/Cargo.toml (test-hooks feature + bin), 10 seeds from testdata/malformed, FUZZ_TARGETS + nightly workflow matrix + README. make fuzz-check passes; make fuzz-smoke-diff_fast_reference FUZZ_SECONDS=120: 214251 runs, 0 crashes (nightly and cargo-fuzz were already installed).
