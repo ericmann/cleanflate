@@ -1,7 +1,9 @@
 //! The public streaming (`Decompressor`) and one-shot (`inflate`,
 //! `decompress_with`) APIs (SPEC S3.3).
 
-use crate::config::{ONESHOT_GROWTH_FLOOR, ONESHOT_INITIAL_RATIO, ONESHOT_MAX_PREALLOC};
+use crate::config::{
+    MAX_DEFLATE_EXPANSION, ONESHOT_GROWTH_FLOOR, ONESHOT_INITIAL_RATIO, ONESHOT_MAX_PREALLOC,
+};
 use crate::decode_path::DecodePath;
 use crate::error::Error;
 use crate::gzip::{GzipDecoder, GzipHeader};
@@ -383,9 +385,10 @@ pub(crate) fn next_len(len: usize, limit: u64) -> usize {
 /// little-endian ISIZE (the last member's uncompressed length modulo 2^32,
 /// RFC 1952 S2.3.1, unreliable for multi-member streams and trailing data);
 /// otherwise `ONESHOT_INITIAL_RATIO` output bytes per input byte. The
-/// result never exceeds `max_output` or `ONESHOT_MAX_PREALLOC`, and only
-/// sets the first allocation: geometric growth continues from there and the
-/// output never depends on it.
+/// result never exceeds `max_output`, `ONESHOT_MAX_PREALLOC`, or the most
+/// the input could possibly decode to (`MAX_DEFLATE_EXPANSION` bytes per
+/// input byte, D-33), and only sets the first allocation: geometric growth
+/// continues from there and the output never depends on it.
 pub(crate) fn initial_len(format: Format, input: &[u8], max_output: u64) -> usize {
     let isize_hint = match format {
         Format::Gzip if input.len() >= 18 => input
@@ -398,7 +401,8 @@ pub(crate) fn initial_len(format: Format, input: &[u8], max_output: u64) -> usiz
     };
     let hint = isize_hint.unwrap_or_else(|| input.len().saturating_mul(ONESHOT_INITIAL_RATIO));
     let cap = max_output.min(usize::MAX as u64) as usize;
-    hint.min(cap).min(ONESHOT_MAX_PREALLOC)
+    let possible = input.len().saturating_mul(MAX_DEFLATE_EXPANSION);
+    hint.min(possible).min(cap).min(ONESHOT_MAX_PREALLOC)
 }
 
 /// Decompress `input` as `format` with `options`, growing the output

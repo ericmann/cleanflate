@@ -1,4 +1,6 @@
-use crate::config::{ONESHOT_GROWTH_FLOOR, ONESHOT_INITIAL_RATIO, ONESHOT_MAX_PREALLOC};
+use crate::config::{
+    MAX_DEFLATE_EXPANSION, ONESHOT_GROWTH_FLOOR, ONESHOT_INITIAL_RATIO, ONESHOT_MAX_PREALLOC,
+};
 use crate::error::Error;
 use crate::options::{Format, Options};
 use crate::stream::{decompress_with, initial_len, next_len};
@@ -22,7 +24,9 @@ fn initial_len_gzip_uses_isize() {
 
 #[test]
 fn initial_len_capped_by_limit_and_prealloc() {
-    let mut input = vec![0u8; 64];
+    // 1 MiB of input could decode to ~1 GiB, so the expansion bound does
+    // not bind here and the preallocation cap does.
+    let mut input = vec![0u8; 1 << 20];
     let n = input.len();
     input[n - 4..].copy_from_slice(&(200u32 << 20).to_le_bytes());
     // A 200 MiB ISIZE is capped by the preallocation cap...
@@ -64,15 +68,36 @@ fn initial_len_tiny_or_hostile_inputs() {
             17 * ONESHOT_INITIAL_RATIO
         );
     }
-    // A hostile ISIZE of u32::MAX cannot force a large allocation.
+    // A hostile ISIZE of u32::MAX cannot force a large allocation: the
+    // hint is bounded by what 40 input bytes could ever decode to.
     let mut hostile = vec![0u8; 40];
     let n = hostile.len();
     hostile[n - 4..].copy_from_slice(&u32::MAX.to_le_bytes());
     let got = initial_len(Format::Gzip, &hostile, u64::MAX);
-    assert_eq!(got, ONESHOT_MAX_PREALLOC);
+    assert_eq!(got, 40 * MAX_DEFLATE_EXPANSION);
     assert_eq!(initial_len(Format::Gzip, &hostile, 10), 10);
     // And such an input still fails cleanly rather than allocating.
     assert!(decompress_with(Format::Gzip, &hostile, &Options::default()).is_err());
+}
+
+#[test]
+fn initial_len_bounded_by_deflate_expansion() {
+    // The smallest input that carries an ISIZE (18 bytes) claiming 4 GiB
+    // gets at most 18 x 1032 bytes up front, not ONESHOT_MAX_PREALLOC.
+    let mut eighteen = vec![0u8; 18];
+    eighteen[14..].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert_eq!(MAX_DEFLATE_EXPANSION, 1032);
+    assert_eq!(initial_len(Format::Gzip, &eighteen, u64::MAX), 18 * 1032);
+    assert_ne!(
+        initial_len(Format::Gzip, &eighteen, u64::MAX),
+        ONESHOT_MAX_PREALLOC
+    );
+    // An honest ISIZE below the bound is used as-is.
+    eighteen[14..].copy_from_slice(&500u32.to_le_bytes());
+    assert_eq!(initial_len(Format::Gzip, &eighteen, u64::MAX), 500);
+    // The bound is inclusive: a claim of exactly 18 x 1032 is kept.
+    eighteen[14..].copy_from_slice(&(18u32 * 1032).to_le_bytes());
+    assert_eq!(initial_len(Format::Gzip, &eighteen, u64::MAX), 18 * 1032);
 }
 
 #[test]

@@ -981,3 +981,27 @@ Provenance: general technique; not derived from any specific implementation.
 Measurement: docs/perf/P4-01.json against docs/perf/P4-01-before.json:
 Silesia level 6 one-shot gzip 120.2 -> 154.3 MiB/s (+28.4%, WIN); the gzip
 overhead over raw fell from 36.3% to 4.6%.
+
+### D-33: One-shot size hints bounded by DEFLATE's maximum expansion
+
+RFC: RFC 1951 S3.2.5, S3.2.7; RFC 1952 S2.3.1
+Decision: `initial_len` (D-31) also caps its hint at
+`input.len() * MAX_DEFLATE_EXPANSION` (1032), the most output any input of
+that size can decode to. The densest encoding RFC 1951 allows is a match of
+length 258 (length code 285, no extra bits) at distance 1 (distance code 0,
+no extra bits), where both codes are 1 bit long: a literal/length code
+holding only end-of-block and code 285 is a complete two-symbol code, and a
+distance code with a single one-bit code is the legal incomplete case of
+S3.2.7. That spends 2 bits per 258 output bytes, so no stream expands by
+more than 258 * 4 = 1032 output bytes per input byte. Literals cost at least
+1 bit per output byte and stored blocks copy 1:1, so both expand less, and
+zlib/gzip headers and trailers only add input.
+Rationale: The phase-2 reviews flagged that an 18-byte gzip input whose
+trailing ISIZE reads 0xFFFFFFFF made one-shot decoding allocate and
+zero-fill `ONESHOT_MAX_PREALLOC` (64 MiB) before decoding anything: bounded,
+but a 3.7-million-fold amplification from a claim the input cannot back.
+Capping the hint by what the input could possibly produce limits that input
+to 18 * 1032 = 18,576 bytes up front, while any stream large enough to
+really produce 64 MiB still gets the full hint. Output, limits and errors
+are unchanged: the hint only sizes the first allocation (D-31), and
+growth on `OutputFull` covers any hint that is too small.

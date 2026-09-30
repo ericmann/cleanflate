@@ -74,6 +74,18 @@ pub(crate) const ONESHOT_GROWTH_FLOOR: usize = 32_768;
 /// the run-to-run drift, so 4 was kept.
 pub(crate) const ONESHOT_INITIAL_RATIO: usize = 4;
 
+/// Most output bytes any DEFLATE stream can produce per input byte
+/// (DESIGN.md D-33). The densest possible encoding is a length code for a
+/// 258-byte match (RFC 1951 S3.2.5, code 285, no extra bits) and a
+/// distance code of distance 1 (no extra bits), each 1 bit long -- a
+/// literal/length code with only EOB and code 285, and a distance code
+/// with a single one-bit code (S3.2.7), are both legal. That is 258
+/// output bytes per 2 input bits, so output <= 1032 x input bytes;
+/// literals (>= 1 bit per byte) and stored blocks (1:1) expand less, and
+/// zlib/gzip framing only adds input. Caps one-shot size hints so a tiny
+/// input cannot claim a large up-front allocation. Derived, not tuned.
+pub(crate) const MAX_DEFLATE_EXPANSION: usize = 1032;
+
 /// Largest first allocation, in bytes, a size hint may cause (SPEC S6 M3),
 /// so a hostile hint (a gzip ISIZE of 4 GiB, say) cannot force a large
 /// up-front allocation: memory stays proportional to the output actually
