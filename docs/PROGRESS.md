@@ -23,7 +23,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P1-05 M1 acceptance and push
 - [x] P2-01 Fast literal/length/distance decode loop
 - [x] P2-02 Differential fuzz target: fast vs reference
-- [~] P2-03 Copyable state in the slow path (gated)
+- [x] P2-03 Copyable state in the slow path (gated)
 - [ ] P2-04 M2 acceptance and push
 - [ ] P3-01 Output as match history; window carried only across calls
 - [ ] P3-02 Overlapping matches by pattern doubling
@@ -101,3 +101,6 @@ fast_loop.rs (FastCtx/FastExit, run with local bit buffer/positions, 48-bit iter
 
 ### P2-02 — 9963364
 fuzz/fuzz_targets/diff_fast_reference.rs (byte0%3 format, byte1/2 chunk sizes; compares one-shot results and full per-call traces + finish/total_in/total_out/trailing_start; panics on any difference), fuzz/Cargo.toml (test-hooks feature + bin), 10 seeds from testdata/malformed, FUZZ_TARGETS + nightly workflow matrix + README. make fuzz-check passes; make fuzz-smoke-diff_fast_reference FUZZ_SECONDS=120: 214251 runs, 0 crashes (nightly and cargo-fuzz were already installed).
+
+### P2-03 — 3dd7e54
+GATED OUT (negative result), no code change. After P2-01: Inflater::step self 0.49% (was 35.9%), State clone frame 0.15% (was 7.5%); fast_loop::run self 38.4%; perf-profiled decode 138 MiB/s. Below the 2% floor.
