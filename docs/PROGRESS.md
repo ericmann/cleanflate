@@ -31,7 +31,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P3-04 Reuse bench case
 - [x] P3-05 M3 acceptance and push
 - [x] P4-01 Assembly evidence tool for the fast loop
-- [ ] P4-02 Branch-light bulk refill (gated)
+- [x] P4-02 Branch-light bulk refill (gated)
 - [ ] P4-03 Fast-loop bounds-check elision and inlined lookup
 - [ ] P4-04 Multi-literal table entries (optional, measured)
 - [ ] P4-05 Re-tune table widths on the final loop
@@ -132,3 +132,6 @@ make ci, heavy, fuzz-milestone pass: diff_oracle_roundtrip seconds=1828 execs=13
 
 ### P4-01 — c062fc1
 tools/perf/asm_branches.py (+tests, fixture), make asm / asm-count (ASM_FUNCS, ASM_SRCS, ASM_OUT). KEY FINDING: fast loop is inlined into Inflater::step_into in the lib asm build (no fast_loop symbol); step_into 2259 instr / 167 cond branches / 0 panic calls; decode_table 182/22/0; copy_match_sink 241/24 with 2 panic calls (2 sites); src:fast_loop.rs 79 instr/11 branches/0 panic. So there are NO bounds-check panic sites in the hot loop: P4-03's elision premise is weak; measure branches/instructions instead. docs/perf/phase3/P4-01-asm.json committed.
+
+### P4-02 — 02d83fe
+NEGATIVE RESULT (PT4). refill_bulk already IS the word-read, branch-free refill (D-27). Tried first_chunk/masked-shift spelling: asm cond branches identical (167 step_into, 39 bitreader.rs), bench NEUTRAL (+0.15%/+1.2%), A/B flat. Reverted; tests refill_word_path_all_counts/refill_never_exceeds_63_bits kept. make asm fixed to copy newest .s when cargo finds build fresh. Gate passed (6.10% > 2% on oneshot key).
