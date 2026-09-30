@@ -15,7 +15,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P0-10 Cleanflate-only profiling entry point and `make profile`
 - [x] P0-11 Baseline and noise measurement
 - [x] P0-12 Hypotheses H1–H6 and baseline profile
-- [~] P0-13 M0 acceptance and push
+- [x] P0-13 M0 acceptance and push
 - [ ] P1-01 Bulk bit refill with an exact give-back invariant
 - [ ] P1-02 Two-level lookup tables for every symbol
 - [ ] P1-03 Per-block table reuse (gated)
@@ -75,3 +75,7 @@ Six JSONs in docs/perf/ (full pair 7 samples, quick pair 5 samples, both noise f
 
 ### P0-12 — 7f982a5
 PERF.md: Baseline profile, Hypotheses, Cost ranking (docs/perf/P0-12-stats.json committed). Verdicts: H1 CONFIRMED (litlen 46.0% / dist 48.3% serial, 1.08 B/refill, decode 32% inclusive), H2 CONFIRMED (0.644 dispatches/output byte, step self 36%, State clone 7.5%), H3 CONFIRMED (window_bytes_written/output = 1.0, ~7-14%), H4 DISCARDED (0.48% overlap), H5 DISCARDED (0.6%, 2.99 builds/block, no fixed blocks), H6 PARTIAL (CRC ~12.7% gzip, Adler ~2%, gzip one-shot zero-fills an extra output-sized buffer: 514MB allocated vs 302MB). Likely negative gated tasks: P1-03, P4-02, probably P2-03; P1-04 undecided. Observation: P0-04's uniform-invalid rule adds ~4% in the serial walk (any() over counts) -- cheap to fix in P1-02.
+
+### P0-13 — 6800093
+make ci green; make heavy green (proptest-10k both, bomb, conformance-full, fastslow-full 248s); docs/perf/P0-13.json committed; provenance snapshot committed; PERF.md M0 acceptance section. bench-compare vs baseline: 27 WIN/0 LOSS/9 NEUTRAL + 32 per-file REGRESSION with NO decoder change => run-to-run drift exceeds the single-pair noise estimate; later tasks must re-measure interleaved rather than trust one verdict. Push: pushed build/2026-09-29-2 to origin.
+Manual check: NOT VERIFIED (human): (1) GitHub Actions ci run green on the pushed branch (now lints/tests features). (2) noise.json aggregate 6.08% > 3%: re-run baseline on a quiet machine with a fixed governor (SPEC 8). (3) run make flamegraph and sanity-check the P0-12 tables against the SVG. (4) provenance log denied entries: 3 mine this phase, benign (recursive grep x2, sed regex with forbidden word); none profiling.
