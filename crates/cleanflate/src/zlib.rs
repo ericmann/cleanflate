@@ -54,6 +54,17 @@ impl ZlibDecoder {
         }
     }
 
+    /// Return to the freshly-constructed state, keeping the allocations and
+    /// the dictionary offered at construction (it is only applied again if
+    /// the next stream's FDICT bit asks for it).
+    pub(crate) fn reset(&mut self) {
+        self.state = State::Cmf;
+        self.inflater.reset();
+        self.adler = Adler32::new();
+        self.dict_id_buf = [0u8; 4];
+        self.trailer_buf = [0u8; 4];
+    }
+
     /// The decode path of the current inflater.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn inflater_path(&self) -> DecodePath {

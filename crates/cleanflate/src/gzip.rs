@@ -474,6 +474,26 @@ impl GzipDecoder {
         }
     }
 
+    /// Return to the freshly-constructed state, keeping the allocations
+    /// (the inflater's window and tables, the header list's capacity).
+    pub(crate) fn reset(&mut self) {
+        self.state = GState::MemberHeader(GzipHeaderParser::new(self.max_gzip_field));
+        self.inflater.reset();
+        self.member_crc = Crc32::new();
+        self.member_len = 0;
+        self.headers.clear();
+        self.member_count = 0;
+        self.total_in = 0;
+        self.total_out = 0;
+        self.trailing_start = None;
+        self.boundary_pending.clear();
+        self.boundary_start = 0;
+        #[cfg(feature = "stats")]
+        {
+            *self.stats_done = crate::stats::Stats::default();
+        }
+    }
+
     pub(crate) fn total_out(&self) -> u64 {
         self.total_out
     }

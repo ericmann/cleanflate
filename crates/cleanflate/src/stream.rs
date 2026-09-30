@@ -37,6 +37,21 @@ impl Backend {
         }
     }
 
+    /// Return the backend to its freshly-constructed state, keeping
+    /// allocations; a raw stream's dictionary is loaded again.
+    fn reset(&mut self, dictionary: Option<&[u8]>) {
+        match self {
+            Backend::Raw(i) => {
+                i.reset();
+                if let Some(dict) = dictionary {
+                    i.prefill_dictionary(dict);
+                }
+            }
+            Backend::Zlib(z) => z.reset(),
+            Backend::Gzip(g) => g.reset(),
+        }
+    }
+
     fn is_done(&self) -> bool {
         match self {
             Backend::Raw(i) => i.is_done(),
@@ -190,6 +205,46 @@ impl Decompressor {
             trailing_start: None,
             error: None,
         }
+    }
+
+    /// Return this decompressor to its freshly-constructed state, keeping
+    /// its allocations: the window, the Huffman tables and the gzip header
+    /// list keep their capacity, so decoding many small streams through one
+    /// `Decompressor` does not pay to set them up each time.
+    ///
+    /// After `reset`, the decompressor behaves exactly like
+    /// `Decompressor::new(format, options)` for the same format and options
+    /// (and the same decode path), for any later sequence of calls: the
+    /// sticky error, [`Self::total_in`], [`Self::total_out`],
+    /// [`Self::trailing_start`], the gzip headers and member count and the
+    /// counters of the `stats` feature are all cleared, and
+    /// [`Options::dictionary`] is applied again to a raw stream (a zlib
+    /// stream applies it when its FDICT bit asks for it).
+    ///
+    /// ```
+    /// use cleanflate::{Decompressor, Format, Options, Status};
+    ///
+    /// # fn main() -> Result<(), cleanflate::Error> {
+    /// // "abc" as a stored (uncompressed) raw DEFLATE block.
+    /// let compressed = [0x01, 0x03, 0x00, 0xfc, 0xff, b'a', b'b', b'c'];
+    /// let mut d = Decompressor::new(Format::Raw, Options::default());
+    /// let mut out = [0u8; 8];
+    /// for _ in 0..2 {
+    ///     let progress = d.decompress(&compressed, &mut out)?;
+    ///     if progress.status != Status::Done || &out[..progress.produced] != b"abc" {
+    ///         return Err(cleanflate::Error::Truncated);
+    ///     }
+    ///     d.finish()?;
+    ///     d.reset(); // ready for the next stream, allocations kept
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn reset(&mut self) {
+        self.total_in = 0;
+        self.trailing_start = None;
+        self.error = None;
+        self.backend.reset(self.options.dictionary.as_deref());
     }
 
     /// The decode path of the current backend inflater.

@@ -11,7 +11,7 @@ use proptest::prelude::*;
 use cleanflate::test_hooks::{
     decompress_with_path, decompress_with_sink, decompressor_with_path, DecodePath, OneShotSink,
 };
-use cleanflate::{Format, Options, Status};
+use cleanflate::{Decompressor, Format, Options, Status};
 use oracle::ffi::{Framing, Strategy as ZlibStrategy};
 use oracle::manifest::sha256_hex;
 
@@ -53,11 +53,21 @@ pub fn trace(
     in_sched: &[usize],
     out_sched: &[usize],
 ) -> Trace {
+    let mut d = decompressor_with_path(format, options.clone(), path);
+    trace_with(&mut d, input, in_sched, out_sched)
+}
+
+/// [`trace`] over an existing decompressor, from whatever state it is in.
+pub fn trace_with(
+    d: &mut Decompressor,
+    input: &[u8],
+    in_sched: &[usize],
+    out_sched: &[usize],
+) -> Trace {
     assert!(
         !in_sched.is_empty() && !out_sched.is_empty(),
         "empty schedule"
     );
-    let mut d = decompressor_with_path(format, options.clone(), path);
     let mut calls = Vec::new();
     let mut output = Vec::new();
     let mut pos = 0usize;

@@ -1038,3 +1038,34 @@ only the slice sink: decoded output, errors, `consumed` and `produced`, the
 streaming contract and `size_of::<Decompressor>()` are unchanged. Test-only
 slice-shaped wrappers (`step`, `copy_match`) keep the existing unit tests
 meaningful without widening the production API.
+
+### D-35: `Decompressor::reset`
+
+RFC: n/a (API) -- SPEC S6 M3
+Decision: `Decompressor::reset(&mut self)` returns a decompressor to the
+state `Decompressor::new(format, options)` would have, for the same format,
+options and decode path, while keeping its allocations. After it, every
+observable is what a fresh decompressor would show for any later call
+sequence: `decompress` results, `finish`, `total_in`, `total_out`,
+`trailing_start`, the gzip headers and member count, and (feature `stats`)
+the counters. The sticky error is cleared. `Options::dictionary` is applied
+again to a raw stream, and a zlib stream applies it when its FDICT bit asks
+for it, as before. Each layer has its own `reset`: the inflater returns its
+state machine, bit reader and counters to their initial values and forgets the
+window's history (the 32 KiB ring stays allocated, unreachable until refilled
+because every read is bounded by the bytes appended since); the zlib wrapper
+returns to reading CMF with a fresh Adler-32; the gzip wrapper returns to its
+first member header with its header list cleared. There is no `reset_with`
+(a new format or options): every caller that decodes many streams through one
+object keeps the format and the options, and an API that changes them can be
+added later without breaking this one.
+Rationale: Decoding many small streams pays to set up a decompressor each
+time: the window, the two fixed tables and the gzip header parser. Keeping
+the allocations and clearing only the state makes that cost once per
+object. The contract is stated as equivalence with a fresh decompressor, not
+as a list of fields, so a field added later cannot be forgotten silently: the
+reset differential (`crates/oracle/tests/reset.rs`) decodes a stream on a
+decompressor that was driven to each interesting state (untouched, one call
+in, finished, errored, truncated, at the output limit) and then reset, and
+requires the same calls, output, `finish` result and counters as a fresh
+decompressor, across formats, options, dictionaries and both decode paths.

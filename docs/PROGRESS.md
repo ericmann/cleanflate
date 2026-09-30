@@ -27,7 +27,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P2-09 M2 acceptance and push
 - [x] P3-01 Per-block Huffman table reuse (gated)
 - [x] P3-02 Per-stream setup: reusable inflater, lazy window, no redundant fills (gated)
-- [ ] P3-03 `Decompressor::reset()` and the reset differential
+- [~] P3-03 `Decompressor::reset()` and the reset differential
 - [ ] P3-04 Reuse bench case
 - [ ] P3-05 M3 acceptance and push
 - [ ] P4-01 Assembly evidence tool for the fast loop

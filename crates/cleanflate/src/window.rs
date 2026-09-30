@@ -39,6 +39,17 @@ impl Window {
         }
     }
 
+    /// Forget all history, keeping the storage. The ring's old bytes stay
+    /// in place but are unreachable: every read is bounded by
+    /// [`Self::available`], which is 0 again.
+    pub(crate) fn reset(&mut self) {
+        self.total = 0;
+        #[cfg(feature = "stats")]
+        {
+            self.written = 0;
+        }
+    }
+
     /// Append `data`, keeping only the last `WINDOW_SIZE` bytes, in at most
     /// two slice copies.
     pub(crate) fn append(&mut self, data: &[u8]) {

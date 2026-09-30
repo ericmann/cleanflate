@@ -28,6 +28,7 @@ mod inflate_fixed;
 mod inflate_stored;
 mod invariants;
 mod oneshot_sizing;
+mod reset;
 mod sink;
 mod slice_api;
 #[cfg(feature = "stats")]

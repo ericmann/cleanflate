@@ -171,8 +171,36 @@ impl Inflater {
     /// supplies one directly).
     pub(crate) fn with_dictionary(dict: &[u8], path: DecodePath) -> Self {
         let mut inflater = Self::new_with_path(path);
-        inflater.window.prefill(dict);
+        inflater.prefill_dictionary(dict);
         inflater
+    }
+
+    /// Load `dict` into the (empty) window, keeping only its last 32 KiB.
+    pub(crate) fn prefill_dictionary(&mut self, dict: &[u8]) {
+        self.window.prefill(dict);
+    }
+
+    /// Return to the freshly-constructed state (the decode path is kept),
+    /// keeping the window storage, the fixed tables and the table and
+    /// length-buffer capacity. Whatever table is left in `litlen_table` and
+    /// `dist_table` is never read before the next block header replaces it.
+    pub(crate) fn reset(&mut self) {
+        self.br = BitReader::new();
+        self.window.reset();
+        self.state = State::BlockHeader;
+        self.total_out = 0;
+        self.bfinal = false;
+        self.keep_bits = 0;
+        self.dyn_hlit = 0;
+        self.dyn_hdist = 0;
+        self.dyn_hclen = 0;
+        self.dyn_cl_lengths = [0u8; 19];
+        self.dyn_lengths.clear();
+        self.dyn_prev_len = 0;
+        #[cfg(feature = "stats")]
+        {
+            self.stats = Stats::default();
+        }
     }
 
     /// The decode path this decoder was built with.
