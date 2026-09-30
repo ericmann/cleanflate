@@ -1,355 +1,293 @@
-# SPEC: cleanflate phase 2 — clean-room performance pass
+# SPEC: cleanflate phase 3 — performance round 3
 
-> Phase 2 of cleanflate. Phase 1 (the correct, safe, clean-room decoder)
-> is merged to `main` and archived under `docs/phase-1/` (its SPEC, PLAN,
-> PROGRESS, REVIEW, SUMMARY, HANDOFF, BUILD_REPORT, foundry.json, Foundry
-> state/feedback, and a copy of its PERF.md and provenance summary).
-> Run with `/foundry:go-flight` from the `feature/perf` branch.
+> Phase 3 of cleanflate (the "round 3" performance pass). Phase 1 (the
+> clean-room decoder, `v0.1.0-cleanroom`) and phase 2 (the first performance
+> pass, `v0.2.0-cleanroom`) are merged to `main` and archived under
+> `docs/phase-1/` and `docs/phase-2/`. Run with `/foundry:go-flight` from
+> `main`.
 
 ## 1. Purpose
 
-Phase 1 shipped a decoder that is byte-identical to C zlib on every
-conformance and fuzz corpus, but runs at **25.6% (raw) / 27.3% (zlib)** of C
-zlib's single-thread decompression throughput on Silesia, against a 70%
-target (`docs/phase-1/PERF.md`). Phase 2 closes that gap **without giving up
-anything phase 1 guaranteed**, and without breaking the clean-room record.
+Phase 2 took cleanflate from about 26% to about 66–71% of C zlib's
+single-thread decompression throughput on Silesia at level 6. The operator's
+post-merge full bench (`docs/perf/phase2-final-operator.json`, summarised in
+`docs/PERF.md` under "Operator re-run after merge") shows cleanflate at
+0.54–0.78× C zlib across all rows, with four patterns:
 
-Priorities, unchanged from phase 1 and in this order:
+| pattern in the phase-2 data | suspected cause (to be confirmed by profile) |
+|---|---|
+| one-shot is **slower** than streaming on every Silesia row (by 4–9 points of ratio) | one-shot output-buffer cost: zero-filling, growth, cache misses on a large fresh buffer |
+| Canterbury (small files) trails Silesia (0.54–0.69×) | per-stream and per-block setup cost |
+| level 1 is the slowest level (0.63–0.65× on Silesia) | the literal-heavy decode loop |
+| zlib and gzip trail raw by about 3–10% | Adler-32 / CRC-32 cost, and wrapper overhead in streaming mode |
 
-1. **Provenance** — the clean-room record stays intact; no existing DEFLATE
-   implementation's source, internals or implementation-specific write-ups
-   are consulted to make it faster (§2).
-2. **Correctness** — byte-identical output, identical accept/reject
-   behaviour, identical streaming semantics. A faster decoder that is wrong
-   on one stream is a regression, not a trade-off.
-3. **Safety** — `#![forbid(unsafe_code)]`, zero runtime dependencies, no
-   reachable panics, bounded memory.
-4. **Performance** — the goal of this phase, but ranked below 1–3. When they
-   conflict, performance loses and the negative result is recorded.
+Phase 3 addresses each pattern, **measured first**, and fixes the benchmark
+so that every row compares like with like (cleanflate streaming is currently
+compared against C zlib one-shot).
+
+Priorities are unchanged, in this order: **provenance, correctness, safety,
+then performance.** A faster decoder that is wrong on one stream is a
+regression. When performance conflicts with the others it loses, and the
+negative result is recorded.
 
 ## 2. Clean-room rules (NON-NEGOTIABLE)
 
-Phase 1's §2 (`docs/phase-1/SPEC.md` §2) applies **in full**: the permitted
-and forbidden inputs, the mechanical guard and logger in `tools/cleanroom/`,
-the post-M0 lockdown (still in force — no WebFetch, no network), and the
-commit-tag discipline. The guard, logger and lockdown flag are already
-built; phase 2 does not relax them. The provenance log continues from phase
-1 into the same `provenance/tool-log.jsonl`.
+Phase 1's §2 and phase 2's §2 (`docs/phase-1/SPEC.md`, `docs/phase-2/SPEC.md`)
+apply **in full**:
+- **Unchanged:** the permitted and forbidden inputs, the mechanical guard and logger, the lockdown (no network, no WebFetch/WebSearch), and the commit-tag discipline.
+- **Profiling:** limited to cleanflate-only processes (CLAUDE.md CR7).
+- **C zlib:** a black-box stopwatch and oracle only.
+- **Hooks:** they stay active. Do not relax, bypass or work around them.
 
-### 2.1 Permitted inputs for performance work
-- This SPEC, everything under `docs/` (including `docs/phase-1/`, especially
-  `PERF.md`, `DESIGN.md` and the phase-1 REVIEW/SUMMARY), and `docs/rfc/`.
-- cleanflate's own source, tests and history in this repo.
-- **Measurements of cleanflate itself**: benchmarks, profiles (`perf`,
-  `cargo flamegraph` or equivalent, if installed), instruction counts,
-  in-crate counters (§4.3), and generated assembly of cleanflate's own code
-  (`cargo rustc --release -- --emit asm`, or equivalent).
-- **C zlib as a black-box stopwatch only**: the oracle may time C zlib
-  decompressing the same input, to compute the throughput ratio. Nothing
-  about *how* C zlib achieves its speed may be observed.
-- **General, implementation-independent performance knowledge**, applied
-  from first principles to this code base. Examples of what counts:
-  - keep a wide bit buffer topped up in bulk (whole bytes or words at a
-    time) instead of refilling one byte per need;
-  - look up Huffman symbols in tables indexed by the next N bits, with a
-    second-level table for longer codes, instead of walking one bit at a
-    time;
-  - put the common case in a tight inner loop guarded by "enough input and
-    output remain" margins, and fall back to the careful general path near
-    buffer edges;
-  - write output once, and treat already-written output as match history
-    instead of maintaining a second copy;
-  - copy non-overlapping matches as slices, and expand overlapping,
-    short-distance matches by copying the growing pattern in larger steps;
-  - avoid per-byte bounds checks and per-iteration clones in hot loops,
-    within safe Rust (slices, `chunks_exact`, iterators, `copy_within`,
-    hoisted length checks the optimiser can prove);
-  - compute CRCs a word at a time from multiple precomputed tables derived
-    from the polynomial;
-  - size one-shot output buffers from available hints to avoid repeated
-    growth copies.
+Restated because round-3 work makes them tempting:
+- Do **not** consult zlib, zlib-ng, zlib-rs, miniz_oxide, libdeflate or any
+  other decoder's source, internals or implementation-specific write-ups
+  (including articles on "how X decodes fast", multi-literal table designs
+  of a named library, or benchmark write-ups that explain another
+  implementation's fast path).
+- Every optimisation is justified from **cleanflate's own profiles and
+  counters** plus **general computer-science knowledge**, written in the
+  project's own words, and each write-up cites the profile evidence that
+  motivated it (DESIGN.md `[perf]` entries, CLAUDE.md PT7).
+- **Do not add comparator crates** (flate2, miniz_oxide, zlib-rs, libdeflater
+  or similar) to this repo, even as dev-dependencies. Comparisons against
+  other implementations belong in the separate `cleanflate-bench` project.
+- The oracle may use C zlib **only** through the signatures listed in
+  `docs/phase-1/PLAN.md` task P1-01, plus one addition for this phase:
+  `zlibCompileFlags() -> uLong` (used only to record the C library's build
+  flags in the bench environment, §4.3). Streaming C zlib uses the
+  already-listed `inflateInit2_` / `inflate` / `inflateEnd` with bounded
+  `avail_in` / `avail_out`.
 
-  Each technique used must be written up in `docs/DESIGN.md` **in the
-  project's own words**, justified from first principles, the RFC and
-  cleanflate's own measurements, with the statement "general technique;
-  not derived from any specific implementation".
+## 3. Hard constraints (carried over; none may regress)
 
-### 2.2 Forbidden inputs (in addition to phase 1 §2.2)
-- Profiling, disassembling, symbol-annotating, or stepping through **C zlib
-  or any other decoder** (e.g. `perf annotate` or `perf report` on libz
-  symbols, `objdump` of the oracle's static zlib, a debugger in zlib
-  frames). Profiles of oracle runs must be filtered to cleanflate's own
-  symbols, and any view that shows the C library's internals is a
-  violation to log as a human intervention if it happens by accident.
-- Articles, talks, benchmarks write-ups or code walkthroughs describing how
-  a *specific* implementation (zlib, zlib-ng, libdeflate, miniz_oxide,
-  zlib-rs, Go/Java/Python/.NET inflaters, etc.) structures its fast path,
-  tables or bit buffer. Knowing that such libraries exist and are fast is
-  fine; learning their design from sources is not.
-- Reading comparator crates' docs beyond public API pages (phase 1 rule,
-  restated because perf work makes it tempting).
-
-## 3. Hard constraints (all carried over; none may regress)
-
-- `crates/cleanflate`: `#![forbid(unsafe_code)]`; `[dependencies]` empty;
-  the phase-1 panic lints (`unwrap_used`, `expect_used`, `panic`,
-  `indexing_slicing`) stay denied in library code, and local `#[allow]`s of
-  them stay banned (phase-1 rule `no-panic-lint-allow-in-cleanflate-lib`).
-- No `std::arch`, SIMD intrinsics, `unsafe`-backed crates, multithreading,
-  or nightly features. Auto-vectorisation the compiler does on its own is
-  fine.
-- Stable toolchain pinned in `rust-toolchain.toml` (1.89.0). A toolchain
-  bump is out of scope.
-- Public API: no breaking changes. The one-shot functions, `Decompressor`,
-  `Options`, `Error`/`ErrorKind`, `Status` and `Progress` keep their
-  signatures and documented semantics. Additive, documented changes are
-  allowed only if a measurement shows they are needed.
-- Streaming contract (DESIGN D-11, D-13, D-20, D-25): identical output for
-  any input/output chunking including 1-byte chunks; exact `consumed`
-  accounting; `trailing_start` semantics; output-limit semantics; bounded
-  memory; gzip multi-member behaviour and header caps.
-- Every phase-1 test, the conformance corpus (100%, one-shot and
-  streaming), malformed corpus, bomb test, chunking proptest and fuzz
-  targets keep passing. `make ci` stays green on GitHub Actions.
-- Tunables live only in `crates/cleanflate/src/config.rs` (phase-1 rule
-  C8); new tunables (margins, table sizes, refill widths) go there, with
-  the measurement that chose their value.
+- `crates/cleanflate`: `#![forbid(unsafe_code)]`, `[dependencies]` empty, stable
+  Rust pinned at 1.89.0, the phase-1 panic lints denied in library code with
+  no local `#[allow]`s. **No SIMD intrinsics, no `std::arch`, no nightly
+  `std::simd`**, no multithreading. Auto-vectorisation the compiler does on
+  its own is fine.
+- **No behaviour changes.**
+  - Output, accept/reject decisions and `Error` values are unchanged.
+  - The streaming contract is unchanged: chunking invariance including 1-byte chunks, exact `consumed`, `trailing_start`, output-limit semantics and bounded memory (DESIGN D-11, D-13, D-20, D-25, D-31, D-33).
+  - gzip multi-member behaviour and header caps are unchanged.
+- **Public API:** no breaking changes. Additive, documented API is allowed only where this SPEC names it (`Decompressor::reset`, §6 M3).
+- **No benchmark-specific code paths.** Nothing in `crates/cleanflate` may
+  detect or special-case benchmark inputs, corpora, sizes or call patterns;
+  every fast path must be justified for arbitrary input and exercised by the
+  correctness suites.
+- Tunables live only in `crates/cleanflate/src/config.rs`, each with the
+  measurement that chose it (CLAUDE.md C8).
+- Phase 2's correctness architecture stays: `DecodePath { Fast, Reference }`,
+  the fast-vs-reference differential, the `stats` and `test-hooks` features,
+  the regression-fixture store, and the performance task protocol
+  (CLAUDE.md PT1–PT8).
 
 ## 4. Measurement
 
-### 4.1 Baseline and targets
-Phase-1 numbers (`docs/phase-1/PERF.md`, Silesia, level 6, one-shot,
-best of 5, AMD Ryzen 5 3400G):
+### 4.1 Targets (report actuals whether met or not)
+All ratios are cleanflate / C zlib, **like for like** (one-shot vs one-shot,
+streaming vs streaming with the same chunk sizes, §4.2), medians, levels 1,
+6 and 9, raw/zlib/gzip.
 
-| framing | cleanflate MiB/s | C zlib MiB/s | ratio |
-|---|---|---|---|
-| raw | 71.1 | 277.7 | 25.6% |
-| zlib | 71.9 | 263.0 | 27.3% |
+| # | target |
+|---|---|
+| T1 | Silesia streaming ≥ 0.80× C zlib streaming, every level and framing |
+| T2 | cleanflate one-shot ≥ cleanflate streaming, every row (both corpora) |
+| T3 | Canterbury ≥ 0.70× C zlib, every level, framing and mode |
+| T4 | zlib and gzip within 3% of raw throughput on the same corpus, level and mode |
+| T5 | carried from phase 2: Silesia level-6 one-shot ≥ 0.70× C zlib for raw, zlib and gzip |
+| T6 | no row slower than the phase-2 baseline (`docs/perf/baselines/phase2.json`) by more than the measured noise |
 
-Targets for phase 2, aggregate over Silesia (total bytes / total time),
-one-shot, level 6:
+Missing a target is an honest result. Shipping incorrect code, or a
+benchmark-specific path, to hit one is not.
 
-- **Primary:** ≥ 70% of C zlib for raw, zlib **and** gzip framing.
-- **Streaming:** ≥ 60% of C zlib when driven through `Decompressor` with
-  64 KiB input and 64 KiB output chunks.
-- **Stretch:** ≥ 90% one-shot.
-- **No per-file regression:** no Silesia or Canterbury file may end up
-  slower than its phase-2 M0 baseline by more than the measured noise.
-- Report the achieved numbers either way. Missing a target is an honest
-  result; shipping incorrect code to hit one is not.
+### 4.2 Bench hygiene (M0)
+- **Rename "min" to "best"** in every bench output, defined as the
+  throughput of the fastest sample (minimum time). Document the definitions
+  of "median" and "best", and every column, in a bench README
+  (`crates/oracle/BENCH.md` or `docs/perf/README.md`).
+- **Benchmark C zlib's streaming path** with the same input and output chunk
+  sizes as cleanflate's streaming mode (64 KiB in, 64 KiB out), so the
+  streaming rows compare like with like. Keep the one-shot rows as they are.
+- **Baseline:** save the phase-2 operator run as
+  `docs/perf/baselines/phase2.json` (a copy of
+  `docs/perf/phase2-final-operator.json`). Then re-measure the phase-3
+  starting point with the new bench (including C zlib streaming) as
+  `docs/perf/baselines/phase3-start.json`, with a noise estimate from two
+  runs, as phase 2 did.
+- **Delta columns:** every report row shows the delta vs the phase-2 baseline
+  and the ratio vs C zlib (like for like).
+- **Environment** recorded with every run:
+  - CPU model, core count and governor; OS and kernel; load average;
+  - `rustc` version and the cargo profile flags;
+  - C zlib version (`zlibVersion`) and build flags (`zlibCompileFlags`, as hex, plus the libz-sys version and enabled features);
+  - git head and dirty flag.
+- **Canterbury per-file reporting:** Canterbury rows are also reported per
+  file, with file size, so setup-cost effects can be read against size.
+- **Reuse bench case** (M3): a mode that decodes the same inputs repeatedly
+  through one `Decompressor` using `reset()`, reported next to fresh-object
+  streaming.
 
-### 4.2 Benchmark methodology (M0 hardens the existing `oracle bench`)
-- Re-measure the baseline at M0 on the current machine before any
-  optimisation, and commit it as `docs/perf/baseline.json` plus a table in
-  `docs/PERF.md`. All later comparisons are against this, not the phase-1
-  numbers.
-- Per measurement: warm-up run, then N ≥ 7 timed runs; report median and
-  min. Report per file and aggregate, for raw/zlib/gzip framing, levels 1,
-  6 and 9, one-shot and streaming (64 KiB chunks).
-- Estimate noise at M0 by running the full baseline twice; a change counts
-  as a win only if it beats **twice** the measured noise on the aggregate.
-- Machine-readable results in `docs/perf/<task-id>.json`; a comparison
-  command (`make bench-compare A=... B=...`) prints the per-file and
-  aggregate deltas.
-- `make bench-quick` (Canterbury plus a fixed Silesia subset, fewer runs)
-  for iteration inside a task; `make bench` (full) at milestone ends.
-- Benchmarks are **not** CI gates (shared runners are too noisy); CI stays
-  a correctness gate. Performance acceptance is judged from committed
-  bench results.
+### 4.3 Profiling (M0/M1)
+- `perf` 7.1.5 and `cargo flamegraph` 0.6.14 are installed; profile only the
+  cleanflate-only target (`make profile`, `make flamegraph`,
+  `examples/profile_decode.rs`), with `CARGO_PROFILE_RELEASE_DEBUG=true`.
+- Extend `profile_decode` / `make profile` so a profile can be taken for any
+  (corpus, framing, level, mode) key, including one-shot and streaming.
+- **Committed flamegraphs:** unlike phase 2, the SVGs for the keys below are
+  committed under `docs/perf/flamegraphs/` (before and after), because the
+  phase-3 report must show them. They contain only cleanflate and std frames.
+- Required profiles, at M0 (before) and at M5 (after):
+  - `silesia/raw/l1/oneshot`
+  - `silesia/raw/l1/streaming`
+  - `canterbury/gzip/l1/oneshot`
+  - plus any key a task targets.
+- **`docs/perf/phase3-profile.md`** lists the top hotspots per key with
+  % of samples, and maps each §1 pattern to the functions that explain it
+  (or records that the profile contradicts the suspected cause).
+- **Every optimisation task names the hotspot it targets** (from that file
+  or a fresh profile) and shows the before/after profile share and bench
+  numbers (CLAUDE.md PT1/PT2).
+- **Bounds-check elision** (M4): verify the fast loop's bounds checks and
+  `Option` failure branches are optimised away by inspecting cleanflate's
+  own generated assembly (`cargo rustc --release -p cleanflate --lib --
+  --emit asm`, or `cargo asm` if installed). `cargo-asm` is **not** installed,
+  and agents may not install it. Record the before/after count of
+  panic/bounds branches in the fast-loop function(s).
 
-### 4.3 Profiling
-- `perf` 7.1.5 (`/usr/bin/perf`, from Pop!_OS `linux-tools`) and
-  `cargo flamegraph` 0.6.14 are installed on the build machine
-  (`kernel.perf_event_paranoid = 2`: user-space profiling of your own
-  processes works; kernel frames do not, and are not needed). Use them.
-- **Profile cleanflate alone.** M0 adds a cleanflate-only profiling entry
-  point (e.g. `oracle profile --corpus silesia --framing raw --iters N`,
-  or a dedicated example/binary) that decodes pre-compressed inputs with
-  cleanflate only and never calls C zlib in the profiled process, plus a
-  `make profile` target wrapping `perf record`/`cargo flamegraph` around
-  it. Compressed inputs are prepared by a separate, unprofiled step (or
-  read from `testdata/generated/`). Never run `perf` or `cargo flamegraph`
-  on `oracle bench` or anything else that executes C zlib code (§2.2).
-- Build profiled binaries with debug info
-  (`CARGO_PROFILE_RELEASE_DEBUG=true`) so frames name cleanflate's own
-  functions. Profile outputs (`perf.data`, SVGs) are gitignored; the
-  findings they support go into `docs/PERF.md` in words and numbers.
-- Regardless, M0 adds an opt-in cargo feature `stats` to `cleanflate`
-  (zero dependencies, compiled out by default, and the default build must
-  be bit-for-bit unaffected in behaviour) that counts: symbols decoded via
-  the table vs. the bit-serial fallback, bit-buffer refills and bytes per
-  refill, state-machine dispatches per output byte, matches by
-  length/distance bucket and overlap/non-overlap, stored bytes, and time
-  or calls spent building tables. `oracle bench --stats` prints them.
-  Every optimisation task states which counter or profile justified it.
+## 5. Correctness gates
 
-### 4.4 Hypotheses to verify first (from reading phase-1 cleanflate)
-Measure these at M0 before committing to a plan order; confirm or
-discard each in `docs/PERF.md`:
+Phase 2's §5 applies:
+- **Paths:** the reference path, and fast paths layered on it with exact state restoration at every exit.
+- **Differential test:** the fast-vs-reference comparison runs on the full corpus.
+- **3,000-case chunking test:** runs for every decoder change (`make proptest-3k`); 10k at milestone acceptance.
+- **Repros:** never lose a repro. Minimise it, add it with `oracle regress-add`, commit, then root-cause.
+- **Dependencies:** keep task dependencies narrow, so one blocked task does not skip unrelated work.
 
-- **H1 — the lookup table is mostly bypassed.** `BitReader` keeps at most
-  7 bits between steps (DESIGN D-07), and `peek_symbol` refills one bit's
-  worth at a time on `NeedMoreBits`, while `decode_table` falls back to the
-  bit-serial walk whenever fewer than `LITLEN_TABLE_BITS` (10) bits are
-  buffered. Most symbols may therefore be decoded bit-by-bit.
-- **H2 — per-symbol dispatch overhead.** `Inflater::step` clones
-  `self.state` every loop iteration and returns to the outer `match` for
-  every literal and match.
-- **H3 — every output byte is written twice.** Once to the output slice
-  and once into the 32 KiB ring `Window` (with a `u64` modulo and a bounds
-  check per byte), including stored blocks.
-- **H4 — overlapping matches are byte-by-byte.** Short-distance repeats
-  (distance < length) are common and take the slow per-byte path.
-- **H5 — per-block setup costs.** Fixed-Huffman blocks clone the fixed
-  tables (`Vec`s); dynamic blocks rebuild full tables every block.
-- **H6 — wrapper and one-shot overheads.** CRC-32 is byte-at-a-time for
-  gzip; one-shot output growth may copy repeatedly.
+In addition, for phase 3:
 
-## 5. Correctness strategy for performance work
+**Per task** (every task that changes `crates/cleanflate/src/`): all
+conformance, malformed-corpus, chunking-invariance (3000 cases) and
+fast-vs-reference tests green, plus a `make fuzz-smoke` run of fuzz target
+(a) (`never_panic_*`, all three entry points) and of `diff_fast_reference`.
 
-Phase 1's attempt (P4-08) at a fast decode loop found a real bug, could not
-root-cause it within one task, reverted everything, and lost the
-reproducing case. Phase 2 must not repeat that.
+**Per milestone acceptance:**
+- `make ci` and `make heavy` (10k proptests, bomb, full conformance, full fast-vs-reference) are green.
+- Differential fuzz target (b) (`diff_oracle_roundtrip`) runs **≥ 30 minutes with zero divergences**.
+- `diff_fast_reference` runs ≥ 30 minutes with zero divergences.
+- Both run in the background (PT8), and the run length and result go in the acceptance commit.
 
-- **Keep a reference path.** The existing resumable state machine stays as
-  the general, obviously-correct slow path. Fast paths are layered on top
-  and entered only when their preconditions (input/output margins, state)
-  hold; at every exit they restore the exact state the slow path expects,
-  including the resumable reader invariant (bytes loaded but not consumed
-  are given back or accounted for exactly — see D-07/D-22).
-- **Differential fast-vs-slow testing.** M0 adds a way to force the slow
-  path (a `cfg(test)`-only or feature-gated switch that the default build
-  cannot reach) and a test that decodes the entire conformance corpus,
-  the malformed corpus and a proptest stream both ways and asserts
-  identical output, errors, `consumed` and status. This runs in
-  `make test`.
-- **Scale up the chunking proptest for decoder changes.** Any task that
-  touches `inflate.rs`, `bitreader.rs`, `huffman.rs`, `window.rs` or
-  `stream.rs` runs the chunking proptest at ≥ 3000 cases (which is what
-  caught P4-08's bug) before it is marked done; milestone acceptance runs
-  10k.
-- **Never lose a repro.** When a fast path produces a wrong result:
-  minimise the case, commit it as a named regression fixture (proptest
-  regressions file and/or a `testdata/regressions/` file with its expected
-  output hash), then root-cause it. If the task must stop, it blocks with
-  the fixture, the hypothesis and what was ruled out, so the next task or
-  review round continues from there instead of starting over. A revert
-  must keep the fixture.
-- **Mutation-check the fast path.** The reviewer's mutation sampling
-  should include fast-path code; a surviving mutation there is a finding.
+**New code paths get new oracles:**
+- An output sink (M2) that writes into a `Vec` instead of a caller slice must be covered by the differential: slice sink vs Vec sink, Fast vs Reference.
+- `reset()` (M3) must be covered by a test that decodes a stream after `reset()` and compares against a fresh `Decompressor`, across formats, options and mid-stream resets.
 
 ## 6. Milestones
 
-Each milestone ends with an acceptance task that runs `make ci`,
-`make bench` (full) and the 10k chunking proptest, commits the bench
-results, and pushes. Plan task dependencies narrowly: a blocked
-optimisation must not cascade-skip unrelated work (phase 1 lost 17 tasks
-to one blocked download).
+Each milestone ends with an acceptance task: the §5 milestone gates, a full
+`make bench` (background) committed as `docs/perf/<task-id>.json`, a
+`make bench-compare` against the phase-3 start and phase-2 baselines, and a
+push. Order follows cost and risk: hygiene and profiling first, cheap
+checksum work early, the hot loop last.
 
-### M0 — Baseline, instrumentation, safety net
-- Harden `oracle bench` per §4.2 (median/min of N, framings, levels,
-  one-shot and streaming modes, JSON output, `bench-quick`,
-  `bench-compare`).
-- Add the `stats` feature and `oracle bench --stats` (§4.3).
-- Add the cleanflate-only profiling entry point and `make profile`
-  (§4.3), and record a baseline profile's top functions in `docs/PERF.md`.
-- Add the force-slow-path switch and the fast-vs-slow differential test
-  (§5), passing trivially until a fast path exists.
-- Measure the baseline twice (noise estimate), record H1–H6 findings in
-  `docs/PERF.md` under a new "Phase 2" section, and order the remaining
-  milestones' tasks by measured cost.
-- CI: also build and clippy the `stats` feature.
-- **Acceptance:** baseline JSON and noise estimate committed; the
-  differential test runs in `make test`; H1–H6 each confirmed or discarded
-  with a number.
+### M0 — Bench hygiene (P3.0)
+- Everything in §4.2: the best/median rename and README, C zlib streaming rows, the baselines, the delta columns, environment capture, Canterbury per-file rows, and `zlibCompileFlags` in the oracle.
+- **Acceptance:**
+  - the phase-3 start baseline and noise estimate are committed;
+  - every streaming row has a C zlib streaming counterpart;
+  - `make bench-compare` shows deltas vs the phase-2 baseline.
 
-### M1 — Bit reader and symbol decoding
-- Keep the bit buffer topped up in bulk when input allows, and redefine
-  the D-07 invariant (in a new DESIGN entry) so it stays exact across
-  resumable calls and block/stream boundaries.
-- Decode every symbol through tables: first-level table for codes up to
-  the table width, second-level tables for longer codes; the bit-serial
-  walk remains only as the reference in tests (and, if needed, for the
-  code-length alphabet).
-- Consider folding length/distance base values and extra-bit counts into
-  table entries if the counters show it matters.
-- Avoid per-block table clones and redundant rebuilds (H5).
-- **Acceptance:** `stats` shows ≥ 99% of literal/length and distance
-  symbols decoded by table lookup on Silesia; aggregate throughput gain
-  measured and committed; all correctness gates green.
+### M1 — Profile first (P3.1)
+- The §4.3 profiling extensions, and before-flamegraphs for the three required keys.
+- `docs/perf/phase3-profile.md`, with each §1 pattern confirmed, adjusted or discarded by evidence.
+- Re-order M2–M4's tasks inside their milestones by measured cost where the profile says so.
+- A task may gate itself out with a recorded negative result if its hotspot is below max(2%, 2× noise) (PT2).
+- **Acceptance:** the flamegraphs and profile report are committed, and every later task names its hotspot.
 
-### M2 — Fast decode loop
-- A tight loop for the literal/length/distance state, entered with
-  input/output margins sufficient for a worst-case symbol sequence
-  without mid-symbol exhaustion checks, exiting to the state machine near
-  buffer edges, at end of block, or on any error.
-- No per-iteration state clone or outer dispatch inside the loop.
-- **Acceptance:** fast-vs-slow differential passes on the whole corpus;
-  chunking proptest passes 10k cases; the repro-preservation rule (§5)
-  was followed for any bug found; aggregate gain measured and committed.
+### M2 — Checksums (P3.5), then the one-shot output path (P3.2)
+**Checksums.**
+- CRC-32 is already slicing-by-8 from `const fn` tables (D-32), and Adler-32 already defers its modulo (D-23).
+- Change them only if the M1 profile shows checksum time behind the zlib/gzip gap. Candidates:
+  - slicing-by-16, measured against 8;
+  - an Adler-32 inner loop unrolled over a documented largest-safe batch. The batch is derived from the u32 accumulator bound and recorded in DESIGN.md, extending D-23.
+- Add checksum microbenchmarks (MiB/s per algorithm and per implementation variant, cleanflate only).
+- **Acceptance:** T4 progress reported, and checksum microbench numbers committed.
 
-### M3 — Output and match history
-- Write each output byte once. Use the caller's output slice as match
-  history where it is contiguous, and keep the 32 KiB window only for
-  history that must survive across `decompress` calls (refreshed from the
-  output tail on exit). Decide and document how this interacts with
-  small caller output buffers and preset dictionaries.
-- Non-overlapping matches as slice copies; overlapping matches by
-  repeated pattern doubling; stored blocks as single slice copies.
-- One-shot output sizing from hints (e.g. gzip ISIZE when trustworthy,
-  compressed length heuristics), always capped by the output limit.
-- **Acceptance:** as M2, plus streaming-mode throughput reported
-  separately; bomb test and memory bounds unchanged.
+**One-shot output path.**
+- Pre-sizing is already done (D-31, D-33): the gzip ISIZE hint is capped by the output limit, `ONESHOT_MAX_PREALLOC` and the DEFLATE expansion bound, and raw/zlib use a ratio estimate with geometric growth.
+- Revisit the hint only if the profile shows growth or zeroing cost.
+- **Remove zero-fill-before-write.** One-shot decoding must stop decoding into a pre-zeroed slice. Instead it appends decoded bytes directly to the output `Vec`:
+  - literals via push/extend;
+  - matches via `extend_from_within` or equivalent safe copies from the already-written output.
 
-### M4 — Checksums, wrappers and tuning
-- CRC-32 computed several bytes at a time from multiple tables derived
-  from the RFC 1952 polynomial (generated in `const fn`, verified against
-  the existing byte-wise implementation and the oracle).
-- Revisit Adler-32 if the profile says so.
-- Re-sweep the table widths and any new tunables (margins, refill width)
-  on the final code, choosing values by measurement (§4.2 noise rule).
-- **Acceptance:** gzip and zlib framing overhead relative to raw is
-  reported; tunables' measurements are in `docs/PERF.md` and cited in
-  `config.rs`.
+  This needs an output-sink abstraction in the decoder core:
+  - It is generic and monomorphised, so the caller-slice (streaming) and `Vec` (one-shot) sinks share one core.
+  - The "one resumable decoder core" principle (CLAUDE.md) still holds.
+  - The fast/reference split applies to both sinks.
+  - It must stay within safe Rust. No `MaybeUninit` tricks, and no `unsafe` of any kind.
+- If a sink design cannot beat the current path without breaking the one-core rule, record that as a negative result.
+- **Acceptance:**
+  - T2 (one-shot ≥ streaming on every row) is reported;
+  - the §5 sink differential passes;
+  - the bomb test and memory bounds are unchanged.
+
+### M3 — Per-stream setup cost (P3.3)
+- Reuse the window and Huffman-table allocations across blocks and across streams, and avoid zeroing large tables that are about to be fully overwritten. This is driven by the Canterbury profile.
+- Add **`Decompressor::reset(&mut self)`**, and optionally `reset_with(format, options)` if the profile or API shape needs it.
+  - It returns the decompressor to its freshly-constructed state while keeping its allocations.
+  - It is documented in rustdoc and DESIGN.md, and covered by the §5 reset differential.
+- Add the reuse bench case (§4.2).
+- **Acceptance:** Canterbury ratio change reported per file with sizes, and T3 progress reported.
+
+### M4 — Decode hot loop (P3.4; largest and riskiest, last)
+- Some of this already exists:
+  - the 64-bit bit buffer with bulk refill (D-27);
+  - the fast loop with input/output margins (D-29);
+  - two-level tables with swept widths (D-28, phase-2 P4-03).
+
+  Phase 3 goes further, only where the M1/M4 profiles point:
+  - **Branch-light refill.** When at least 8 input bytes are available, refill with a single word read and branch-free arithmetic.
+  - **Bounds-check elision.** Restructure the fast loop so LLVM can prove its slice accesses in bounds in safe code (hoisted length checks, fixed-size array views, `chunks_exact`, iterators). Verify via generated assembly (§4.3).
+  - **Table size.** Re-tune the primary lookup width (e.g. 9–11 bits plus subtables) on the final loop.
+  - **Multi-literal entries (optional).** Pack more than one literal per table entry where the code lengths allow. Measure with and without, and keep the variant that wins by the PT1 rule. This is a general technique, and the table design must be derived in the project's own words.
+- Level-1 streams are the target: literal-heavy.
+- **Acceptance:** the level-1 rows improve measurably (a WIN verdict), all §5 gates are green, and the elision evidence is committed.
 
 ### M5 — Report and hand-off
-- `docs/PERF.md` "Phase 2" section: final numbers against §4.1 targets,
-  per-milestone gains, every hypothesis's verdict, negative results and
-  reverted attempts with their regression fixtures.
-- Regenerate `docs/BUILD_REPORT.md` and `provenance/SUMMARY.md` for
-  phase 2; update `provenance/human-interventions.md`.
-- The implementer does not tag; the human tags `v0.2.0-cleanroom` after
-  review and merge.
-- **Acceptance:** `make ci` green, full bench committed, report complete.
+- **After-flamegraphs** for the three required keys.
+- **`docs/perf/PHASE3.md`** (the "round 3" report) containing:
+  - phase-2 vs phase-3 tables, now including C zlib streaming;
+  - T1–T6 with verdicts;
+  - flamegraphs before and after;
+  - per-change attribution: which task moved which rows, and by how much;
+  - everything tried and reverted, with the reason and any regression fixture.
+- Update `docs/PERF.md` with a "Phase 3" section pointing to PHASE3.md.
+- Regenerate `docs/BUILD_REPORT.md` and `provenance/SUMMARY.md` scoped to phase 3 (set `PHASE_BASE` to the phase-3 SPEC commit).
+- Update `provenance/human-interventions.md` with any human steps.
+- **Tags:** the implementer does not tag. The human tags `v0.3.0-cleanroom` after review and merge.
 
 ## 7. Foundry run notes
-- Base branch: `feature/perf` (this branch). Build branches use Foundry's
-  `build/` prefix and PR into `feature/perf`, not `main`.
+- Base branch: `main`. The build branch uses Foundry's `build/` prefix and PRs into `main`.
 - Review depth: up to **6** review rounds (`maxRounds: 6`).
-- Phase-1 Foundry state and feedback are archived in `docs/phase-1/`;
-  this phase starts with fresh state.
+- Phase-2 Foundry state, feedback, plan and reports are archived in `docs/phase-2/`. This phase starts with fresh Foundry state.
+- Known Foundry friction to plan around:
+  - `foundry_mutate` can hang on mutants that loop until the output limit, and can leave `crates/oracle/tests/chunking.proptest-regressions` modified.
+  - Reviewers should restore that file before submitting.
+  - Reviewers should prefer mutants that cannot run away.
 
-## 8. Human prerequisites (before or during the flight)
-- Done 2026-09-30: `perf` 7.1.5 and `cargo flamegraph` 0.6.14 installed
-  by the operator (recorded in `provenance/human-interventions.md`).
-  Agents must not install or upgrade tooling themselves (network is
-  locked down); anything missing is a human request in the handoff.
-- Final `make bench` should run on a quiet machine (no other heavy
-  processes; ideally a fixed CPU governor). Record the conditions in
-  `docs/PERF.md`.
+## 8. Human prerequisites
+- None new. `perf` and `cargo flamegraph` are installed; `cargo-asm` is not, and is not required (§4.3).
+- Long fuzz runs (§5 milestone gates) run on the build machine during the flight, in the background. If the operator needs the machine, milestone fuzz may be shortened to what fits. Record the actual duration in the acceptance commit and list the shortfall as a manual check.
 
 ## 9. Definition of done
-- All §3 constraints hold and every phase-1 correctness gate is green.
-- The fast-vs-slow differential test exists and passes on the full corpus.
-- §4.1 targets met, or the shortfall is reported with measurements and
-  the next most promising step.
-- Every optimisation is written up in DESIGN.md per §2.1, with the
-  measurement that justified it.
-- The provenance log shows no forbidden reads, and any denials are
-  explained.
+- Every §3 constraint holds, and every correctness gate in §5 is green at every milestone.
+- The bench compares like with like, with environment capture, baselines and deltas.
+- T1–T6 are met, or each shortfall is reported with measurements and the next most promising step.
+- Every optimisation is written up in DESIGN.md per PT7, and cites the profile evidence that motivated it.
+- `docs/perf/PHASE3.md` is complete.
+- The provenance log shows no forbidden reads, and any denials are explained.
 
 ## 10. Out of scope
-- `unsafe`, SIMD intrinsics, `std::arch`, multithreading, nightly Rust.
-- Compression (phase-1 M5 stays deferred), `no_std`, C ABI.
-- Changes to the oracle's C zlib usage beyond timing.
-- Toolchain upgrades.
+- `unsafe`, SIMD intrinsics, `std::arch`, nightly `std::simd`, multithreading, and toolchain upgrades.
+- Comparator crates in this repo (use `cleanflate-bench`).
+- Compression, `no_std`, C ABI.
+- Any change to what the oracle asks C zlib to do beyond timing it (one-shot and chunked streaming) and reading its version and build flags.
