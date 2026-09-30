@@ -18,7 +18,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P0-13 M0 acceptance and push
 - [x] P1-01 Bulk bit refill with an exact give-back invariant
 - [x] P1-02 Two-level lookup tables for every symbol
-- [~] P1-03 Per-block table reuse (gated)
+- [x] P1-03 Per-block table reuse (gated)
 - [ ] P1-04 Length/distance payload in table entries (gated)
 - [ ] P1-05 M1 acceptance and push
 - [ ] P2-01 Fast literal/length/distance decode loop
@@ -85,3 +85,6 @@ BitReader::refill_bulk/give_back, Inflater::step now wraps step_inner with one e
 
 ### P1-02 — 8096976
 huffman.rs: packed u32 Entry (Invalid/Symbol/Sub), two-level build_table, total lookup in decode_table_method (Symbol longer than available => NeedMoreBits, Invalid with a>=1 => Invalid), CodeLength single 7-bit level (CODE_LENGTH_TABLE_BITS const, RFC-fixed), from_lengths_with_bits for sweeps. D-28 [perf] (supersedes D-16 gate, includes prefix-freeness argument). Tests in tests/huffman_twolevel.rs (220+ random complete sets with 15-bit codes, widths 7..=12). stats test updated: Fast has 0 serial decodes. PT1: NEUTRAL on Silesia (raw oneshot 78.9->81.9), Canterbury gzip/raw WIN; one LOSS on silesia gzip oneshot did not repeat in a second run. Kept per PT4 as prerequisite of P2-01. Stats after: table-decode 100%, bytes/refill 6.21. fastslow-full, proptest-3k pass. Interpretation: NEUTRAL kept as prerequisite.
+
+### P1-03 — ff08378
+GATED OUT (negative result), no code change. PERF.md '### P1-03 (gated, negative result)': from_lengths 1.29% inclusive (build_table 0.72%, alloc 0.43%), 2.99 builds/block, 0 fixed-table clones on Silesia l6 => ~1.7% < max(2%, 2x noise). The 9.45% clone frame is State clone (P2-03), not tables.
