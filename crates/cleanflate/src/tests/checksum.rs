@@ -1,4 +1,7 @@
-use crate::checksum::{adler32, crc32, crc32_update_bytewise, Adler32, Crc32, CRC32_TABLES};
+use crate::checksum::{
+    adler32, adler32_update_bytewise, crc32, crc32_update_bytewise, crc32_update_sliced, Adler32,
+    Crc32, CRC32_TABLES,
+};
 use crate::config::CRC32_SLICES;
 
 #[test]
@@ -208,4 +211,85 @@ fn crc32_tables_follow_zero_byte_recurrence() {
 #[test]
 fn crc32_slices_config_valid() {
     assert!(std::hint::black_box(CRC32_SLICES) >= 4);
+}
+
+#[test]
+fn crc32_sliced_variants_match_bytewise() {
+    let data = seeded_bytes(0xBADC_0FFE, 8192);
+    fn check<const N: usize>(data: &[u8], offset: usize, len: usize) {
+        let slice = &data[offset..offset + len];
+        let got = crc32_update_sliced::<N>(0xFFFF_FFFF, slice) ^ 0xFFFF_FFFF;
+        assert_eq!(got, bytewise(slice), "N={N} offset {offset} len {len}");
+        // A non-initial starting register too.
+        let got = crc32_update_sliced::<N>(0x1234_5678, slice);
+        assert_eq!(
+            got,
+            crc32_update_bytewise(0x1234_5678, slice),
+            "N={N} seeded"
+        );
+    }
+    for offset in 0..=15usize {
+        for len in 0..=64usize {
+            check::<4>(&data, offset, len);
+            check::<8>(&data, offset, len);
+            check::<16>(&data, offset, len);
+        }
+    }
+    let mut x = 0x0DDB_1A5E_5BAD_5EEDu64;
+    for _ in 0..200 {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        let len = (x % 4097) as usize;
+        let offset = ((x >> 20) % 16) as usize;
+        check::<4>(&data, offset, len);
+        check::<8>(&data, offset, len);
+        check::<16>(&data, offset, len);
+    }
+    // Split updates: folding in two pieces equals one piece, for each width.
+    let short = &data[..200];
+    for cut in 0..=short.len() {
+        for n in [4usize, 8, 16] {
+            let run = |d: &[u8], r: u32| match n {
+                4 => crc32_update_sliced::<4>(r, d),
+                8 => crc32_update_sliced::<8>(r, d),
+                _ => crc32_update_sliced::<16>(r, d),
+            };
+            let split = run(&short[cut..], run(&short[..cut], 0xFFFF_FFFF));
+            assert_eq!(
+                split,
+                crc32_update_bytewise(0xFFFF_FFFF, short),
+                "N={n} cut {cut}"
+            );
+        }
+    }
+    // Widths with no tables or too narrow to fold a register fall back to
+    // the bytewise result.
+    let s = &data[..1000];
+    assert_eq!(
+        crc32_update_sliced::<2>(0xFFFF_FFFF, s),
+        crc32_update_bytewise(0xFFFF_FFFF, s)
+    );
+    assert_eq!(
+        crc32_update_sliced::<32>(0xFFFF_FFFF, s),
+        crc32_update_bytewise(0xFFFF_FFFF, s)
+    );
+}
+
+#[test]
+fn adler32_bytewise_matches_production() {
+    let data = seeded_bytes(0xA11CE, 20_000);
+    for len in [0usize, 1, 2, 255, 5551, 5552, 5553, 11_104, 20_000] {
+        let slice = &data[..len];
+        assert_eq!(
+            adler32_update_bytewise(1, slice),
+            adler32(slice),
+            "len {len}"
+        );
+    }
+    let ff = vec![0xFFu8; 3 * crate::checksum::ADLER_NMAX + 5];
+    assert_eq!(adler32_update_bytewise(1, &ff), adler32(&ff));
+    // Split updates from a non-initial value.
+    let mid = adler32_update_bytewise(1, &data[..777]);
+    assert_eq!(adler32_update_bytewise(mid, &data[777..]), adler32(&data));
 }

@@ -1,6 +1,6 @@
 .PHONY: regress-seed fmt-check lint test corpus corpus-full crate-checks cleanroom-selftest \
         tools-check design-check ci proptest-10k proptest-3k fastslow-full bomb heavy \
-        fuzz-check fuzz-smoke fuzz-long fuzz-divergences bench bench-quick bench-compare bench-noise bench-md bench-targets bench-stats profile-prep profile-build profile profile-stat flamegraph flamegraph-save profile-required tag-required \
+        fuzz-check fuzz-smoke fuzz-long fuzz-divergences bench bench-quick bench-compare bench-noise bench-md bench-targets bench-stats bench-checksum profile-prep profile-build profile profile-stat flamegraph flamegraph-save profile-required tag-required \
         provenance-snapshot provenance-summary build-report hooks-install \
         sources-check conformance-full malformed fuzz-smoke-decoder fuzz-milestone
 
@@ -183,6 +183,10 @@ bench-targets:
 bench-md:
 	@test -n "$(J)" || { echo "usage: make bench-md J=results.json [FILES=1] [FILTER=prefix] [BASELINE=path]"; exit 2; }
 	cargo run --release -q -p oracle -- bench-md $(J) $(if $(FILES),--files) $(if $(FILTER),--filter $(FILTER)) $(if $(BASELINE),--baseline $(BASELINE))
+
+bench-checksum:
+	mkdir -p $(dir $(BENCH_OUT))
+	cargo run --release -q -p cleanflate --features test-hooks --example checksum_bench -- --task $(BENCH_ID) --json $(BENCH_OUT)
 
 STATS_CORPUS ?= silesia
 STATS_LEVELS ?= 6

@@ -716,6 +716,46 @@ Targets (`make bench-targets J=docs/perf/phase3/P1-03.json`), reported, not gate
 - T5 (Silesia level-6 one-shot >= 0.70x C zlib): NOT MET; worst: silesia/raw/l6/oneshot ratio 0.641 (threshold >= 0.70)
 - T6 (no row slower than the phase-2 baseline beyond noise): NOT MET; worst: canterbury/gzip/l9/oneshot -9.76% vs baseline
 
+### P2-01
+Checksum microbenchmark (`make bench-checksum`, example `checksum_bench`, cleanflate only) and the variants behind `cleanflate::test_hooks::checksum`: CRC-32 bytewise, sliced 4, 8, 16 and production; Adler-32 bytewise and production. The CRC-32 slice tables are now one set of 16 (`CRC32_MAX_SLICES`; table `k` does not depend on the width) and `Crc32::update` calls the generic `crc32_update_sliced::<CRC32_SLICES>`; the production width is still 8.
+
+Two runs (`docs/perf/phase3/P2-01-checksum.json`, `P2-01-checksum-rerun.json`), 7 samples of at least 256 MiB per row. The per-row difference between the runs is the microbench noise: mean 2.9%, maximum 7.6%.
+
+| algo | variant | size | run 1 median MiB/s | run 2 median MiB/s | diff % |
+|---|---|---:|---:|---:|---:|
+| crc32 | bytewise | 64 | 436 | 407 | -6.7 |
+| crc32 | bytewise | 4096 | 428 | 437 | +2.0 |
+| crc32 | bytewise | 65536 | 432 | 439 | +1.5 |
+| crc32 | bytewise | 1048576 | 439 | 438 | -0.3 |
+| crc32 | sliced4 | 64 | 1134 | 1155 | +1.8 |
+| crc32 | sliced4 | 4096 | 1248 | 1153 | -7.6 |
+| crc32 | sliced4 | 65536 | 1195 | 1236 | +3.4 |
+| crc32 | sliced4 | 1048576 | 1174 | 1230 | +4.8 |
+| crc32 | sliced8 | 64 | 1773 | 1810 | +2.0 |
+| crc32 | sliced8 | 4096 | 1852 | 1894 | +2.3 |
+| crc32 | sliced8 | 65536 | 1843 | 1868 | +1.4 |
+| crc32 | sliced8 | 1048576 | 1803 | 1709 | -5.2 |
+| crc32 | sliced16 | 64 | 2183 | 2187 | +0.2 |
+| crc32 | sliced16 | 4096 | 2092 | 2210 | +5.7 |
+| crc32 | sliced16 | 65536 | 2131 | 1979 | -7.1 |
+| crc32 | sliced16 | 1048576 | 2139 | 2167 | +1.3 |
+| crc32 | production | 64 | 1765 | 1819 | +3.1 |
+| crc32 | production | 4096 | 1797 | 1876 | +4.4 |
+| crc32 | production | 65536 | 1833 | 1880 | +2.5 |
+| crc32 | production | 1048576 | 1823 | 1875 | +2.8 |
+| adler32 | bytewise | 64 | 339 | 324 | -4.6 |
+| adler32 | bytewise | 4096 | 348 | 344 | -1.1 |
+| adler32 | bytewise | 65536 | 345 | 336 | -2.6 |
+| adler32 | bytewise | 1048576 | 347 | 344 | -1.0 |
+| adler32 | production | 64 | 2449 | 2530 | +3.3 |
+| adler32 | production | 4096 | 3041 | 3036 | -0.2 |
+| adler32 | production | 65536 | 3093 | 3038 | -1.8 |
+| adler32 | production | 1048576 | 3052 | 3066 | +0.4 |
+
+Reading: production CRC-32 (8 slices) runs at about 1.8 GiB/s, sliced-16 about 2.1 GiB/s (+17%), sliced-4 about 1.2 GiB/s; production Adler-32 about 3.0 GiB/s against 0.35 GiB/s bytewise. At about 150 MiB/s of decode, CRC-32 at 1.8 GiB/s accounts for roughly 8% of gzip time, which matches the profile share below. These are inputs for P2-02 and P2-03, not changes.
+
+PT1 on the production refactor (key `silesia/rfc1952/l6/streaming`, hotspot `Crc32::update`): self-time share 9.56% before (P1-02) to 9.19% after (`make profile`). `bench-quick` before/after (`docs/perf/phase3/P2-01-before.json`, `P2-01.json`) shows every key, raw included, 4% to 10% slower: the machine load average was 1.35 at the start of the before run and 4.70 at the start of the after run (a shared desktop), so the JSON comparison cannot judge the change, and its LOSS lines on gzip keys are matched by equal LOSS lines on raw keys that the change cannot touch. The controlled check is an interleaved A/B of the old and new `profile_decode` binaries on `silesia/rfc1952/l6/streaming` (4 alternating pairs, MiB/s): before 148.4, 146.2, 154.2, 135.2; after 150.0, 152.8, 156.6, 146.2. After is at least as fast in all four pairs (mean 151.4 against 146.0, +3.7%), so the refactor is neutral, not a LOSS.
+
 ## Targets
 Filled by P5-02 (acceptance tasks).
 

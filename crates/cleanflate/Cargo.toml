@@ -9,3 +9,7 @@ license = "MIT OR Apache-2.0"
 [features]
 stats = []
 test-hooks = []
+
+[[example]]
+name = "checksum_bench"
+required-features = ["test-hooks"]
