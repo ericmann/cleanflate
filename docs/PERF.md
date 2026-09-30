@@ -534,3 +534,18 @@ Two-level lookup tables for every symbol (D-28). `make bench-quick` before (`doc
 | canterbury/gzip/l6/streaming | 74.9 | 87.9 | +17.3 | 4.9 | WIN |
 
 A second after-run (not committed) gave silesia gzip one-shot +0.3% (NEUTRAL) and silesia zlib one-shot -7.6% (NEUTRAL); the single LOSS above is inside the run-to-run drift seen in P0-13 and did not repeat, and no per-file verdict was treated as reliable. Result: **NEUTRAL on Silesia, kept under PT4 as the named prerequisite of the fast loop (P2-01)**, which needs one total lookup per symbol. `make bench-stats` after this change: litlen and dist table-decode 100.0% (was 54.0% and 51.7% at baseline), bytes per refill 6.21 (was 1.08). Most of the gain from removing the serial walk came from P1-01's bulk refill, which is why this task adds little on top.
+
+### P1-03 (gated, negative result)
+
+Gate (PT2): `make bench-stats` and `make profile PROFILE_FRAMING=rfc1951` (Silesia level 6, 3 iterations, cleanflate-only). Threshold: max(2%, 2x aggregate noise); the measured aggregate noise is 1.8% for raw one-shot (worst aggregate 6.1%), so the threshold is at least 3.7% and at most about 12%.
+
+Measured, after P1-01 and P1-02:
+
+| item | value |
+|---|---|
+| `make bench-stats` table builds | 8424 over 2817 blocks (2.99 per block: code-length, literal/length, distance), 0 fixed-table clones (there are no fixed blocks at level 6), about 75 KiB of output per block |
+| `Huffman::from_lengths` (inclusive, including `build_table`) | 1.29% of samples (self 0.93%; `build_table` 0.72%) |
+| table clones | none in this input (0 fixed blocks); the `clone` frame at 9.45% inclusive is `Inflater::step`'s per-iteration `self.state.clone()` (P2-03's target), not a table clone |
+| allocation frames under table building (`reserve`, `grow`) | 0.43% at most |
+
+Table costs together are about 1.7% of samples, below the 2% floor and far below twice the noise. **Negative result: no code was changed.** The two ideas (reference the fixed tables instead of cloning; rebuild dynamic tables in place) would only matter for inputs with very many tiny blocks, which neither corpus contains; the fixed-block clone is a copy of two small tables per fixed block and is not on any measured path. Revisit only if a workload of many small dynamic or fixed blocks is added to the benchmark.
