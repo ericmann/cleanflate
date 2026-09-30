@@ -1113,6 +1113,25 @@ Findings for P4-02 and P4-03:
 - The fast loop itself, `Inflater::step_into` and `Huffman::decode_table` contain **no** panic or bounds-failure call sites at all (0 and 0 above). The only two such sites anywhere in the decode path are in `Window::copy_match_sink` (2 calls at 2 sites). So the SPEC's bounds-check hypothesis (bounds checks hiding in the hot loop) does not hold for this code: its table and slice accesses already compile to branch-and-fallback code through `get`, which is the conditional-branch count, not a panic call. What remains is branch volume: `step_into` has 167 conditional branches over 2,259 instructions, `decode_table` 22 over 182, and `fast_loop.rs` alone 11 over 79.
 - P4-03's measure should therefore be conditional branches and instructions per fast-loop iteration, with panic sites expected to stay 0 (and the two in `copy_match_sink` as the only ones to try to remove).
 
+### P4-02
+**Measured and reverted (PT4). `refill_bulk` stays as it is: the technique was already in place.**
+
+Gate (PT2): `refill_bulk` is 6.10% inclusive in `silesia/rfc1951/l1/oneshot` and 5.79% in `silesia/rfc1951/l1/streaming` (P1-02 profiles), against gates of 2% (quick noise 0.91%) and 11.2% (noise 5.6%). The one-shot key is above its gate, so the change was tried.
+
+What the task asks for is what D-27 (phase 2) already does: with at least 8 input bytes left, `refill_bulk` reads one little-endian 64-bit word, ORs `word & mask` shifted by the buffered count, and advances the position by `k = (63 - count) / 8` bytes with no per-byte loop and no data-dependent branch beyond the 8-byte availability test; only the last bytes of the input take the byte loop. The new tests `refill_word_path_all_counts` (every count 0 to 63 against input lengths 8 to 16, bits and position equal a bit-by-bit model) and `refill_never_exceeds_63_bits` pass on the existing implementation unchanged. The only variant left to try was a spelling change: a `first_chunk::<8>()` view instead of `get(..).try_from`, `count & 63` and a mask that is provably below 64 bits, so that no guard is needed.
+
+| function (`make asm-count`, `docs/perf/phase3/P4-02-asm.json`) | instructions before | after | cond branches before | after |
+|---|---:|---:|---:|---:|
+| `Inflater::step_into` (fast loop inlined) | 2259 | 2303 | 167 | 167 |
+| `src:bitreader.rs` | 582 | 580 | 39 | 39 |
+| `Window::copy_match_sink` | 241 | 241 | 24 | 24 |
+| `Huffman::decode_table` | 182 | 182 | 22 | 22 |
+| `src:fast_loop.rs` | 79 | 79 | 11 | 11 |
+
+The compiler already produced the same branch structure: the conditional branch counts are identical and no panic site changed (0 before and after in the fast loop).
+
+PT1 (`docs/perf/phase3/P4-02-before.json`, `P4-02.json`; load averages at start 2.7 and 3.5): `silesia/raw/l1/oneshot` +0.15% (NEUTRAL, ratio -1.4% NEUTRAL) and `silesia/raw/l1/streaming` +1.2% (NEUTRAL). Interleaved runs of the old and new `profile_decode` binaries (6 alternating pairs each, MiB/s means): silesia level 1 one-shot 155.2 to 154.4, streaming 162.8 to 161.9, level 6 one-shot 181.8 to 177.9, canterbury level 1 one-shot 199.6 to 198.6: no change beyond the pair-to-pair spread. The change is neither a WIN nor a named prerequisite of a later task, so PT4 reverts it; the two tests stay.
+
 ## Targets
 Filled by P5-02 (acceptance tasks).
 

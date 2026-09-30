@@ -263,12 +263,13 @@ ASM_OUT ?= target/asm/count.json
 
 asm:
 	mkdir -p target/asm
-	rm -f target/asm/*.s target/asm/.stamp
-	touch target/asm/.stamp
+	rm -f target/asm/*.s
 	cargo rustc --release -p cleanflate --lib -- --emit asm
-	find target/release/deps -name 'cleanflate-*.s' -newer target/asm/.stamp -exec cp {} target/asm/ \;
-	@ls target/asm/*.s >/dev/null 2>&1 || { echo "make asm: no cleanflate-*.s was emitted under target/release/deps"; exit 1; }
-	@ls -l target/asm/*.s
+	@newest=$$(ls -t target/release/deps/cleanflate-*.s 2>/dev/null | head -n 1); \
+	test -n "$$newest" || { echo "make asm: no cleanflate-*.s under target/release/deps"; exit 1; }; \
+	stem=$$(basename "$$newest" | sed -E 's/^(cleanflate-[0-9a-f]+).*/\1/'); \
+	cp target/release/deps/$$stem*.s target/asm/; \
+	ls -l target/asm/*.s
 
 asm-count:
 	@test -d target/asm || { echo "run `make asm` first"; exit 2; }

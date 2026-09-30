@@ -386,3 +386,74 @@ fn pending_literal_bits_kept_at_output_full() {
         }
     }
 }
+
+/// Every bit the reader holds, low bit first, consuming them.
+fn drain_bits(r: &mut BitReader) -> Vec<bool> {
+    let mut out = Vec::new();
+    while r.available() > 0 {
+        let n = r.available().min(16);
+        let v = r.peek(n);
+        for i in 0..n {
+            out.push((v >> i) & 1 == 1);
+        }
+        r.consume(n);
+    }
+    out
+}
+
+fn bits_of(bytes: &[u8]) -> Vec<bool> {
+    bytes
+        .iter()
+        .flat_map(|b| (0..8).map(move |i| (b >> i) & 1 == 1))
+        .collect()
+}
+
+#[test]
+fn refill_word_path_all_counts() {
+    let data = bytes(64, 0xABCD);
+    for count in 0..=63u32 {
+        // Buffer exactly `count` bits: load whole bytes, then drop the excess.
+        let mut base = BitReader::new();
+        let mut loaded = 0usize;
+        while base.available() < count {
+            let next = base.available() + 1;
+            assert!(base.fill(&data, &mut loaded, next));
+        }
+        base.consume(base.available() - count);
+        assert_eq!(base.available(), count);
+        let held = loaded; // bytes consumed so far
+
+        for len in 8..=16usize {
+            let input = &data[held..held + len];
+            let mut r = base.clone();
+            let mut before = base.clone();
+            let old_bits = drain_bits(&mut before);
+            let mut pos = 0usize;
+            r.refill_bulk(input, &mut pos);
+
+            let k = ((63 - count) / 8) as usize;
+            assert_eq!(pos, k, "count {count} len {len}: bytes loaded");
+            assert_eq!(r.available(), count + 8 * k as u32, "count {count}");
+            let mut expected = old_bits;
+            expected.extend(bits_of(&input[..k]));
+            assert_eq!(drain_bits(&mut r), expected, "count {count} len {len}");
+        }
+    }
+}
+
+#[test]
+fn refill_never_exceeds_63_bits() {
+    let data = bytes(4096, 0x5EED);
+    let mut rng = Rng(0x1234_5678_9ABC_DEF1);
+    let mut r = BitReader::new();
+    let mut pos = 0usize;
+    for _ in 0..2000 {
+        r.refill_bulk(&data, &mut pos);
+        assert!(r.available() <= 63, "{}", r.available());
+        if pos >= data.len() - 16 {
+            pos = 0; // the bits are random anyway; keep refilling
+        }
+        let take = (rng.next() % 50) as u32;
+        r.consume(take.min(r.available()));
+    }
+}
