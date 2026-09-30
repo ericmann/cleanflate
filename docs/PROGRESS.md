@@ -21,7 +21,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P1-03 Per-block table reuse (gated)
 - [x] P1-04 Length/distance payload in table entries (gated)
 - [x] P1-05 M1 acceptance and push
-- [~] P2-01 Fast literal/length/distance decode loop
+- [x] P2-01 Fast literal/length/distance decode loop
 - [ ] P2-02 Differential fuzz target: fast vs reference
 - [ ] P2-03 Copyable state in the slow path (gated)
 - [ ] P2-04 M2 acceptance and push
@@ -95,3 +95,6 @@ GATED OUT (negative result), no code change. Profile by source line (perf report
 ### P1-05 — bb3a2c6
 make ci and make heavy green; P1-05.json and P1-05-stats.json committed; PERF.md M1 acceptance. Table-decode 100.0%/100.0% (>=99% MET). Silesia l6 vs baseline: one-shot raw 62.3->98.9, zlib 61.3->94.5, gzip 51.8->75.3 MiB/s; streaming raw 65.0->107.8; all WIN, no REGRESSION. Push: pushed to origin.
 Manual check: NOT VERIFIED (human): (1) GitHub Actions ci green on the pushed branch. (2) Review D-27/D-28 [perf] entries for clean-room wording (SPEC 2.1). (3) Sanity-check the M1 gain on a quiet machine (noise was high, single-pair noise 6.1%).
+
+### P2-01 — 7ade00d
+fast_loop.rs (FastCtx/FastExit, run with local bit buffer/positions, 48-bit iteration refill), config FAST_LOOP_MIN_INPUT=16 / FAST_LOOP_MIN_OUTPUT=258, integration in step_inner (skip_fast flag: one slow dispatch after a Margin exit), stats count_decode/record_match moved to stats.rs and shared, fast_loop_entries/symbols counted. D-29 [perf] added. 5 tests in tests/fast_loop.rs + tests/config.rs (mutation-checked). PT1: all 12 aggregates WIN: silesia l6 oneshot raw 83.1->132.2, zlib 80.2->131.0, gzip 66.1->92.6; streaming raw 83.8->135.5; no per-file REGRESSION. make test, proptest-3k, proptest-10k, fastslow-full (200s), bomb pass. Interpretation: Margin retry policy via skip_fast; Copy exit defensive.
