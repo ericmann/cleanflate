@@ -1,6 +1,6 @@
 .PHONY: regress-seed fmt-check lint test corpus corpus-full crate-checks cleanroom-selftest \
         tools-check design-check ci proptest-10k proptest-3k fastslow-full bomb heavy \
-        fuzz-check fuzz-smoke fuzz-long fuzz-divergences bench bench-quick \
+        fuzz-check fuzz-smoke fuzz-long fuzz-divergences bench bench-quick bench-compare bench-noise bench-md bench-stats \
         provenance-snapshot provenance-summary build-report hooks-install \
         sources-check conformance-full malformed
 
@@ -12,6 +12,7 @@ lint:
 	cargo clippy -p cleanflate --lib -- -D warnings
 	cargo clippy -p cleanflate --all-targets --features stats -- -D warnings
 	cargo clippy -p cleanflate --all-targets --features stats,test-hooks -- -D warnings
+	cargo clippy -p oracle --all-targets --features stats -- -D warnings
 
 test:
 	cargo test --workspace
@@ -147,3 +148,20 @@ fastslow-full: corpus-full
 
 regress-seed:
 	cargo run --release -q -p oracle -- regress-seed
+
+bench-compare:
+	@test -n "$(A)" -a -n "$(B)" || { echo "usage: make bench-compare A=before.json B=after.json [NOISE=noise.json]"; exit 2; }
+	cargo run --release -q -p oracle -- bench-compare $(A) $(B) $(if $(NOISE),--noise $(NOISE))
+
+bench-noise:
+	@test -n "$(A)" -a -n "$(B)" -a -n "$(OUT)" || { echo "usage: make bench-noise A=run1.json B=run2.json OUT=docs/perf/noise.json"; exit 2; }
+	cargo run --release -q -p oracle -- bench-noise $(A) $(B) --out $(OUT)
+
+bench-md:
+	@test -n "$(J)" || { echo "usage: make bench-md J=results.json"; exit 2; }
+	cargo run --release -q -p oracle -- bench-md $(J)
+
+bench-stats:
+	mkdir -p $(dir $(BENCH_OUT))
+	cargo run --release -q -p oracle --features stats -- bench --stats --iters 0 --kind custom --corpus silesia \
+		--framings raw,zlib,gzip --levels 6 --modes oneshot,streaming --task $(BENCH_ID) --json $(BENCH_OUT)

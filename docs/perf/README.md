@@ -21,3 +21,10 @@ Top-level fields:
 - `aggregates[]`: one per (corpus, framing, level, cleanflate mode), `key` = `<corpus>/<framing>/l<level>/<mode>`: `total_bytes`, `cleanflate_mib_s_median` (total bytes over the sum of per-file medians), `cleanflate_mib_s_min` (over the sum of minimums), `c_zlib_mib_s_median`, `c_zlib_mib_s_min`, `ratio` (cleanflate median over C zlib median). The C zlib figures are the one-shot denominator for both modes.
 
 Method: each file is compressed once with the oracle (Default strategy, windowBits 15, memLevel 8). After a verified warm-up decode, each implementation runs in interleaved samples, so drift hits all of them alike.
+
+## Comparison tools
+
+- `make bench-noise A=run1.json B=run2.json OUT=docs/perf/noise.json` writes the noise between two runs of the same code: `|a - b| / a` in percent, cleanflate median throughput only, per aggregate key, per file key (`<corpus>/<file>/<framing>/l<level>/<mode>`) and the largest aggregate value (`aggregate_max_pct`). Use `docs/perf/noise.json` for `full` runs and `docs/perf/noise-quick.json` for `quick` runs.
+- `make bench-compare A=before.json B=after.json [NOISE=file]` prints per-aggregate deltas with the verdict `WIN` (better than +2x noise), `LOSS` (worse than -2x noise) or `NEUTRAL`, `UNKNOWN` when no noise file exists, and lists per-file `REGRESSION` lines (a drop beyond the larger of the file's noise and its aggregate's noise). It refuses a JSON whose `stats_build` is true. `oracle bench-compare ... --fail-on-regression` exits 1 on any regression.
+- `make bench-md J=results.json` prints the aggregates as markdown for PERF.md (`oracle bench-md J --files --filter PREFIX` for per-file rows).
+- `make bench-stats BENCH_ID=id` runs `oracle bench --stats` (needs oracle feature `stats`): untimed decodes that print derived statistics per framing and mode, and write the raw counters to a `stats` array in the JSON (per file, plus `*total*` rows). Stats builds are never timed or compared.

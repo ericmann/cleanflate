@@ -63,6 +63,24 @@ pub struct Aggregate {
     pub ratio: f64,
 }
 
+/// Raw `stats` counters of one (file, framing, level, mode), or the
+/// per-framing total when `file` is `*total*`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StatsEntry {
+    /// `silesia` or `canterbury`.
+    pub corpus: String,
+    /// File name, or `*total*`.
+    pub file: String,
+    /// `raw`, `zlib` or `gzip`.
+    pub framing: String,
+    /// Compression level of the fixture.
+    pub level: u8,
+    /// `oneshot` or `streaming`.
+    pub mode: String,
+    /// Counter name to value; histogram buckets are `<name>_<index>`.
+    pub counters: std::collections::BTreeMap<String, u64>,
+}
+
 /// A complete bench result file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BenchJson {
@@ -92,6 +110,9 @@ pub struct BenchJson {
     pub results: Vec<ResultRow>,
     /// Aggregates.
     pub aggregates: Vec<Aggregate>,
+    /// Raw counters (only for `oracle bench --stats`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stats: Vec<StatsEntry>,
 }
 
 /// Format seconds since the Unix epoch as `YYYY-MM-DDTHH:MM:SSZ`.
@@ -163,6 +184,7 @@ mod tests {
                 c_zlib_mib_s_min: 4.0,
                 ratio: 0.5,
             }],
+            stats: Vec::new(),
         }
     }
 

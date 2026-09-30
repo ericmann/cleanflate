@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use cleanflate::{decompress_with, Decompressor, Format, Options, Status};
 
-use crate::bench_json::{format_utc, Aggregate, BenchJson, Machine, ResultRow};
+use crate::bench_json::{format_utc, Aggregate, BenchJson, Machine, ResultRow, StatsEntry};
 use crate::ffi::{deflate_bytes, inflate_bytes, zlib_version, DeflateParams, Framing, Strategy};
 use crate::inputs::{canterbury_inputs, silesia_inputs, Input};
 
@@ -95,6 +95,9 @@ pub struct BenchArgs {
     pub task: String,
     /// JSON output path.
     pub json: Option<PathBuf>,
+    /// Collect cleanflate's `stats` counters (needs the oracle `stats`
+    /// feature).
+    pub stats: bool,
 }
 
 fn framing_name(f: Framing) -> &'static str {
@@ -128,9 +131,20 @@ pub fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
     let mut iters: Option<u32> = None;
     let mut task = "adhoc".to_string();
     let mut json = None;
+    let mut stats = false;
     let mut i = 0;
     while i < args.len() {
         let flag = args.get(i).map(String::as_str).unwrap_or("");
+        if flag == "--stats" {
+            if !cfg!(feature = "stats") {
+                return Err(
+                    "--stats needs the stats feature: rebuild with --features stats".to_string(),
+                );
+            }
+            stats = true;
+            i += 1;
+            continue;
+        }
         let value = args
             .get(i + 1)
             .ok_or_else(|| format!("{flag} requires a value"))?;
@@ -188,8 +202,8 @@ pub fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
             "--kind full requires --iters >= {FULL_MIN_ITERS} (got {iters})"
         ));
     }
-    if iters == 0 {
-        return Err("--iters must be at least 1".to_string());
+    if iters == 0 && !stats {
+        return Err("--iters must be at least 1 (0 is allowed only with --stats)".to_string());
     }
     Ok(BenchArgs {
         kind,
@@ -201,6 +215,7 @@ pub fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
         iters,
         task,
         json,
+        stats,
     })
 }
 
@@ -292,6 +307,15 @@ fn format_of(framing: Framing) -> Format {
 /// Decode `compressed` through a `Decompressor` in 64 KiB windows into
 /// the pre-sized `out`; returns bytes produced.
 fn decode_streaming(format: Format, compressed: &[u8], out: &mut [u8]) -> Result<usize, String> {
+    decode_streaming_dec(format, compressed, out).map(|(n, _)| n)
+}
+
+/// [`decode_streaming`], also returning the finished decompressor.
+fn decode_streaming_dec(
+    format: Format,
+    compressed: &[u8],
+    out: &mut [u8],
+) -> Result<(usize, Decompressor), String> {
     let mut d = Decompressor::new(format, Options::default());
     let mut in_pos = 0usize;
     let mut out_pos = 0usize;
@@ -314,7 +338,7 @@ fn decode_streaming(format: Format, compressed: &[u8], out: &mut [u8]) -> Result
         }
     }
     d.finish().map_err(|e| format!("{e:?}"))?;
-    Ok(out_pos)
+    Ok((out_pos, d))
 }
 
 /// One timed implementation of a decode.
@@ -406,6 +430,8 @@ pub fn run(args: &BenchArgs, corpora_root: &Path) -> Result<BenchOutcome, String
         );
     }
     let mut results: Vec<ResultRow> = Vec::new();
+    #[cfg(feature = "stats")]
+    let mut stats_entries: Vec<StatsEntry> = Vec::new();
     let loadavg = std::fs::read_to_string("/proc/loadavg")
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
@@ -435,6 +461,23 @@ pub fn run(args: &BenchArgs, corpora_root: &Path) -> Result<BenchOutcome, String
                         compressed: &compressed,
                     };
                     let mut scratch = vec![0u8; original.len() + STREAM_CHUNK];
+
+                    #[cfg(feature = "stats")]
+                    if args.stats {
+                        collect_stats(
+                            &mut stats_entries,
+                            corpus.name(),
+                            file,
+                            framing,
+                            level,
+                            &fx,
+                            &args.modes,
+                            &mut scratch,
+                        )?;
+                    }
+                    if args.iters == 0 {
+                        continue;
+                    }
 
                     let mut imps: Vec<Imp> = Vec::new();
                     for m in &args.modes {
@@ -524,8 +567,216 @@ pub fn run(args: &BenchArgs, corpora_root: &Path) -> Result<BenchOutcome, String
         stats_build: cfg!(feature = "stats"),
         results,
         aggregates,
+        #[cfg(feature = "stats")]
+        stats: finish_stats(stats_entries),
+        #[cfg(not(feature = "stats"))]
+        stats: Vec::new(),
     };
     Ok(BenchOutcome { json })
+}
+
+/// Flatten a `Stats` into named counters (histograms as `<name>_<i>`).
+#[cfg(feature = "stats")]
+pub fn stats_counters(s: &cleanflate::Stats) -> std::collections::BTreeMap<String, u64> {
+    let mut m = std::collections::BTreeMap::new();
+    let mut put = |k: &str, v: u64| {
+        m.insert(k.to_string(), v);
+    };
+    put("step_calls", s.step_calls);
+    put("state_dispatches", s.state_dispatches);
+    put("output_bytes", s.output_bytes);
+    put("blocks_stored", s.blocks_stored);
+    put("blocks_fixed", s.blocks_fixed);
+    put("blocks_dynamic", s.blocks_dynamic);
+    put("stored_bytes", s.stored_bytes);
+    put("literals", s.literals);
+    put("matches", s.matches);
+    put("match_bytes", s.match_bytes);
+    put("overlap_matches", s.overlap_matches);
+    put("litlen_table_decodes", s.litlen_table_decodes);
+    put("litlen_serial_decodes", s.litlen_serial_decodes);
+    put("dist_table_decodes", s.dist_table_decodes);
+    put("dist_serial_decodes", s.dist_serial_decodes);
+    put("codelen_table_decodes", s.codelen_table_decodes);
+    put("codelen_serial_decodes", s.codelen_serial_decodes);
+    put("refills", s.refills);
+    put("refill_bytes", s.refill_bytes);
+    put("given_back_bytes", s.given_back_bytes);
+    put("table_builds", s.table_builds);
+    put("table_entries_built", s.table_entries_built);
+    put("fixed_table_clones", s.fixed_table_clones);
+    put("window_bytes_written", s.window_bytes_written);
+    put("fast_loop_entries", s.fast_loop_entries);
+    put("fast_loop_symbols", s.fast_loop_symbols);
+    put("oneshot_resizes", s.oneshot_resizes);
+    put("oneshot_bytes_allocated", s.oneshot_bytes_allocated);
+    for (i, v) in s.match_len_hist.iter().enumerate() {
+        put(&format!("match_len_hist_{i}"), *v);
+    }
+    for (i, v) in s.match_dist_hist.iter().enumerate() {
+        put(&format!("match_dist_hist_{i}"), *v);
+    }
+    m
+}
+
+/// One untimed stats decode per selected mode.
+#[cfg(feature = "stats")]
+#[allow(clippy::too_many_arguments)]
+fn collect_stats(
+    out: &mut Vec<StatsEntry>,
+    corpus: &str,
+    file: &str,
+    framing: Framing,
+    level: u8,
+    fx: &Fixture,
+    modes: &[Mode],
+    scratch: &mut [u8],
+) -> Result<(), String> {
+    for mode in modes {
+        let (mode_name, stats) = match mode {
+            Mode::OneShot => {
+                let (d, s) = cleanflate::decompress_with_stats(
+                    format_of(framing),
+                    fx.compressed,
+                    &Options::default(),
+                )
+                .map_err(|e| format!("{corpus}/{file}: {e:?}"))?;
+                if d.data != fx.original {
+                    return Err(format!("{corpus}/{file}: stats decode output differs"));
+                }
+                ("oneshot", s)
+            }
+            Mode::Streaming => {
+                let (n, d) = decode_streaming_dec(format_of(framing), fx.compressed, scratch)
+                    .map_err(|e| format!("{corpus}/{file}: {e}"))?;
+                if scratch.get(..n) != Some(fx.original) {
+                    return Err(format!("{corpus}/{file}: streaming stats output differs"));
+                }
+                ("streaming", d.stats())
+            }
+        };
+        out.push(StatsEntry {
+            corpus: corpus.to_string(),
+            file: file.to_string(),
+            framing: framing_name(framing).to_string(),
+            level,
+            mode: mode_name.to_string(),
+            counters: stats_counters(&stats),
+        });
+    }
+    Ok(())
+}
+
+/// Add per-(corpus, framing, level, mode) totals and print the report.
+#[cfg(feature = "stats")]
+fn finish_stats(mut entries: Vec<StatsEntry>) -> Vec<StatsEntry> {
+    let mut groups: Vec<(String, String, u8, String)> = Vec::new();
+    for e in &entries {
+        let k = (e.corpus.clone(), e.framing.clone(), e.level, e.mode.clone());
+        if !groups.contains(&k) {
+            groups.push(k);
+        }
+    }
+    let mut totals = Vec::new();
+    for (corpus, framing, level, mode) in groups {
+        let mut sum: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+        for e in entries.iter().filter(|e| {
+            e.corpus == corpus && e.framing == framing && e.level == level && e.mode == mode
+        }) {
+            for (k, v) in &e.counters {
+                let slot = sum.entry(k.clone()).or_insert(0);
+                *slot = slot.saturating_add(*v);
+            }
+        }
+        totals.push(StatsEntry {
+            corpus,
+            file: "*total*".to_string(),
+            framing,
+            level,
+            mode,
+            counters: sum,
+        });
+    }
+    for t in &totals {
+        print!("{}", render_stats(t));
+    }
+    entries.extend(totals);
+    entries
+}
+
+fn ratio_pct(n: u64, d: u64) -> f64 {
+    if d == 0 {
+        0.0
+    } else {
+        n as f64 * 100.0 / d as f64
+    }
+}
+
+fn per(n: u64, d: u64) -> f64 {
+    if d == 0 {
+        0.0
+    } else {
+        n as f64 / d as f64
+    }
+}
+
+/// Human-readable statistics for one totals entry.
+pub fn render_stats(t: &StatsEntry) -> String {
+    let c = |k: &str| t.counters.get(k).copied().unwrap_or(0);
+    let mut out = format!(
+        "\n### stats {}/{}/l{}/{}\n\n",
+        t.corpus, t.framing, t.level, t.mode
+    );
+    let blocks = c("blocks_stored") + c("blocks_fixed") + c("blocks_dynamic");
+    out.push_str(&format!(
+        "- output bytes {}, blocks {} (stored {}, fixed {}, dynamic {}), literals {}, matches {}\n",
+        c("output_bytes"),
+        blocks,
+        c("blocks_stored"),
+        c("blocks_fixed"),
+        c("blocks_dynamic"),
+        c("literals"),
+        c("matches")
+    ));
+    out.push_str(&format!(
+        "- litlen table-decode {:.1}%, dist table-decode {:.1}%\n",
+        ratio_pct(
+            c("litlen_table_decodes"),
+            c("litlen_table_decodes") + c("litlen_serial_decodes")
+        ),
+        ratio_pct(
+            c("dist_table_decodes"),
+            c("dist_table_decodes") + c("dist_serial_decodes")
+        )
+    ));
+    out.push_str(&format!(
+        "- dispatches per output byte {:.3}, bytes per refill {:.2}, overlap matches {:.1}%, stored {:.1}%\n",
+        per(c("state_dispatches"), c("output_bytes")),
+        per(c("refill_bytes"), c("refills")),
+        ratio_pct(c("overlap_matches"), c("matches")),
+        ratio_pct(c("stored_bytes"), c("output_bytes"))
+    ));
+    out.push_str(&format!(
+        "- table builds {} ({:.2} per block), one-shot resizes {}\n",
+        c("table_builds"),
+        per(c("table_builds"), blocks),
+        c("oneshot_resizes")
+    ));
+    let hist = |name: &str, n: usize| -> String {
+        (0..n)
+            .map(|i| format!("{:.1}", ratio_pct(c(&format!("{name}_{i}")), c("matches"))))
+            .collect::<Vec<_>>()
+            .join(" / ")
+    };
+    out.push_str(&format!(
+        "- match length % (3-4/5-8/9-16/17-32/33-64/65-128/129-258): {}\n",
+        hist("match_len_hist", 7)
+    ));
+    out.push_str(&format!(
+        "- match distance % (1/2-4/5-16/17-64/65-256/257-1K/1K-4K/4K-16K/16K-32K): {}\n",
+        hist("match_dist_hist", 9)
+    ));
+    out
 }
 
 /// Aggregates for every (corpus, framing, level, cleanflate mode).
@@ -691,6 +942,27 @@ mod tests {
             assert!(r as f64 * one >= 0.020);
             assert!(r == 1 || (r / 2) as f64 * one < 0.020);
         }
+    }
+
+    #[test]
+    fn stats_flag_requires_feature() {
+        let args = vec!["--stats".to_string()];
+        let parsed = parse_args(&args);
+        if cfg!(feature = "stats") {
+            assert!(parsed.expect("stats build accepts --stats").stats);
+            let zero = vec![
+                "--stats".to_string(),
+                "--iters".to_string(),
+                "0".to_string(),
+            ];
+            assert_eq!(parse_args(&zero).expect("iters 0 with stats").iters, 0);
+        } else {
+            assert!(parsed
+                .expect_err("needs the feature")
+                .contains("--features stats"));
+        }
+        let zero = vec!["--iters".to_string(), "0".to_string()];
+        assert!(parse_args(&zero).is_err(), "iters 0 needs --stats");
     }
 
     #[test]

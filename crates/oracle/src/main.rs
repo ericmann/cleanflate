@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use oracle::bench;
+use oracle::bench_compare;
 use oracle::generate;
 use oracle::malformed;
 use oracle::matrix::CorpusTier;
@@ -35,6 +36,15 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some("bench-noise") => report(run_bench_noise(&args[2..]), "bench-noise"),
+        Some("bench-compare") => match run_bench_compare(&args[2..]) {
+            Ok(code) => ExitCode::from(code),
+            Err(e) => {
+                eprintln!("oracle bench-compare: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Some("bench-md") => report(run_bench_md(&args[2..]), "bench-md"),
         Some("regress-add") => match oracle::regress::run_add(&args[2..]) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
@@ -189,5 +199,126 @@ fn run_bench(args: &[String]) -> Result<(), String> {
         fs::write(path, text + "\n").map_err(|e| format!("writing {}: {e}", path.display()))?;
         println!("\noracle bench: wrote {}", path.display());
     }
+    Ok(())
+}
+
+fn report(result: Result<(), String>, name: &str) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("oracle {name}: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_bench_noise(args: &[String]) -> Result<(), String> {
+    let mut paths = Vec::new();
+    let mut out = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args.get(i).map(String::as_str) {
+            Some("--out") => {
+                out = args.get(i + 1).cloned();
+                i += 2;
+            }
+            Some(p) => {
+                paths.push(p.to_string());
+                i += 1;
+            }
+            None => break,
+        }
+    }
+    let [a, b] = paths.as_slice() else {
+        return Err("usage: oracle bench-noise A B --out PATH".to_string());
+    };
+    let out = out.ok_or("--out PATH is required")?;
+    let (ja, jb) = (
+        bench_compare::load_json(Path::new(a))?,
+        bench_compare::load_json(Path::new(b))?,
+    );
+    let noise = bench_compare::noise_from(&ja, &jb, [a, b]);
+    let text = serde_json::to_string_pretty(&noise).map_err(|e| e.to_string())?;
+    if let Some(parent) = Path::new(&out).parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("creating {}: {e}", parent.display()))?;
+    }
+    fs::write(&out, text + "\n").map_err(|e| format!("writing {out}: {e}"))?;
+    println!(
+        "oracle bench-noise: aggregate max {:.2}% -> {out}",
+        noise.aggregate_max_pct
+    );
+    Ok(())
+}
+
+fn run_bench_compare(args: &[String]) -> Result<u8, String> {
+    let mut paths = Vec::new();
+    let mut noise_path = None;
+    let mut fail = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args.get(i).map(String::as_str) {
+            Some("--noise") => {
+                noise_path = args.get(i + 1).cloned();
+                i += 2;
+            }
+            Some("--fail-on-regression") => {
+                fail = true;
+                i += 1;
+            }
+            Some(p) => {
+                paths.push(p.to_string());
+                i += 1;
+            }
+            None => break,
+        }
+    }
+    let [a, b] = paths.as_slice() else {
+        return Err(
+            "usage: oracle bench-compare A B [--noise PATH] [--fail-on-regression]".to_string(),
+        );
+    };
+    let (ja, jb) = (
+        bench_compare::load_json(Path::new(a))?,
+        bench_compare::load_json(Path::new(b))?,
+    );
+    let noise_path =
+        noise_path.or_else(|| bench_compare::default_noise_path(&ja, &jb).map(String::from));
+    let noise = match &noise_path {
+        Some(p) => bench_compare::load_noise(Path::new(p))?,
+        None => None,
+    };
+    let comparison = bench_compare::compare(&ja, &jb, noise.as_ref())?;
+    print!("{}", bench_compare::render_comparison(&comparison));
+    Ok(bench_compare::exit_code(&comparison, fail) as u8)
+}
+
+fn run_bench_md(args: &[String]) -> Result<(), String> {
+    let mut path = None;
+    let mut files = false;
+    let mut filter = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args.get(i).map(String::as_str) {
+            Some("--files") => {
+                files = true;
+                i += 1;
+            }
+            Some("--filter") => {
+                filter = args.get(i + 1).cloned();
+                i += 2;
+            }
+            Some(p) => {
+                path = Some(p.to_string());
+                i += 1;
+            }
+            None => break,
+        }
+    }
+    let path = path.ok_or("usage: oracle bench-md JSON [--files] [--filter PREFIX]")?;
+    let json = bench_compare::load_json(Path::new(&path))?;
+    print!(
+        "{}",
+        bench_compare::render_md(&json, files, filter.as_deref())
+    );
     Ok(())
 }
