@@ -1,0 +1,559 @@
+{
+  "verify": [
+    "make fmt-check",
+    {
+      "cmd": "make lint",
+      "timeoutMs": 1800000
+    },
+    {
+      "cmd": "make corpus",
+      "timeoutMs": 1800000
+    },
+    {
+      "cmd": "make test",
+      "timeoutMs": 2700000
+    },
+    "make crate-checks",
+    "make cleanroom-selftest"
+  ],
+  "extraVerify": {
+    "tools/": [
+      "make tools-check"
+    ],
+    "docs/DESIGN.md": [
+      "make design-check"
+    ],
+    "fuzz/": [
+      {
+        "cmd": "make fuzz-check",
+        "timeoutMs": 1800000
+      }
+    ],
+    "crates/cleanflate/src/": [
+      {
+        "cmd": "make proptest-3k",
+        "timeoutMs": 3600000
+      },
+      {
+        "cmd": "make fuzz-smoke-decoder",
+        "timeoutMs": 2400000
+      }
+    ]
+  },
+  "build": [
+    "cargo build --workspace --release"
+  ],
+  "baseBranch": "main",
+  "branchPrefix": "build/",
+  "maxRounds": 6,
+  "maxRoundsHard": 6,
+  "constraints": [
+    {
+      "id": "no-unsafe-token-in-cleanflate",
+      "description": "SPEC §3 / C1: zero unsafe anywhere in crates/cleanflate. The bare word is banned in code, comments and docs alike so the CI grep and this rule agree.",
+      "paths": [
+        "crates/cleanflate/"
+      ],
+      "pattern": "\\bunsafe\\b",
+      "shouldMatch": [
+        "unsafe { buf.get_unchecked(i) }",
+        "pub unsafe fn read(p: *const u8) -> u8 {",
+        "unsafe impl Send for Inflater {}",
+        "// this path is unsafe for short inputs"
+      ],
+      "shouldNotMatch": [
+        "#![forbid(unsafe_code)]",
+        "let unsafety_note = 1;",
+        "// memory safety is enforced by the compiler"
+      ]
+    },
+    {
+      "id": "no-panicking-calls-in-cleanflate-lib",
+      "description": "SPEC §3 / C4: no panics reachable from the public API. Library code (crates/cleanflate/src/ except src/tests/) never calls unwrap/expect or the panicking macros, including assert!/assert_eq!/assert_ne!. debug_assert! is allowed.",
+      "paths": [
+        "crates/cleanflate/src/"
+      ],
+      "exclude": [
+        "crates/cleanflate/src/tests/"
+      ],
+      "pattern": "\\.unwrap\\(\\)|\\.expect\\(|\\b(panic|unreachable|todo|unimplemented|assert|assert_eq|assert_ne)!\\s*[\\(\\[\\{]",
+      "shouldMatch": [
+        "let v = x.unwrap();",
+        "let v = x.expect(\"present\");",
+        "panic!(\"bad state\");",
+        "_ => unreachable!(),",
+        "todo!()",
+        "unimplemented!()",
+        "assert!(n < 16);",
+        "assert_eq!(a, b);",
+        "assert_ne!(a, b);",
+        "panic! {\"x\"}",
+        "const _: () = assert!(FAST_LOOP_MIN_OUTPUT >= 258);"
+      ],
+      "shouldNotMatch": [
+        "let v = x.unwrap_or(0);",
+        "let v = x.unwrap_or_default();",
+        "debug_assert!(n < 16);",
+        "debug_assert_eq!(a, b);",
+        "let v = x.ok_or(Error::Truncated)?;",
+        "// never panics on any input"
+      ]
+    },
+    {
+      "id": "no-inline-tests-in-cleanflate-src",
+      "description": "C6: unit tests for crates/cleanflate live only under crates/cleanflate/src/tests/ (declared once in lib.rs), so the panic-call rule above can exclude them by path.",
+      "paths": [
+        "crates/cleanflate/src/"
+      ],
+      "exclude": [
+        "crates/cleanflate/src/tests/",
+        "crates/cleanflate/src/lib.rs"
+      ],
+      "pattern": "#\\[\\s*(cfg\\s*\\(\\s*test\\s*\\)|test)\\s*\\]",
+      "shouldMatch": [
+        "#[cfg(test)]",
+        "    #[cfg(test)]",
+        "#[test]",
+        "    #[test]"
+      ],
+      "shouldNotMatch": [
+        "#[cfg(feature = \"stats\")]",
+        "#[cfg_attr(not(any(test, feature = \"test-hooks\")), allow(dead_code))]",
+        "#[inline]",
+        "// unit tests live in src/tests/"
+      ]
+    },
+    {
+      "id": "no-io-or-nondeterminism-in-cleanflate",
+      "description": "C7: the library is a pure function of its input bytes and options: no clocks (stats count calls, never time), no hashing randomness, no filesystem, network, process or environment access under crates/cleanflate/src/ (unit-test tree excluded).",
+      "paths": [
+        "crates/cleanflate/src/"
+      ],
+      "exclude": [
+        "crates/cleanflate/src/tests/"
+      ],
+      "pattern": "\\b(SystemTime|Instant|HashMap|HashSet|RandomState|thread_rng)\\b|\\bstd::(net|process|env|fs|thread|time)\\b",
+      "shouldMatch": [
+        "use std::collections::HashMap;",
+        "let t = std::time::Instant::now();",
+        "use std::time::SystemTime;",
+        "use std::time::Duration;",
+        "use std::fs::File;",
+        "let v = std::env::var(\"X\");",
+        "use std::net::TcpStream;",
+        "std::thread::spawn(f);"
+      ],
+      "shouldNotMatch": [
+        "use std::io::Write;",
+        "use core::cmp::min;",
+        "let histogram = [0u16; 16];",
+        "use std::error::Error as StdError;",
+        "pub table_builds: u64,"
+      ]
+    },
+    {
+      "id": "no-global-state-in-cleanflate",
+      "description": "C7: no global mutable or lazily-initialised state in cleanflate library code. Stats counters live in the decoder instance; constant tables are const/static data built by const fn.",
+      "paths": [
+        "crates/cleanflate/src/"
+      ],
+      "exclude": [
+        "crates/cleanflate/src/tests/"
+      ],
+      "pattern": "\\bthread_local!|\\bstd::sync::atomic\\b|\\bAtomic(U|I)(8|16|32|64|size)\\b|\\bstatic\\s+mut\\b|\\b(OnceLock|LazyLock|OnceCell|Mutex|RwLock)\\b",
+      "shouldMatch": [
+        "thread_local! { static HITS: Cell<u64> = Cell::new(0); }",
+        "use std::sync::atomic::{AtomicU64, Ordering};",
+        "static COUNTER: AtomicU64 = AtomicU64::new(0);",
+        "static mut HITS: u64 = 0;",
+        "static TABLE: OnceLock<Vec<u32>> = OnceLock::new();",
+        "static STATS: Mutex<Stats> = Mutex::new(Stats::new());"
+      ],
+      "shouldNotMatch": [
+        "static CRC32_TABLES: [[u32; 256]; CRC32_SLICES] = build_crc32_tables();",
+        "const FIXED_LITLEN_LENGTHS: [u8; 288] = fixed_litlen_lengths();",
+        "pub struct Stats {",
+        "self.stats.literals = self.stats.literals.saturating_add(1);"
+      ]
+    },
+    {
+      "id": "tunables-defined-only-in-config",
+      "description": "C8 / SPEC §3: every tunable number (phase-1 limits and table widths, phase-2 fast-loop margins, one-shot sizing and CRC slicing, and the derived one-shot expansion bound) is given a value only in crates/cleanflate/src/config.rs; everywhere else refers to the constant by name. A task that adds a tunable names it in config.rs; the reviewer checks it is not redefined elsewhere.",
+      "paths": [
+        "crates/",
+        "fuzz/"
+      ],
+      "exclude": [
+        "crates/cleanflate/src/config.rs"
+      ],
+      "pattern": "\\b(DEFAULT_MAX_OUTPUT|DEFAULT_MAX_GZIP_FIELD|DEFAULT_MAX_GZIP_HEADERS|LITLEN_TABLE_BITS|DIST_TABLE_BITS|FAST_LOOP_MIN_INPUT|FAST_LOOP_MIN_OUTPUT|ONESHOT_GROWTH_FLOOR|ONESHOT_INITIAL_RATIO|ONESHOT_MAX_PREALLOC|MAX_DEFLATE_EXPANSION|CRC32_SLICES)\\b\\s*(:\\s*[A-Za-z0-9_:<>]+\\s*)?=\\s*[-0-9(]",
+      "shouldMatch": [
+        "pub const DEFAULT_MAX_OUTPUT: u64 = 1 << 30;",
+        "const LITLEN_TABLE_BITS: u32 = 10;",
+        "let DIST_TABLE_BITS = 8;",
+        "pub(crate) const DEFAULT_MAX_GZIP_FIELD: usize = (64 * 1024);",
+        "pub const DEFAULT_MAX_GZIP_HEADERS: usize = 1024;",
+        "pub(crate) const FAST_LOOP_MIN_INPUT: usize = 16;",
+        "const FAST_LOOP_MIN_OUTPUT: usize = 258;",
+        "let ONESHOT_GROWTH_FLOOR = 32768;",
+        "pub(crate) const ONESHOT_INITIAL_RATIO: usize = 4;",
+        "const ONESHOT_MAX_PREALLOC: usize = 64 << 20;",
+        "pub(crate) const CRC32_SLICES: usize = 8;",
+        "pub(crate) const MAX_DEFLATE_EXPANSION: usize = 1032;"
+      ],
+      "shouldNotMatch": [
+        "let bits = config::LITLEN_TABLE_BITS;",
+        "if produced == DEFAULT_MAX_OUTPUT {",
+        "max_output: DEFAULT_MAX_OUTPUT,",
+        "pub use config::{DEFAULT_MAX_OUTPUT, DEFAULT_MAX_GZIP_FIELD};",
+        "if input.len() - pos >= FAST_LOOP_MIN_INPUT {",
+        "let min_out = FAST_LOOP_MIN_OUTPUT.max(MAX_MATCH_LEN);",
+        "if CRC32_SLICES == 8 {",
+        "const MIN_OUT: usize = FAST_LOOP_MIN_OUTPUT;",
+        "let possible = input.len().saturating_mul(MAX_DEFLATE_EXPANSION);"
+      ]
+    },
+    {
+      "id": "option-defaults-not-literal",
+      "description": "C8: Options fields that carry a tunable default are initialised from the config.rs constant, never from a literal.",
+      "paths": [
+        "crates/cleanflate/src/"
+      ],
+      "exclude": [
+        "crates/cleanflate/src/config.rs",
+        "crates/cleanflate/src/tests/"
+      ],
+      "pattern": "\\b(max_output|max_gzip_field|max_gzip_headers)\\s*(:|=)\\s*[0-9(]",
+      "shouldMatch": [
+        "max_output: 1 << 30,",
+        "max_gzip_field: 65536,",
+        "options.max_output = 1_073_741_824;",
+        "let max_output = (1u64 << 30);",
+        "max_gzip_headers: 1024,"
+      ],
+      "shouldNotMatch": [
+        "max_output: config::DEFAULT_MAX_OUTPUT,",
+        "pub max_output: u64,",
+        "if self.total_out >= self.max_output {",
+        "max_gzip_field: DEFAULT_MAX_GZIP_FIELD,",
+        "max_gzip_headers: DEFAULT_MAX_GZIP_HEADERS,"
+      ]
+    },
+    {
+      "id": "no-output-limit-literal",
+      "description": "C8: the 1 GiB default output limit appears as a number only in crates/cleanflate/src/config.rs; tests, fuzz targets, examples and the oracle use cleanflate::DEFAULT_MAX_OUTPUT.",
+      "paths": [
+        "crates/",
+        "fuzz/"
+      ],
+      "exclude": [
+        "crates/cleanflate/src/config.rs"
+      ],
+      "pattern": "\\b1\\s*<<\\s*30\\b|\\b1_?073_?741_?824\\b|\\b1024\\s*\\*\\s*1024\\s*\\*\\s*1024\\b",
+      "shouldMatch": [
+        "let limit = 1 << 30;",
+        "const LIMIT: u64 = 1073741824;",
+        "limit: 1_073_741_824,",
+        "let n = 1024 * 1024 * 1024;"
+      ],
+      "shouldNotMatch": [
+        "let limit = cleanflate::DEFAULT_MAX_OUTPUT;",
+        "let x = 1 << 3;",
+        "let y = 11 << 30;",
+        "let mib = 1024 * 1024;"
+      ]
+    },
+    {
+      "id": "libz-only-in-oracle",
+      "description": "C9: libz-sys is linked and named only inside crates/oracle. cleanflate (including its profiling example) and the fuzz crate reach C zlib only through oracle's safe wrappers. fuzz/Cargo.lock is exempt: it is a lockfile and necessarily lists oracle's transitive libz-sys pin.",
+      "paths": [
+        "crates/cleanflate/",
+        "fuzz/"
+      ],
+      "exclude": [
+        "fuzz/Cargo.lock"
+      ],
+      "pattern": "libz[-_]sys",
+      "shouldMatch": [
+        "use libz_sys::inflate;",
+        "libz-sys = { version = \"1\", features = [\"static\"] }",
+        "extern crate libz_sys;"
+      ],
+      "shouldNotMatch": [
+        "use oracle::ffi::deflate_bytes;",
+        "cleanflate = { path = \"../crates/cleanflate\", features = [\"test-hooks\"] }"
+      ]
+    },
+    {
+      "id": "no-reference-implementation-names",
+      "description": "SPEC §2 / C10: library code, design docs and every performance write-up (PERF.md, docs/perf/ including PHASE3.md, phase3-profile.md and committed flamegraphs) cite RFC sections and cleanflate's own measurements, never an existing implementation's files or projects. A mention is evidence of a forbidden input.",
+      "paths": [
+        "crates/cleanflate/",
+        "docs/DESIGN.md",
+        "docs/PERF.md",
+        "docs/perf/"
+      ],
+      "pattern": "inffast|inftrees|inflate\\.c|puff(\\.c)?\\b|miniz|libdeflate|zopfli|zlib-ng|zlib-rs|flate2|compress/flate|isa-l|igzip",
+      "flags": "i",
+      "shouldMatch": [
+        "// same approach as inffast.c",
+        "// ported from puff.c",
+        "// the puff decoder does this",
+        "// like miniz_oxide does",
+        "// libdeflate uses an 11-bit table",
+        "// see Go's compress/flate",
+        "// borrowed from zlib-ng",
+        "// zlib-rs handles this by",
+        "// flate2 exposes a similar type",
+        "// Zopfli-style parsing",
+        "// see inftrees.c",
+        "// igzip's multi-symbol decode"
+      ],
+      "shouldNotMatch": [
+        "// RFC 1951 §3.2.7: code length alphabet",
+        "pub fn zlib_decompress(input: &[u8]) -> Result<Vec<u8>, Error> {",
+        "// compared against the C zlib oracle",
+        "pub(crate) struct Inflater {",
+        "| cleanflate | 412 MB/s |",
+        "\"c_zlib_median_ns\": 1234567,"
+      ]
+    },
+    {
+      "id": "no-cleanflate-checksums-in-fixtures",
+      "description": "C16: cleanflate unit-test fixtures never compute a trailer/header checksum with this crate's own crate::checksum -- a broken encoder would satisfy a broken decoder. Every checksum embedded in a fixture is a literal computed once with oracle::ffi::{crc32,adler32}, or the test lives in crates/oracle/tests/ instead.",
+      "paths": [
+        "crates/cleanflate/src/tests/"
+      ],
+      "exclude": [
+        "crates/cleanflate/src/tests/checksum.rs"
+      ],
+      "pattern": "\\bcrate::checksum\\b",
+      "shouldMatch": [
+        "use crate::checksum::{adler32, crc32};",
+        "use crate::checksum::crc32;",
+        "use crate::checksum::adler32;"
+      ],
+      "shouldNotMatch": [
+        "use crate::tests::bitwriter::BitWriter;",
+        "use crate::error::Error;"
+      ]
+    },
+    {
+      "id": "no-panic-lint-allow-in-cleanflate-lib",
+      "description": "C5: a local clippy allow of unwrap_used/expect_used/panic/indexing_slicing could silently reintroduce a panic or an [] index, so no such allow is permitted anywhere in library code (unit-test tree excluded). allow(dead_code) for reference-path items is fine.",
+      "paths": [
+        "crates/cleanflate/src/"
+      ],
+      "exclude": [
+        "crates/cleanflate/src/tests/"
+      ],
+      "pattern": "allow\\s*\\([^)]*clippy::(unwrap_used|expect_used|panic|indexing_slicing)\\b",
+      "shouldMatch": [
+        "#[allow(clippy::indexing_slicing)]",
+        "#![allow(clippy::unwrap_used, clippy::indexing_slicing)]",
+        "#[cfg_attr(feature = \"stats\", allow(clippy::indexing_slicing))]"
+      ],
+      "shouldNotMatch": [
+        "#[allow(dead_code)]",
+        "#[cfg_attr(not(any(test, feature = \"test-hooks\")), allow(dead_code))]",
+        "#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]"
+      ]
+    },
+    {
+      "id": "no-simd-arch-or-nightly-in-cleanflate",
+      "description": "SPEC §3 / §10 / C17: no std::arch/core::arch intrinsics, std::simd, #[target_feature], runtime CPU feature detection or nightly #![feature] anywhere under crates/cleanflate/. Auto-vectorisation by the compiler is fine.",
+      "paths": [
+        "crates/cleanflate/"
+      ],
+      "pattern": "\\b(std|core)::(arch|simd)\\b|#\\[\\s*target_feature\\b|#!\\[\\s*feature\\s*\\(|\\bis_(x86|aarch64)_feature_detected\\b",
+      "shouldMatch": [
+        "use std::arch::x86_64::_mm_loadu_si128;",
+        "use core::arch::aarch64::vld1q_u8;",
+        "#[target_feature(enable = \"avx2\")]",
+        "#![feature(portable_simd)]",
+        "use std::simd::u8x16;",
+        "if is_x86_feature_detected!(\"sse4.2\") {"
+      ],
+      "shouldNotMatch": [
+        "#[cfg(feature = \"stats\")]",
+        "#![forbid(unsafe_code)]",
+        "// architecture-independent word refill",
+        "let arch_bits = 64;"
+      ]
+    },
+    {
+      "id": "no-default-diagnostic-features",
+      "description": "SPEC §4.3 / §5 / C18: the stats and test-hooks features are opt-in only; the default build must be bit-for-bit unaffected, so neither may appear in a default feature list.",
+      "paths": [
+        "crates/cleanflate/Cargo.toml",
+        "crates/oracle/Cargo.toml"
+      ],
+      "pattern": "^\\s*default\\s*=\\s*\\[[^\\]]*(stats|test-hooks)",
+      "shouldMatch": [
+        "default = [\"stats\"]",
+        "default = [\"std\", \"test-hooks\"]",
+        "  default = [ \"stats\" ]"
+      ],
+      "shouldNotMatch": [
+        "default = []",
+        "stats = []",
+        "test-hooks = []",
+        "stats = [\"cleanflate/stats\"]"
+      ]
+    },
+    {
+      "id": "no-profiling-of-oracle",
+      "description": "SPEC §2 / §4.3 / C19: Makefile recipes and CI never run perf, flamegraph, objdump, gdb, lldb or valgrind against the oracle or C zlib; profiling targets wrap only the cleanflate-only profile_decode example, and assembly inspection reads only cleanflate's own emitted .s.",
+      "paths": [
+        "Makefile",
+        ".github/"
+      ],
+      "pattern": "\\b(perf\\s+(record|report|annotate|stat|top|script)|flamegraph|objdump|gdb|lldb|valgrind)\\b.*\\b(oracle|libz)\\b",
+      "shouldMatch": [
+        "\tperf record -g -- cargo run --release -p oracle -- bench",
+        "\tcargo flamegraph -p oracle -- bench --corpus silesia",
+        "\tobjdump -d target/release/oracle | head",
+        "\tperf annotate -i perf.data --dso libz.so",
+        "\tgdb --args target/release/oracle bench"
+      ],
+      "shouldNotMatch": [
+        "\tperf record --call-graph dwarf -o target/profile/perf.data target/release/examples/profile_decode --dir $(PROFILE_DIR)",
+        "\tcargo run --release -q -p oracle -- perf-prep --corpus silesia --out testdata/perf-inputs",
+        "\tCARGO_PROFILE_RELEASE_DEBUG=true cargo flamegraph -p cleanflate --example profile_decode -o target/profile/flamegraph.svg",
+        "\tperf report -i target/profile/perf.data --stdio --no-children --sort symbol",
+        "\tperf stat -e task-clock,page-faults,cycles:u -o target/profile/$(PROFILE_SLUG)/stat.txt target/release/examples/profile_decode $(PROFILE_ARGS)",
+        "\tbash tools/perf/check-flamegraph.sh target/profile/$(PROFILE_SLUG)/flamegraph.svg",
+        "\tcargo rustc --release -p cleanflate --lib -- --emit asm"
+      ]
+    },
+    {
+      "id": "no-comparator-crates",
+      "description": "SPEC §2 / §10 / C21 / CR8: comparator crates (flate2, miniz_oxide, zlib-rs, libdeflater and similar) are never added to any manifest in this repo, not even as dev-dependencies; comparisons belong in the separate cleanflate-bench project. libz-sys in the oracle is the permitted oracle, not a comparator.",
+      "paths": [
+        "Cargo.toml",
+        "crates/cleanflate/Cargo.toml",
+        "crates/oracle/Cargo.toml",
+        "fuzz/Cargo.toml"
+      ],
+      "pattern": "^\\s*\\[?\\s*(?:(?:dev-|build-)?dependencies\\.)?(?:flate2|miniz_oxide|miniz-sys|libz-rs-sys|zlib-rs|libdeflater|libdeflate-sys|zune-inflate|inflate|libflate|yazi|zopfli|deflate)\\s*[\\]=]",
+      "shouldMatch": [
+        "flate2 = \"1\"",
+        "miniz_oxide = { version = \"0.8\" }",
+        "libz-rs-sys = \"0.5\"",
+        "zlib-rs = \"0.5\"",
+        "libdeflater = \"1\"",
+        "[dev-dependencies.flate2]",
+        "zune-inflate = \"0.2\"",
+        "  flate2 = { version = \"1\", default-features = false }",
+        "[dependencies.miniz_oxide]"
+      ],
+      "shouldNotMatch": [
+        "libz-sys = { version = \"1.1.29\", features = [\"static\"] }",
+        "cleanflate = { path = \"../cleanflate\" }",
+        "name = \"cleanflate\"",
+        "[[bin]]",
+        "stats = [\"cleanflate/stats\"]",
+        "proptest = \"1\"",
+        "name = \"diff_oracle_roundtrip\"",
+        "[dev-dependencies]"
+      ]
+    },
+    {
+      "id": "oracle-ffi-allowlist",
+      "description": "SPEC §2 / CR5 / C22: the oracle reaches C zlib only through the phase-1 P1-01 signatures plus zlibCompileFlags (types and Z_ constants allowed). Any other libz-sys item named through the sys:: or libz_sys:: path is a violation. Declarations in an extern \"C\" block are checked by the reviewer reading.",
+      "paths": [
+        "crates/oracle/src/"
+      ],
+      "pattern": "\\b(?:sys|libz_sys)::(?!(?:z_stream|z_streamp|uInt|uLong|Bytef|voidpf|alloc_func|free_func|deflateInit2_|deflate|deflateEnd|deflateSetDictionary|inflateInit2_|inflate|inflateEnd|inflateSetDictionary|zlibVersion|zlibCompileFlags|crc32|adler32|Z_[A-Z_]+)\\b)[A-Za-z_]\\w*",
+      "shouldMatch": [
+        "sys::inflateGetHeader(&mut strm, &mut head)",
+        "let r = unsafe { sys::uncompress(dst, &mut len, src, n) };",
+        "libz_sys::inflateBack(strm, in_fn, in_desc, out_fn, out_desc)",
+        "unsafe { sys::inflateReset(&mut strm) }",
+        "let f = unsafe { sys::gzopen(path, mode) };",
+        "unsafe { sys::inflatePrime(strm, 3, 5) }",
+        "let c = unsafe { libz_sys::crc32_combine(a, b, len) };"
+      ],
+      "shouldNotMatch": [
+        "let ret = unsafe { sys::inflate(&mut strm, Z_NO_FLUSH) };",
+        "unsafe { sys::inflateEnd(&mut strm) };",
+        "let flags = unsafe { sys::zlibCompileFlags() };",
+        "strm.avail_in = input.len() as libz_sys::uInt;",
+        "fn new_stream() -> sys::z_stream {",
+        "(unsafe { sys::crc32(0, data.as_ptr(), data.len() as libz_sys::uInt) }) as u32",
+        "use libz_sys as sys;",
+        "let r = unsafe { sys::inflateInit2_(&mut strm, wb, version_ptr(), stream_size()) };"
+      ]
+    },
+    {
+      "id": "no-benchmark-specific-paths-in-cleanflate",
+      "description": "SPEC §3 / C23: nothing in cleanflate library code may detect or special-case benchmark inputs. No string literal in crates/cleanflate/src (outside src/tests/) names a benchmark corpus, a corpus file, or a benchmark. Doc comments citing measurements are fine (no quotes). Size- or pattern-based detection is checked by the reviewer reading.",
+      "paths": [
+        "crates/cleanflate/src/"
+      ],
+      "exclude": [
+        "crates/cleanflate/src/tests/"
+      ],
+      "pattern": "\\\"[^\\\"]*\\b(?:silesia|canterbury|cantrbry|dickens|mozilla|mr|nci|ooffice|osdb|reymont|samba|sao|webster|x-ray|xml|alice29|asyoulik|lcet10|plrabn12|ptt5|kennedy|xargs|bench(?:mark)?)\\b[^\\\"]*\\\"",
+      "flags": "i",
+      "shouldMatch": [
+        "if name == \"dickens\" {",
+        "const CORPUS: &str = \"silesia\";",
+        "debug_assert!(path.contains(\"canterbury\"));",
+        "if label.starts_with(\"bench\") {",
+        "let key = \"silesia/raw/l1/oneshot\";",
+        "if file == \"alice29.txt\" {"
+      ],
+      "shouldNotMatch": [
+        "/// Swept on Silesia and Canterbury (docs/perf/P4-03/...).",
+        "ErrorKind::BadHeader => \"bad_header\",",
+        "// measured by the benchmark, not special-cased",
+        "if input.len() >= FAST_LOOP_MIN_INPUT {",
+        "ErrorKind::OutputLimitExceeded => \"output_limit_exceeded\","
+      ]
+    },
+    {
+      "id": "no-uninit-tricks-in-cleanflate",
+      "description": "SPEC §6 M2 / C24: the output sink stays within safe Rust with no uninitialised-memory tricks. MaybeUninit, set_len, spare_capacity_mut, assume_init and transmute never appear under crates/cleanflate/ (comments included, like the unsafe-token rule). Appending uses push, extend_from_slice and extend_from_within.",
+      "paths": [
+        "crates/cleanflate/"
+      ],
+      "pattern": "\\b(?:MaybeUninit|set_len|spare_capacity_mut|assume_init|transmute)\\b",
+      "shouldMatch": [
+        "let mut buf: [MaybeUninit<u8>; 258] = [MaybeUninit::uninit(); 258];",
+        "vec.set_len(n);",
+        "let spare = out.spare_capacity_mut();",
+        "let v = slot.assume_init();",
+        "let x: u64 = core::mem::transmute(bytes);"
+      ],
+      "shouldNotMatch": [
+        "out.extend_from_within(src..src + n);",
+        "vec.reserve_exact(additional);",
+        "out.push(byte);",
+        "// appended without a pre-filled buffer",
+        "let len = vec.len();",
+        "vec.truncate(filled);"
+      ]
+    },
+    {
+      "id": "flamegraphs-cleanflate-only",
+      "description": "SPEC §4.3 / C25 / CR7: committed flamegraphs come only from the cleanflate-only profile_decode example and contain only cleanflate, std and libc frames; a frame of the oracle crate or the C library means a forbidden process was profiled.",
+      "paths": [
+        "docs/perf/flamegraphs/"
+      ],
+      "pattern": "\\boracle::|libz_sys|\\blibz\\.(?:so|a)\\b|\\bc_zlib\\b",
+      "shouldMatch": [
+        "<title>oracle::bench::run (12 samples, 0.10%)</title>",
+        "<title>libz_sys::inflate (3 samples, 0.02%)</title>",
+        "<title>[libz.so.1] (40 samples, 0.30%)</title>",
+        "<title>c_zlib (1 samples, 0.01%)</title>"
+      ],
+      "shouldNotMatch": [
+        "<title>cleanflate::fast_loop::run (51,234 samples, 46.90%)</title>",
+        "<title>cleanflate::zlib::ZlibDecoder::step (1,234 samples, 5.60%)</title>",
+        "<title>profile_decode::main (99 samples, 100%)</title>",
+        "<title>__memmove_avx_unaligned_erms (10 samples, 0.01%)</title>"
+      ]
+    }
+  ]
+}
