@@ -1171,6 +1171,25 @@ PT1 (`docs/perf/phase3/P4-03-before.json`, `P4-03.json`, bench-quick; load avera
 
 One per-file line regresses (`canterbury/alice29.txt/gzip/l1/oneshot` -6.1%, threshold -4.2%): a 150 KB file among 11 whose aggregate is +18%, so it is a per-row noise excursion, not a code-path loss. Interleaved runs of the old and new `profile_decode` binaries agree with the bench: Silesia level 1 one-shot 161.4 to 189.4 MiB/s (4 of 4 pairs), streaming 157.8 to 189.0, level 6 one-shot 176.8 to 220.6, Canterbury level 1 one-shot 195.2 to 236.5. The change is a WIN and is kept (PT4).
 
+### P4-04
+**Measured and reverted (PT4): multi-literal table entries lose on this machine.** The pair-entry code and its unit tests that depend on it were removed; `fast_loop_pairs_same_trace_as_reference` (trace-level, literal-heavy dynamic blocks where every literal and the end-of-block code take 3 bits) stays.
+
+Gate (PT2): literals are 46.6% of the symbols at level 1 (`literals / (literals + matches)`, `make bench-stats` counters in `docs/perf/phase3/P1-02-stats.json`, Silesia), so a literal is decoded on almost every other loop iteration; above any gate. (The per-line `perf annotate` share was not taken: the literal share of symbols already answers the gate, and the measurement below decides.)
+
+Design tried, Fast path only: at table build time a first-level literal/length entry whose code is a literal of `l1` bits, followed in the stream by a second literal's whole code of `l2` bits with `l1 + l2 <= LITLEN_TABLE_BITS`, became a `Pair` entry carrying both literals and both lengths; the loop wrote both bytes and consumed `l1 + l2` bits in one step, `decode_table` still returned only the first literal, and the build added a top-down pass over the first level. Its tests (pair entries decode the same as two single lookups on the fixed table and 240 random complete tables at every first-level index with random unknown high bits, the width bound, `decode_table` equal to the bit-serial decode) all passed, and the stats counters matched, so the design was correct, only slower.
+
+Measurement (`docs/perf/phase3/P4-04-before.json`, `P4-04.json`, bench-quick, against the P4-03 code): every level-1 Silesia key lost, for example `silesia/raw/l1/oneshot` 181.3 to 148.3 MiB/s (-18.2%, LOSS, ratio -11.0% LOSS), `silesia/raw/l1/streaming` 178.8 to 149.5 (-16.4%, LOSS), `silesia/gzip/l1/oneshot` 170.2 to 143.4 (-15.8%, LOSS). Interleaved runs of the old and new `profile_decode` binaries (5 alternating pairs, MiB/s means) agree:
+
+| key | before | after | change | after faster in |
+|---|---:|---:|---:|---:|
+| silesia/rfc1951 l1 oneshot | 203.1 | 189.4 | -6.8% | 0 of 5 |
+| silesia/rfc1951 l1 streaming | 198.9 | 187.8 | -5.6% | 0 of 5 |
+| silesia/rfc1951 l6 oneshot | 205.7 | 192.1 | -6.6% | 1 of 5 |
+| canterbury/rfc1951 l1 oneshot | 244.3 | 221.8 | -9.2% | 0 of 5 |
+| canterbury/rfc1952 l1 oneshot | 215.6 | 198.0 | -8.2% | 0 of 5 |
+
+Why it loses, from the design: with a dynamic level-1 code the literals that matter have codes of 4 to 9 bits, so a pair fits in 10 bits only for the most frequent few, and every lookup gains one more outcome (single, pair, sub-table, match) to branch on; the branch between "pair" and "single" is data-dependent and poorly predicted, costing more than the saved lookup, and the extra build pass adds to every block's table cost. The literal branch is already cheap after P4-03 (one inlined lookup, one store). SPEC's "keep the variant that wins" applies: the variant without pairs stays.
+
 ## Targets
 Filled by P5-02 (acceptance tasks).
 

@@ -591,3 +591,66 @@ fn fast_loop_vec_and_slice_sinks_same_trace() {
         }
     }
 }
+
+/// A dynamic block whose seven literals and the end-of-block code all take
+/// 3 bits, so the literal/length table is full of pair entries.
+fn short_literal_stream(literals: usize) -> (Vec<u8>, Vec<u8>) {
+    let mut litlen = vec![0u8; 257];
+    for b in b'a'..=b'g' {
+        litlen[b as usize] = 3;
+    }
+    litlen[256] = 3;
+    let dist = vec![1u8];
+    let mut all = litlen.clone();
+    all.extend_from_slice(&dist);
+    let block = DynBlock {
+        bfinal: true,
+        cl_program: literal_cl_program(&all),
+        litlen_lengths: litlen,
+        dist_lengths: dist,
+    };
+    let mut rng = Rng(0xA11_5EED + literals as u64);
+    let mut payload = Vec::new();
+    let mut expected = Vec::new();
+    for _ in 0..literals {
+        let b = b'a' + rng.below(7) as u8;
+        payload.push(PayloadSym::Literal(b));
+        expected.push(b);
+    }
+    let mut w = BitWriter::new();
+    emit_dynamic_block(&mut w, &block, &payload);
+    (w.finish(), expected)
+}
+
+#[test]
+fn fast_loop_pairs_same_trace_as_reference() {
+    let mut streams = vec![
+        short_literal_stream(1),
+        short_literal_stream(2),
+        short_literal_stream(3),
+    ];
+    for n in [40usize, 333, 2000] {
+        streams.push(short_literal_stream(n));
+    }
+    streams.push(stream("fixed"));
+    streams.push(stream("dynamic"));
+    for (input, expected) in &streams {
+        for (i, o) in [
+            (usize::MAX / 4, usize::MAX / 4),
+            (usize::MAX / 4, 1),
+            (7, 13),
+        ] {
+            let (fast_calls, fast_out, fast) = drive(DecodePath::Fast, input, i, o);
+            let (ref_calls, ref_out, _) = drive(DecodePath::Reference, input, i, o);
+            assert_eq!(&fast_out, expected, "in {i} out {o}");
+            assert_eq!(&ref_out, expected, "in {i} out {o}");
+            assert_eq!(fast_calls, ref_calls, "in {i} out {o}: per-call results");
+            #[cfg(feature = "stats")]
+            if i > 1000 && o > 600 && expected.len() >= 333 {
+                assert!(entries(&fast) > 0, "the fast loop must run");
+            }
+            #[cfg(not(feature = "stats"))]
+            let _ = fast;
+        }
+    }
+}
