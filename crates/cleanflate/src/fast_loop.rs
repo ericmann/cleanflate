@@ -45,7 +45,7 @@ pub(crate) struct FastCtx<'a> {
     /// The bit reader.
     pub br: &'a mut BitReader,
     /// The history window.
-    pub window: &'a mut Window,
+    pub window: &'a Window,
     /// Counters (feature `stats`).
     #[cfg(feature = "stats")]
     pub stats: &'a mut Stats,
@@ -111,7 +111,6 @@ fn run_loop(
             if let Some(slot) = output.get_mut(*out_pos) {
                 *slot = byte;
             }
-            ctx.window.push(byte);
             *out_pos += 1;
         } else if symbol == END_OF_BLOCK {
             br.consume(len);
@@ -152,7 +151,7 @@ fn run_loop(
             let dextra = br.peek(dextra_bits);
             br.consume(dextra_bits);
             let distance = (dbase as u32).saturating_add(dextra);
-            let available = ctx.window.available() as u64;
+            let available = ctx.window.history_available(*out_pos) as u64;
             if distance as u64 > available {
                 return FastExit::Error(Error::InvalidDistance {
                     distance,
@@ -161,12 +160,12 @@ fn run_loop(
             }
             #[cfg(feature = "stats")]
             crate::stats::record_match(ctx.stats, u32::from(length), distance);
-            let out_slice = output.get_mut(*out_pos..).unwrap_or(&mut []);
-            let written = ctx.window.copy_match_path(
+            let written = ctx.window.copy_match(
                 DecodePath::Fast,
+                output,
+                *out_pos,
                 distance as usize,
                 length as usize,
-                out_slice,
             );
             *out_pos += written;
             if written < length as usize {

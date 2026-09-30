@@ -855,3 +855,45 @@ Provenance: general technique; not derived from any specific implementation.
 Measurement: docs/perf/P2-01.json against docs/perf/P2-01-before.json:
 Silesia level 6 one-shot raw 83.1 -> 132.2 MiB/s, zlib 80.2 -> 131.0, gzip
 66.1 -> 92.6; streaming raw 83.8 -> 135.5.
+
+### D-30: [perf] Output as match history; window carried only across calls
+
+RFC: RFC 1951 S2, S3.2.5
+Decision: Within one `step` call the caller's output slice is the match
+history. History is the window as it stood at call entry, followed by
+`output[..out_pos]`, and the history available to a distance is
+`min(window.available() + out_pos, 32768)`. Distance validation and the
+`available` reported in `Error::InvalidDistance` use that number, which
+equals what the per-byte window gave before. Literals are written to the
+output only; a stored block is copied with one slice copy per call chunk on
+both paths (structure shared by both paths, not a switched technique).
+The 32 KiB ring keeps only what must survive across calls: on every return
+from `step` (`NeedsInput`, `OutputFull`, `Done` and errors), exactly once,
+the shared exit appends `output[..out_pos]` to it, copying only the last 32
+KiB in at most two slice copies (`Window::append`). A preset dictionary is
+appended the same way when the decoder is built. A one-byte output buffer
+therefore appends one byte per call, and the streaming contract, bounded
+memory and dictionary semantics are unchanged (no new field, and no new
+per-call allocation).
+A match is copied as slices on the Fast path: bytes that reach back before
+the start of the call's output come from the window (`Window::read_back`,
+at most two slice copies); bytes inside the output are copied with
+`copy_within`, at most `distance` at a time, which is non-overlapping by
+construction and repeats the pattern of an overlapping match as RFC 1951
+S3.2.3 requires. The Reference path copies byte by byte through the same
+view: `output[cur - dist]` when the source is inside the output, else
+`window.get_back(dist - cur)`. This supersedes the copy mechanics of the
+per-byte ring of D-08 and the bulk copy of D-22; what is decoded does not
+change.
+Rationale: Every output byte used to be written twice, once to the caller's
+buffer and once into the ring, one byte at a time (the window wrote as many
+bytes as the decoder produced; H3 in PERF.md). A distance never reaches
+further than 32 KiB, so the output already holds the history for
+everything except a match that reaches back across a call boundary, and
+the ring only has to be brought up to date when control returns to the
+caller. That removes the second per-byte write from the hot path and lets
+matches become slice copies.
+Provenance: general technique; not derived from any specific implementation.
+Measurement: docs/perf/P3-01.json against docs/perf/P3-01-before.json:
+Silesia level 6 one-shot raw 133.4 -> 160.6 MiB/s, zlib 122.1 -> 151.1, gzip
+87.9 -> 108.2; streaming raw 134.3 -> 160.4.

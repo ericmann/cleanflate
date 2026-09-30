@@ -113,36 +113,40 @@ fn gzip_second_member_uses_same_path() {
     assert_eq!(d.inflater_path(), DecodePath::Reference);
 }
 
-fn seeded_window(total: usize) -> Window {
-    let mut w = Window::new();
+fn seeded_bytes(total: usize) -> Vec<u8> {
     let mut x: u32 = 0x9E37_79B9;
-    for _ in 0..total {
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        w.push((x >> 11) as u8);
-    }
-    w
+    (0..total)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            (x >> 11) as u8
+        })
+        .collect()
 }
 
 #[test]
 fn reference_byte_copy_matches_bulk_copy() {
+    // Windows whose ring has wrapped, with the source of a match crossing
+    // the ring's end for some distances, and outputs that already hold
+    // bytes (`cur`) so matches also reach into the current call's output.
     for total in [65_536 - 100, 65_536 + 100] {
-        let base = seeded_window(total);
-        for distance in 1..=300usize {
-            for len in 3..=258usize {
-                let mut fast = base.clone();
-                let mut reference = base.clone();
-                let mut fast_out = [0u8; 258];
-                let mut ref_out = [0u8; 258];
-                let nf = fast.copy_match_path(DecodePath::Fast, distance, len, &mut fast_out);
-                let nr =
-                    reference.copy_match_path(DecodePath::Reference, distance, len, &mut ref_out);
-                assert_eq!(nf, nr, "d={distance} len={len}");
-                assert_eq!(nf, len);
-                assert_eq!(fast_out, ref_out, "d={distance} len={len}");
-                for back in 1..=300usize {
-                    assert_eq!(fast.get_back(back), reference.get_back(back));
+        let mut window = Window::new();
+        window.append(&seeded_bytes(total));
+        for cur in [0usize, 50, 300] {
+            let prefix = seeded_bytes(cur + 7);
+            for distance in 1..=300usize {
+                for len in 3..=258usize {
+                    let mut fast_out = vec![0u8; cur + 258];
+                    let mut ref_out = vec![0u8; cur + 258];
+                    fast_out[..cur].copy_from_slice(&prefix[..cur]);
+                    ref_out[..cur].copy_from_slice(&prefix[..cur]);
+                    let nf = window.copy_match(DecodePath::Fast, &mut fast_out, cur, distance, len);
+                    let nr =
+                        window.copy_match(DecodePath::Reference, &mut ref_out, cur, distance, len);
+                    assert_eq!(nf, nr, "cur={cur} d={distance} len={len}");
+                    assert_eq!(nf, len);
+                    assert_eq!(fast_out, ref_out, "cur={cur} d={distance} len={len}");
                 }
             }
         }

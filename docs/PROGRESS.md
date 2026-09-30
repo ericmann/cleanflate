@@ -25,7 +25,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P2-02 Differential fuzz target: fast vs reference
 - [x] P2-03 Copyable state in the slow path (gated)
 - [x] P2-04 M2 acceptance and push
-- [ ] P3-01 Output as match history; window carried only across calls
+- [~] P3-01 Output as match history; window carried only across calls
 - [ ] P3-02 Overlapping matches by pattern doubling
 - [ ] P3-03 One-shot output sizing from hints
 - [ ] P3-04 M3 acceptance and push

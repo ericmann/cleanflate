@@ -650,3 +650,21 @@ Repro audit: every fixture in `testdata/regressions/` was added in phase 2 and p
 | `rfc1951/dynamic-l9-64k.bin` | seed: 64 KiB text-like data at level 9 (dynamic blocks) |
 
 No wrong output, error or `consumed` was found by any differential run, proptest or fuzz run in phase 2, so no further fixture was needed; the boundary and error tests of P2-01 (`tests/fast_loop.rs`) were mutation-checked instead.
+
+### P3-01
+
+Output as match history; window carried only across calls (D-30). `make bench-quick` before (`docs/perf/P3-01-before.json`, the M2 code) and after (`docs/perf/P3-01.json`), back to back, compared with `docs/perf/noise-quick.json`:
+
+| key | before MiB/s | after MiB/s | delta % | 2x noise % | verdict |
+|---|---:|---:|---:|---:|---|
+| silesia/raw/l6/oneshot | 133.4 | 160.6 | +20.3 | 7.2 | WIN |
+| silesia/raw/l6/streaming | 134.3 | 160.4 | +19.5 | 8.7 | WIN |
+| silesia/zlib/l6/oneshot | 122.1 | 151.1 | +23.7 | 13.0 | WIN |
+| silesia/zlib/l6/streaming | 124.2 | 148.2 | +19.3 | 7.1 | WIN |
+| silesia/gzip/l6/oneshot | 87.9 | 108.2 | +23.1 | 1.4 | WIN |
+| silesia/gzip/l6/streaming | 103.1 | 112.5 | +9.1 | 2.2 | WIN |
+| canterbury/raw/l6/oneshot | 189.1 | 214.6 | +13.5 | 5.2 | WIN |
+| canterbury/zlib/l6/oneshot | 171.9 | 205.8 | +19.7 | 0.2 | WIN |
+| canterbury/gzip/l6/oneshot | 120.8 | 141.1 | +16.8 | 6.0 | WIN |
+
+All twelve aggregates are WIN. Three per-file REGRESSION lines were printed (canterbury xargs.1 gzip one-shot and streaming, -4.8% and -5.2% on a 4 KiB file; silesia sao gzip streaming, -10.5%). They are findings, not failures: the aggregates for the same keys are WINs, the per-file thresholds for these keys are 1.1% to 3.0% and rest on a single noise pair, and no other framing of the same files regressed. `make bench-stats` confirms the mechanism: `window_bytes_written / output_bytes` (bytes actually copied into the ring per output byte) fell from 1.000 (every byte written twice, one at a time) to 0.019 for one-shot decoding (large output slices: at most 32 KiB per call) and 0.50 for 64 KiB streaming windows (32 KiB of each 64 KiB window), all as slice copies at call exits.

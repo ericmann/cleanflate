@@ -268,7 +268,12 @@ impl Inflater {
         output: &mut [u8],
     ) -> Result<(usize, usize, InflateStatus), Error> {
         self.keep_bits = 0;
-        let (mut pos, out_pos, status) = self.step_inner(input, output)?;
+        let (mut pos, out_pos, result) = self.step_inner(input, output);
+        // Every return refreshes the window from this call's output,
+        // exactly once (DESIGN.md D-30): within a call the output slice is
+        // the match history, and only this tail must survive the call.
+        self.window.append(output.get(..out_pos).unwrap_or(&[]));
+        let status = result?;
         if status != InflateStatus::NeedsInput {
             let k = self.br.give_back(self.keep_bits);
             debug_assert!(k <= pos, "gave back bytes that were never loaded this call");
@@ -277,14 +282,16 @@ impl Inflater {
         Ok((pos, out_pos, status))
     }
 
-    /// The state machine proper; see [`Self::step`].
+    /// The state machine proper; see [`Self::step`]. Returns the input and
+    /// output positions reached together with the outcome, on every path,
+    /// so the caller can refresh the window even after an error.
     fn step_inner(
         &mut self,
         input: &[u8],
         output: &mut [u8],
-    ) -> Result<(usize, usize, InflateStatus), Error> {
+    ) -> (usize, usize, Result<InflateStatus, Error>) {
         if let State::Failed(e) = &self.state {
-            return Err(e.clone());
+            return (0, 0, Err(e.clone()));
         }
         stat!(self.stats.step_calls, 1);
 
@@ -294,520 +301,532 @@ impl Inflater {
         // runs before it is tried again, so every pass makes progress.
         let mut skip_fast = false;
 
-        loop {
-            match &self.state {
-                State::Done => return Ok((pos, out_pos, InflateStatus::Done)),
-                State::Failed(e) => return Err(e.clone()),
-                _ => {}
-            }
-
-            if !skip_fast
-                && self.path == DecodePath::Fast
-                && matches!(self.state, State::LitLen)
-                && input.len().saturating_sub(pos) >= FAST_LOOP_MIN_INPUT
-                && output.len().saturating_sub(out_pos) >= FAST_LOOP_MIN_OUTPUT
-            {
-                let before = out_pos;
-                let mut ctx = FastCtx {
-                    litlen: &self.litlen_table,
-                    dist: &self.dist_table,
-                    br: &mut self.br,
-                    window: &mut self.window,
-                    #[cfg(feature = "stats")]
-                    stats: &mut self.stats,
-                };
-                let exit = fast_loop::run(&mut ctx, input, &mut pos, output, &mut out_pos);
-                self.total_out += (out_pos - before) as u64;
-                match exit {
-                    FastExit::Margin => skip_fast = true,
-                    FastExit::EndOfBlock => self.state = self.next_block_state(),
-                    FastExit::Copy { remaining, dist } => {
-                        self.state = State::Copy { remaining, dist };
-                    }
-                    FastExit::Error(e) => {
-                        self.state = State::Failed(e.clone());
-                        return Err(e);
-                    }
+        let result = (|| -> Result<(usize, usize, InflateStatus), Error> {
+            loop {
+                match &self.state {
+                    State::Done => return Ok((pos, out_pos, InflateStatus::Done)),
+                    State::Failed(e) => return Err(e.clone()),
+                    _ => {}
                 }
-                continue;
-            }
-            skip_fast = false;
-            stat!(self.stats.state_dispatches, 1);
 
-            match self.state.clone() {
-                State::BlockHeader => match self.br.take(input, &mut pos, 3) {
-                    None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
-                    Some(bits) => {
-                        self.bfinal = (bits & 1) != 0;
-                        let btype = (bits >> 1) & 0b11;
-                        match btype {
-                            0 => {
-                                stat!(self.stats.blocks_stored, 1);
-                                self.state = State::StoredLen;
-                            }
-                            1 => {
-                                stat!(self.stats.blocks_fixed, 1);
-                                stat!(self.stats.fixed_table_clones, 2);
-                                self.litlen_table = self.fixed_litlen.clone();
-                                self.dist_table = self.fixed_dist.clone();
-                                self.state = State::LitLen;
-                            }
-                            2 => {
-                                stat!(self.stats.blocks_dynamic, 1);
-                                self.dyn_hlit = 0;
-                                self.dyn_hdist = 0;
-                                self.dyn_hclen = 0;
-                                self.dyn_cl_lengths = [0u8; 19];
-                                self.dyn_lengths.clear();
-                                self.dyn_prev_len = 0;
-                                self.state = State::DynHeader;
-                            }
-                            _ => {
-                                // BTYPE 11: reserved (RFC 1951 S3.2.3).
-                                let e = Error::BadBlockType;
-                                self.state = State::Failed(e.clone());
-                                return Err(e);
-                            }
+                if !skip_fast
+                    && self.path == DecodePath::Fast
+                    && matches!(self.state, State::LitLen)
+                    && input.len().saturating_sub(pos) >= FAST_LOOP_MIN_INPUT
+                    && output.len().saturating_sub(out_pos) >= FAST_LOOP_MIN_OUTPUT
+                {
+                    let before = out_pos;
+                    let mut ctx = FastCtx {
+                        litlen: &self.litlen_table,
+                        dist: &self.dist_table,
+                        br: &mut self.br,
+                        window: &self.window,
+                        #[cfg(feature = "stats")]
+                        stats: &mut self.stats,
+                    };
+                    let exit = fast_loop::run(&mut ctx, input, &mut pos, output, &mut out_pos);
+                    self.total_out += (out_pos - before) as u64;
+                    match exit {
+                        FastExit::Margin => skip_fast = true,
+                        FastExit::EndOfBlock => self.state = self.next_block_state(),
+                        FastExit::Copy { remaining, dist } => {
+                            self.state = State::Copy { remaining, dist };
+                        }
+                        FastExit::Error(e) => {
+                            self.state = State::Failed(e.clone());
+                            return Err(e);
                         }
                     }
-                },
-                State::StoredLen => {
-                    self.br.align_to_byte();
-                    match self.br.take(input, &mut pos, 32) {
+                    continue;
+                }
+                skip_fast = false;
+                stat!(self.stats.state_dispatches, 1);
+
+                match self.state.clone() {
+                    State::BlockHeader => match self.br.take(input, &mut pos, 3) {
                         None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
-                        Some(v) => {
-                            let len = (v & 0xFFFF) as u16;
-                            let nlen = ((v >> 16) & 0xFFFF) as u16;
-                            if len != !nlen {
-                                let e = Error::InvalidStoredLength { len, nlen };
-                                self.state = State::Failed(e.clone());
-                                return Err(e);
+                        Some(bits) => {
+                            self.bfinal = (bits & 1) != 0;
+                            let btype = (bits >> 1) & 0b11;
+                            match btype {
+                                0 => {
+                                    stat!(self.stats.blocks_stored, 1);
+                                    self.state = State::StoredLen;
+                                }
+                                1 => {
+                                    stat!(self.stats.blocks_fixed, 1);
+                                    stat!(self.stats.fixed_table_clones, 2);
+                                    self.litlen_table = self.fixed_litlen.clone();
+                                    self.dist_table = self.fixed_dist.clone();
+                                    self.state = State::LitLen;
+                                }
+                                2 => {
+                                    stat!(self.stats.blocks_dynamic, 1);
+                                    self.dyn_hlit = 0;
+                                    self.dyn_hdist = 0;
+                                    self.dyn_hclen = 0;
+                                    self.dyn_cl_lengths = [0u8; 19];
+                                    self.dyn_lengths.clear();
+                                    self.dyn_prev_len = 0;
+                                    self.state = State::DynHeader;
+                                }
+                                _ => {
+                                    // BTYPE 11: reserved (RFC 1951 S3.2.3).
+                                    let e = Error::BadBlockType;
+                                    self.state = State::Failed(e.clone());
+                                    return Err(e);
+                                }
                             }
-                            // Whole bytes still buffered belong to the stored
-                            // payload: hand them back so it is read from `input`.
-                            let k = self.br.give_back(0);
-                            debug_assert!(k <= pos, "gave back bytes that were never loaded");
-                            pos = pos.saturating_sub(k);
-                            self.state = State::StoredCopy {
-                                remaining: len as u32,
-                            };
+                        }
+                    },
+                    State::StoredLen => {
+                        self.br.align_to_byte();
+                        match self.br.take(input, &mut pos, 32) {
+                            None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
+                            Some(v) => {
+                                let len = (v & 0xFFFF) as u16;
+                                let nlen = ((v >> 16) & 0xFFFF) as u16;
+                                if len != !nlen {
+                                    let e = Error::InvalidStoredLength { len, nlen };
+                                    self.state = State::Failed(e.clone());
+                                    return Err(e);
+                                }
+                                // Whole bytes still buffered belong to the stored
+                                // payload: hand them back so it is read from `input`.
+                                let k = self.br.give_back(0);
+                                debug_assert!(k <= pos, "gave back bytes that were never loaded");
+                                pos = pos.saturating_sub(k);
+                                self.state = State::StoredCopy {
+                                    remaining: len as u32,
+                                };
+                            }
                         }
                     }
-                }
-                State::StoredCopy { remaining } => {
-                    if remaining == 0 {
-                        self.state = self.next_block_state();
-                        continue;
-                    }
-                    if out_pos >= output.len() {
-                        return Ok((pos, out_pos, InflateStatus::OutputFull));
-                    }
-                    if self.br.available() >= 8 {
-                        // Defensive: StoredLen hands every whole byte back, so
-                        // this cannot happen; drain rather than skip payload.
-                        debug_assert!(false, "whole bytes still buffered in a stored block");
-                        if let Some(byte) = self.br.take(input, &mut pos, 8) {
-                            if let Some(slot) = output.get_mut(out_pos) {
-                                *slot = byte as u8;
-                            }
-                            self.window.push(byte as u8);
-                            out_pos += 1;
-                            self.total_out += 1;
-                            self.state = State::StoredCopy {
-                                remaining: remaining - 1,
-                            };
+                    State::StoredCopy { remaining } => {
+                        if remaining == 0 {
+                            self.state = self.next_block_state();
                             continue;
                         }
-                    }
-                    if pos >= input.len() {
-                        return Ok((pos, out_pos, InflateStatus::NeedsInput));
-                    }
-
-                    let available_in = (input.len() - pos) as u32;
-                    let available_out = (output.len() - out_pos) as u32;
-                    let n = remaining.min(available_in).min(available_out) as usize;
-
-                    for i in 0..n {
-                        let byte = input.get(pos + i).copied().unwrap_or(0);
-                        if let Some(slot) = output.get_mut(out_pos + i) {
-                            *slot = byte;
+                        if out_pos >= output.len() {
+                            return Ok((pos, out_pos, InflateStatus::OutputFull));
                         }
-                        self.window.push(byte);
-                    }
-
-                    stat!(self.stats.stored_bytes, n);
-                    pos += n;
-                    out_pos += n;
-                    self.total_out += n as u64;
-                    self.state = State::StoredCopy {
-                        remaining: remaining - n as u32,
-                    };
-                }
-                State::DynHeader => match self.br.take(input, &mut pos, 14) {
-                    None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
-                    Some(v) => {
-                        let hlit_field = v & 0x1F;
-                        let hdist_field = (v >> 5) & 0x1F;
-                        let hclen_field = (v >> 10) & 0xF;
-                        let hlit = hlit_field as usize + 257;
-                        let hdist = hdist_field as usize + 1;
-                        let hclen = hclen_field as usize + 4;
-                        if hlit > 286 {
-                            let e = Error::InvalidHuffmanTable(HuffmanError::TooManyLengthCodes);
-                            self.state = State::Failed(e.clone());
-                            return Err(e);
-                        }
-                        self.dyn_hlit = hlit;
-                        self.dyn_hdist = hdist;
-                        self.dyn_hclen = hclen;
-                        self.state = State::CodeLenLens { i: 0 };
-                    }
-                },
-                State::CodeLenLens { i } => {
-                    if i >= self.dyn_hclen {
-                        match Huffman::from_lengths(&self.dyn_cl_lengths, TableKind::CodeLength) {
-                            Ok(t) => {
-                                stat!(self.stats.table_builds, 1);
-                                stat!(self.stats.table_entries_built, t.table_entries());
-                                self.dyn_cl_table = t;
-                                self.state = State::CodeLens;
-                            }
-                            Err(he) => {
-                                let e = Error::InvalidHuffmanTable(he);
-                                self.state = State::Failed(e.clone());
-                                return Err(e);
-                            }
-                        }
-                        continue;
-                    }
-                    match self.br.take(input, &mut pos, 3) {
-                        None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
-                        Some(v) => {
-                            let sym = *CODE_LENGTH_ORDER.get(i).unwrap_or(&0);
-                            if let Some(slot) = self.dyn_cl_lengths.get_mut(sym as usize) {
-                                *slot = v as u8;
-                            }
-                            self.state = State::CodeLenLens { i: i + 1 };
-                        }
-                    }
-                }
-                State::CodeLens => {
-                    let total = self.dyn_hlit + self.dyn_hdist;
-                    if self.dyn_lengths.len() >= total {
-                        let litlen_lengths: Vec<u8> = self
-                            .dyn_lengths
-                            .get(..self.dyn_hlit)
-                            .unwrap_or(&[])
-                            .to_vec();
-                        let dist_lengths: Vec<u8> = self
-                            .dyn_lengths
-                            .get(self.dyn_hlit..)
-                            .unwrap_or(&[])
-                            .to_vec();
-                        if litlen_lengths
-                            .get(END_OF_BLOCK as usize)
-                            .copied()
-                            .unwrap_or(0)
-                            == 0
-                        {
-                            let e = Error::InvalidHuffmanTable(HuffmanError::MissingEndOfBlock);
-                            self.state = State::Failed(e.clone());
-                            return Err(e);
-                        }
-                        let litlen_table =
-                            match Huffman::from_lengths(&litlen_lengths, TableKind::LitLen) {
-                                Ok(t) => t,
-                                Err(he) => {
-                                    let e = Error::InvalidHuffmanTable(he);
-                                    self.state = State::Failed(e.clone());
-                                    return Err(e);
-                                }
-                            };
-                        let dist_table =
-                            match Huffman::from_lengths(&dist_lengths, TableKind::Distance) {
-                                Ok(t) => t,
-                                Err(he) => {
-                                    let e = Error::InvalidHuffmanTable(he);
-                                    self.state = State::Failed(e.clone());
-                                    return Err(e);
-                                }
-                            };
-                        stat!(self.stats.table_builds, 2);
-                        stat!(
-                            self.stats.table_entries_built,
-                            litlen_table.table_entries() + dist_table.table_entries()
-                        );
-                        self.litlen_table = litlen_table;
-                        self.dist_table = dist_table;
-                        self.dyn_lengths.clear();
-                        self.state = State::LitLen;
-                        continue;
-                    }
-
-                    let outcome = match Self::peek_symbol(
-                        self.path,
-                        &self.dyn_cl_table,
-                        &mut self.br,
-                        input,
-                        &mut pos,
-                    ) {
-                        None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
-                        Some(o) => o,
-                    };
-                    match outcome {
-                        SymbolOutcome::Invalid => {
-                            let e = Error::InvalidSymbol;
-                            self.state = State::Failed(e.clone());
-                            return Err(e);
-                        }
-                        SymbolOutcome::Symbol {
-                            symbol,
-                            len,
-                            #[cfg(feature = "stats")]
-                            via_table,
-                        } => {
-                            #[cfg(feature = "stats")]
-                            if symbol <= 18 && !(symbol == 16 && self.dyn_lengths.is_empty()) {
-                                self.count_decode(TableKind::CodeLength, via_table);
-                            }
-                            if symbol <= 15 {
-                                self.br.consume(len);
-                                self.dyn_lengths.push(symbol as u8);
-                                self.dyn_prev_len = symbol as u8;
-                            } else if symbol == 16 {
-                                if self.dyn_lengths.is_empty() {
-                                    let e = Error::InvalidHuffmanTable(
-                                        HuffmanError::RepeatWithoutPrevious,
-                                    );
-                                    self.state = State::Failed(e.clone());
-                                    return Err(e);
-                                }
-                                self.br.consume(len);
-                                self.state = State::Repeat { sym: 16 };
-                            } else if symbol == 17 {
-                                self.br.consume(len);
-                                self.state = State::Repeat { sym: 17 };
-                            } else if symbol == 18 {
-                                self.br.consume(len);
-                                self.state = State::Repeat { sym: 18 };
-                            } else {
-                                // The code-length alphabet only has
-                                // symbols 0..=18; a table built from a
-                                // 19-length array cannot decode anything
-                                // else.
-                                let e = Error::InvalidSymbol;
-                                self.state = State::Failed(e.clone());
-                                return Err(e);
-                            }
-                        }
-                    }
-                }
-                State::Repeat { sym } => {
-                    let extra_bits: u32 = match sym {
-                        16 => 2,
-                        17 => 3,
-                        18 => 7,
-                        _ => 0,
-                    };
-                    match self.br.take(input, &mut pos, extra_bits) {
-                        None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
-                        Some(extra) => {
-                            let (count, value): (usize, u8) = match sym {
-                                16 => (3 + extra as usize, self.dyn_prev_len),
-                                17 => (3 + extra as usize, 0u8),
-                                18 => (11 + extra as usize, 0u8),
-                                _ => (0, 0u8),
-                            };
-                            let total = self.dyn_hlit + self.dyn_hdist;
-                            if self.dyn_lengths.len() + count > total {
-                                let e = Error::InvalidHuffmanTable(HuffmanError::RepeatOverflow);
-                                self.state = State::Failed(e.clone());
-                                return Err(e);
-                            }
-                            for _ in 0..count {
-                                self.dyn_lengths.push(value);
-                            }
-                            self.dyn_prev_len = value;
-                            self.state = State::CodeLens;
-                        }
-                    }
-                }
-                State::LitLen => {
-                    let outcome = match Self::peek_symbol(
-                        self.path,
-                        &self.litlen_table,
-                        &mut self.br,
-                        input,
-                        &mut pos,
-                    ) {
-                        None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
-                        Some(o) => o,
-                    };
-                    match outcome {
-                        SymbolOutcome::Invalid => {
-                            let e = Error::InvalidSymbol;
-                            self.state = State::Failed(e.clone());
-                            return Err(e);
-                        }
-                        SymbolOutcome::Symbol {
-                            symbol,
-                            len,
-                            #[cfg(feature = "stats")]
-                            via_table,
-                        } => {
-                            if symbol < 256 {
-                                // A literal: only commit (consume bits,
-                                // write the byte) once we know there is
-                                // room, so a retry re-decodes the same
-                                // (still-buffered) bits for free.
-                                if out_pos >= output.len() {
-                                    self.keep_bits = len;
-                                    return Ok((pos, out_pos, InflateStatus::OutputFull));
-                                }
-                                self.br.consume(len);
-                                #[cfg(feature = "stats")]
-                                self.count_decode(TableKind::LitLen, via_table);
-                                stat!(self.stats.literals, 1);
-                                let byte = symbol as u8;
+                        if self.br.available() >= 8 {
+                            // Defensive: StoredLen hands every whole byte back, so
+                            // this cannot happen; drain rather than skip payload.
+                            debug_assert!(false, "whole bytes still buffered in a stored block");
+                            if let Some(byte) = self.br.take(input, &mut pos, 8) {
                                 if let Some(slot) = output.get_mut(out_pos) {
-                                    *slot = byte;
+                                    *slot = byte as u8;
                                 }
-                                self.window.push(byte);
                                 out_pos += 1;
                                 self.total_out += 1;
-                            } else if symbol == END_OF_BLOCK {
-                                self.br.consume(len);
-                                #[cfg(feature = "stats")]
-                                self.count_decode(TableKind::LitLen, via_table);
-                                self.state = self.next_block_state();
-                            } else if (257..=285).contains(&symbol) {
-                                self.br.consume(len);
-                                #[cfg(feature = "stats")]
-                                self.count_decode(TableKind::LitLen, via_table);
-                                self.state = State::LenExtra { sym: symbol };
-                            } else {
-                                // 286/287: valid codes in the fixed table
-                                // that never occur in real data (RFC 1951
-                                // S3.2.6); a dynamic table rejects them
-                                // via MissingEndOfBlock/other validation
-                                // long before decode could reach them.
-                                let e = Error::InvalidSymbol;
-                                self.state = State::Failed(e.clone());
-                                return Err(e);
-                            }
-                        }
-                    }
-                }
-                State::LenExtra { sym } => {
-                    let idx = (sym - 257) as usize;
-                    let extra_bits = *LENGTH_EXTRA.get(idx).unwrap_or(&0) as u32;
-                    let base = *LENGTH_BASE.get(idx).unwrap_or(&0);
-                    match self.br.take(input, &mut pos, extra_bits) {
-                        None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
-                        Some(extra) => {
-                            let len = base.saturating_add(extra as u16);
-                            self.state = State::Dist { len };
-                        }
-                    }
-                }
-                State::Dist { len } => {
-                    let outcome = match Self::peek_symbol(
-                        self.path,
-                        &self.dist_table,
-                        &mut self.br,
-                        input,
-                        &mut pos,
-                    ) {
-                        None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
-                        Some(o) => o,
-                    };
-                    match outcome {
-                        SymbolOutcome::Invalid => {
-                            let e = Error::InvalidSymbol;
-                            self.state = State::Failed(e.clone());
-                            return Err(e);
-                        }
-                        SymbolOutcome::Symbol {
-                            symbol: dsym,
-                            len: bit_len,
-                            #[cfg(feature = "stats")]
-                            via_table,
-                        } => {
-                            if dsym >= 30 {
-                                // Distance codes 30/31 never occur in real
-                                // data (RFC 1951 S3.2.6).
-                                let e = Error::InvalidSymbol;
-                                self.state = State::Failed(e.clone());
-                                return Err(e);
-                            }
-                            self.br.consume(bit_len);
-                            #[cfg(feature = "stats")]
-                            self.count_decode(TableKind::Distance, via_table);
-                            self.state = State::DistExtra { len, dsym };
-                        }
-                    }
-                }
-                State::DistExtra { len, dsym } => {
-                    let idx = dsym as usize;
-                    let extra_bits = *DIST_EXTRA.get(idx).unwrap_or(&0) as u32;
-                    let base = *DIST_BASE.get(idx).unwrap_or(&0);
-                    match self.br.take(input, &mut pos, extra_bits) {
-                        None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
-                        Some(extra) => {
-                            let distance = (base as u32).saturating_add(extra);
-                            let available = self.window.available() as u64;
-                            if distance as u64 > available {
-                                let e = Error::InvalidDistance {
-                                    distance,
-                                    available,
+                                self.state = State::StoredCopy {
+                                    remaining: remaining - 1,
                                 };
+                                continue;
+                            }
+                        }
+                        if pos >= input.len() {
+                            return Ok((pos, out_pos, InflateStatus::NeedsInput));
+                        }
+
+                        let available_in = (input.len() - pos) as u32;
+                        let available_out = (output.len() - out_pos) as u32;
+                        let n = remaining.min(available_in).min(available_out) as usize;
+
+                        // One slice copy: the output is the history, and the
+                        // window is refreshed from it when `step` returns.
+                        if let (Some(dst), Some(src)) = (
+                            output.get_mut(out_pos..out_pos + n),
+                            input.get(pos..pos + n),
+                        ) {
+                            dst.copy_from_slice(src);
+                        }
+
+                        stat!(self.stats.stored_bytes, n);
+                        pos += n;
+                        out_pos += n;
+                        self.total_out += n as u64;
+                        self.state = State::StoredCopy {
+                            remaining: remaining - n as u32,
+                        };
+                    }
+                    State::DynHeader => match self.br.take(input, &mut pos, 14) {
+                        None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
+                        Some(v) => {
+                            let hlit_field = v & 0x1F;
+                            let hdist_field = (v >> 5) & 0x1F;
+                            let hclen_field = (v >> 10) & 0xF;
+                            let hlit = hlit_field as usize + 257;
+                            let hdist = hdist_field as usize + 1;
+                            let hclen = hclen_field as usize + 4;
+                            if hlit > 286 {
+                                let e =
+                                    Error::InvalidHuffmanTable(HuffmanError::TooManyLengthCodes);
                                 self.state = State::Failed(e.clone());
                                 return Err(e);
                             }
-                            #[cfg(feature = "stats")]
-                            crate::stats::record_match(&mut self.stats, u32::from(len), distance);
-                            self.state = State::Copy {
-                                remaining: len,
-                                dist: distance as u16,
-                            };
+                            self.dyn_hlit = hlit;
+                            self.dyn_hdist = hdist;
+                            self.dyn_hclen = hclen;
+                            self.state = State::CodeLenLens { i: 0 };
+                        }
+                    },
+                    State::CodeLenLens { i } => {
+                        if i >= self.dyn_hclen {
+                            match Huffman::from_lengths(&self.dyn_cl_lengths, TableKind::CodeLength)
+                            {
+                                Ok(t) => {
+                                    stat!(self.stats.table_builds, 1);
+                                    stat!(self.stats.table_entries_built, t.table_entries());
+                                    self.dyn_cl_table = t;
+                                    self.state = State::CodeLens;
+                                }
+                                Err(he) => {
+                                    let e = Error::InvalidHuffmanTable(he);
+                                    self.state = State::Failed(e.clone());
+                                    return Err(e);
+                                }
+                            }
+                            continue;
+                        }
+                        match self.br.take(input, &mut pos, 3) {
+                            None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
+                            Some(v) => {
+                                let sym = *CODE_LENGTH_ORDER.get(i).unwrap_or(&0);
+                                if let Some(slot) = self.dyn_cl_lengths.get_mut(sym as usize) {
+                                    *slot = v as u8;
+                                }
+                                self.state = State::CodeLenLens { i: i + 1 };
+                            }
                         }
                     }
+                    State::CodeLens => {
+                        let total = self.dyn_hlit + self.dyn_hdist;
+                        if self.dyn_lengths.len() >= total {
+                            let litlen_lengths: Vec<u8> = self
+                                .dyn_lengths
+                                .get(..self.dyn_hlit)
+                                .unwrap_or(&[])
+                                .to_vec();
+                            let dist_lengths: Vec<u8> = self
+                                .dyn_lengths
+                                .get(self.dyn_hlit..)
+                                .unwrap_or(&[])
+                                .to_vec();
+                            if litlen_lengths
+                                .get(END_OF_BLOCK as usize)
+                                .copied()
+                                .unwrap_or(0)
+                                == 0
+                            {
+                                let e = Error::InvalidHuffmanTable(HuffmanError::MissingEndOfBlock);
+                                self.state = State::Failed(e.clone());
+                                return Err(e);
+                            }
+                            let litlen_table =
+                                match Huffman::from_lengths(&litlen_lengths, TableKind::LitLen) {
+                                    Ok(t) => t,
+                                    Err(he) => {
+                                        let e = Error::InvalidHuffmanTable(he);
+                                        self.state = State::Failed(e.clone());
+                                        return Err(e);
+                                    }
+                                };
+                            let dist_table =
+                                match Huffman::from_lengths(&dist_lengths, TableKind::Distance) {
+                                    Ok(t) => t,
+                                    Err(he) => {
+                                        let e = Error::InvalidHuffmanTable(he);
+                                        self.state = State::Failed(e.clone());
+                                        return Err(e);
+                                    }
+                                };
+                            stat!(self.stats.table_builds, 2);
+                            stat!(
+                                self.stats.table_entries_built,
+                                litlen_table.table_entries() + dist_table.table_entries()
+                            );
+                            self.litlen_table = litlen_table;
+                            self.dist_table = dist_table;
+                            self.dyn_lengths.clear();
+                            self.state = State::LitLen;
+                            continue;
+                        }
+
+                        let outcome = match Self::peek_symbol(
+                            self.path,
+                            &self.dyn_cl_table,
+                            &mut self.br,
+                            input,
+                            &mut pos,
+                        ) {
+                            None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
+                            Some(o) => o,
+                        };
+                        match outcome {
+                            SymbolOutcome::Invalid => {
+                                let e = Error::InvalidSymbol;
+                                self.state = State::Failed(e.clone());
+                                return Err(e);
+                            }
+                            SymbolOutcome::Symbol {
+                                symbol,
+                                len,
+                                #[cfg(feature = "stats")]
+                                via_table,
+                            } => {
+                                #[cfg(feature = "stats")]
+                                if symbol <= 18 && !(symbol == 16 && self.dyn_lengths.is_empty()) {
+                                    self.count_decode(TableKind::CodeLength, via_table);
+                                }
+                                if symbol <= 15 {
+                                    self.br.consume(len);
+                                    self.dyn_lengths.push(symbol as u8);
+                                    self.dyn_prev_len = symbol as u8;
+                                } else if symbol == 16 {
+                                    if self.dyn_lengths.is_empty() {
+                                        let e = Error::InvalidHuffmanTable(
+                                            HuffmanError::RepeatWithoutPrevious,
+                                        );
+                                        self.state = State::Failed(e.clone());
+                                        return Err(e);
+                                    }
+                                    self.br.consume(len);
+                                    self.state = State::Repeat { sym: 16 };
+                                } else if symbol == 17 {
+                                    self.br.consume(len);
+                                    self.state = State::Repeat { sym: 17 };
+                                } else if symbol == 18 {
+                                    self.br.consume(len);
+                                    self.state = State::Repeat { sym: 18 };
+                                } else {
+                                    // The code-length alphabet only has
+                                    // symbols 0..=18; a table built from a
+                                    // 19-length array cannot decode anything
+                                    // else.
+                                    let e = Error::InvalidSymbol;
+                                    self.state = State::Failed(e.clone());
+                                    return Err(e);
+                                }
+                            }
+                        }
+                    }
+                    State::Repeat { sym } => {
+                        let extra_bits: u32 = match sym {
+                            16 => 2,
+                            17 => 3,
+                            18 => 7,
+                            _ => 0,
+                        };
+                        match self.br.take(input, &mut pos, extra_bits) {
+                            None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
+                            Some(extra) => {
+                                let (count, value): (usize, u8) = match sym {
+                                    16 => (3 + extra as usize, self.dyn_prev_len),
+                                    17 => (3 + extra as usize, 0u8),
+                                    18 => (11 + extra as usize, 0u8),
+                                    _ => (0, 0u8),
+                                };
+                                let total = self.dyn_hlit + self.dyn_hdist;
+                                if self.dyn_lengths.len() + count > total {
+                                    let e =
+                                        Error::InvalidHuffmanTable(HuffmanError::RepeatOverflow);
+                                    self.state = State::Failed(e.clone());
+                                    return Err(e);
+                                }
+                                for _ in 0..count {
+                                    self.dyn_lengths.push(value);
+                                }
+                                self.dyn_prev_len = value;
+                                self.state = State::CodeLens;
+                            }
+                        }
+                    }
+                    State::LitLen => {
+                        let outcome = match Self::peek_symbol(
+                            self.path,
+                            &self.litlen_table,
+                            &mut self.br,
+                            input,
+                            &mut pos,
+                        ) {
+                            None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
+                            Some(o) => o,
+                        };
+                        match outcome {
+                            SymbolOutcome::Invalid => {
+                                let e = Error::InvalidSymbol;
+                                self.state = State::Failed(e.clone());
+                                return Err(e);
+                            }
+                            SymbolOutcome::Symbol {
+                                symbol,
+                                len,
+                                #[cfg(feature = "stats")]
+                                via_table,
+                            } => {
+                                if symbol < 256 {
+                                    // A literal: only commit (consume bits,
+                                    // write the byte) once we know there is
+                                    // room, so a retry re-decodes the same
+                                    // (still-buffered) bits for free.
+                                    if out_pos >= output.len() {
+                                        self.keep_bits = len;
+                                        return Ok((pos, out_pos, InflateStatus::OutputFull));
+                                    }
+                                    self.br.consume(len);
+                                    #[cfg(feature = "stats")]
+                                    self.count_decode(TableKind::LitLen, via_table);
+                                    stat!(self.stats.literals, 1);
+                                    let byte = symbol as u8;
+                                    if let Some(slot) = output.get_mut(out_pos) {
+                                        *slot = byte;
+                                    }
+                                    out_pos += 1;
+                                    self.total_out += 1;
+                                } else if symbol == END_OF_BLOCK {
+                                    self.br.consume(len);
+                                    #[cfg(feature = "stats")]
+                                    self.count_decode(TableKind::LitLen, via_table);
+                                    self.state = self.next_block_state();
+                                } else if (257..=285).contains(&symbol) {
+                                    self.br.consume(len);
+                                    #[cfg(feature = "stats")]
+                                    self.count_decode(TableKind::LitLen, via_table);
+                                    self.state = State::LenExtra { sym: symbol };
+                                } else {
+                                    // 286/287: valid codes in the fixed table
+                                    // that never occur in real data (RFC 1951
+                                    // S3.2.6); a dynamic table rejects them
+                                    // via MissingEndOfBlock/other validation
+                                    // long before decode could reach them.
+                                    let e = Error::InvalidSymbol;
+                                    self.state = State::Failed(e.clone());
+                                    return Err(e);
+                                }
+                            }
+                        }
+                    }
+                    State::LenExtra { sym } => {
+                        let idx = (sym - 257) as usize;
+                        let extra_bits = *LENGTH_EXTRA.get(idx).unwrap_or(&0) as u32;
+                        let base = *LENGTH_BASE.get(idx).unwrap_or(&0);
+                        match self.br.take(input, &mut pos, extra_bits) {
+                            None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
+                            Some(extra) => {
+                                let len = base.saturating_add(extra as u16);
+                                self.state = State::Dist { len };
+                            }
+                        }
+                    }
+                    State::Dist { len } => {
+                        let outcome = match Self::peek_symbol(
+                            self.path,
+                            &self.dist_table,
+                            &mut self.br,
+                            input,
+                            &mut pos,
+                        ) {
+                            None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
+                            Some(o) => o,
+                        };
+                        match outcome {
+                            SymbolOutcome::Invalid => {
+                                let e = Error::InvalidSymbol;
+                                self.state = State::Failed(e.clone());
+                                return Err(e);
+                            }
+                            SymbolOutcome::Symbol {
+                                symbol: dsym,
+                                len: bit_len,
+                                #[cfg(feature = "stats")]
+                                via_table,
+                            } => {
+                                if dsym >= 30 {
+                                    // Distance codes 30/31 never occur in real
+                                    // data (RFC 1951 S3.2.6).
+                                    let e = Error::InvalidSymbol;
+                                    self.state = State::Failed(e.clone());
+                                    return Err(e);
+                                }
+                                self.br.consume(bit_len);
+                                #[cfg(feature = "stats")]
+                                self.count_decode(TableKind::Distance, via_table);
+                                self.state = State::DistExtra { len, dsym };
+                            }
+                        }
+                    }
+                    State::DistExtra { len, dsym } => {
+                        let idx = dsym as usize;
+                        let extra_bits = *DIST_EXTRA.get(idx).unwrap_or(&0) as u32;
+                        let base = *DIST_BASE.get(idx).unwrap_or(&0);
+                        match self.br.take(input, &mut pos, extra_bits) {
+                            None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
+                            Some(extra) => {
+                                let distance = (base as u32).saturating_add(extra);
+                                let available = self.window.history_available(out_pos) as u64;
+                                if distance as u64 > available {
+                                    let e = Error::InvalidDistance {
+                                        distance,
+                                        available,
+                                    };
+                                    self.state = State::Failed(e.clone());
+                                    return Err(e);
+                                }
+                                #[cfg(feature = "stats")]
+                                crate::stats::record_match(
+                                    &mut self.stats,
+                                    u32::from(len),
+                                    distance,
+                                );
+                                self.state = State::Copy {
+                                    remaining: len,
+                                    dist: distance as u16,
+                                };
+                            }
+                        }
+                    }
+                    State::Copy { remaining, dist } => {
+                        if remaining == 0 {
+                            self.state = State::LitLen;
+                            continue;
+                        }
+                        if out_pos >= output.len() {
+                            return Ok((pos, out_pos, InflateStatus::OutputFull));
+                        }
+                        let written = self.window.copy_match(
+                            self.path,
+                            output,
+                            out_pos,
+                            dist as usize,
+                            remaining as usize,
+                        );
+                        out_pos += written;
+                        self.total_out += written as u64;
+                        let new_remaining = remaining.saturating_sub(written as u16);
+                        self.state = State::Copy {
+                            remaining: new_remaining,
+                            dist,
+                        };
+                        if written == 0 {
+                            // Should not happen: distance was validated when
+                            // entering Copy and only grows more available as
+                            // bytes are pushed. Treat as needing more output
+                            // room to avoid spinning.
+                            return Ok((pos, out_pos, InflateStatus::OutputFull));
+                        }
+                    }
+                    // Done/Failed are handled by the check at the top of this
+                    // loop; this arm is unreachable in practice but keeps the
+                    // match total without a forbidden panicking macro call.
+                    State::Done | State::Failed(_) => {}
                 }
-                State::Copy { remaining, dist } => {
-                    if remaining == 0 {
-                        self.state = State::LitLen;
-                        continue;
-                    }
-                    if out_pos >= output.len() {
-                        return Ok((pos, out_pos, InflateStatus::OutputFull));
-                    }
-                    let out_slice = output.get_mut(out_pos..).unwrap_or(&mut []);
-                    let written = self.window.copy_match_path(
-                        self.path,
-                        dist as usize,
-                        remaining as usize,
-                        out_slice,
-                    );
-                    out_pos += written;
-                    self.total_out += written as u64;
-                    let new_remaining = remaining.saturating_sub(written as u16);
-                    self.state = State::Copy {
-                        remaining: new_remaining,
-                        dist,
-                    };
-                    if written == 0 {
-                        // Should not happen: distance was validated when
-                        // entering Copy and only grows more available as
-                        // bytes are pushed. Treat as needing more output
-                        // room to avoid spinning.
-                        return Ok((pos, out_pos, InflateStatus::OutputFull));
-                    }
-                }
-                // Done/Failed are handled by the check at the top of this
-                // loop; this arm is unreachable in practice but keeps the
-                // match total without a forbidden panicking macro call.
-                State::Done | State::Failed(_) => {}
             }
+        })();
+        match result {
+            Ok((p, o, status)) => (p, o, Ok(status)),
+            Err(e) => (pos, out_pos, Err(e)),
         }
     }
 

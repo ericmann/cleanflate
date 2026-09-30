@@ -18,6 +18,7 @@ mod fast_loop;
 mod fastpath;
 mod gzip;
 mod gzip_header;
+mod history;
 mod huffman;
 mod huffman_table;
 mod huffman_twolevel;
