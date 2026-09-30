@@ -28,7 +28,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P3-01 Per-block Huffman table reuse (gated)
 - [x] P3-02 Per-stream setup: reusable inflater, lazy window, no redundant fills (gated)
 - [x] P3-03 `Decompressor::reset()` and the reset differential
-- [~] P3-04 Reuse bench case
+- [x] P3-04 Reuse bench case
 - [ ] P3-05 M3 acceptance and push
 - [ ] P4-01 Assembly evidence tool for the fast loop
 - [ ] P4-02 Branch-light bulk refill (gated)
@@ -123,3 +123,6 @@ GATED OUT. Setup frames: new_with_path 1.71%, resize 0.72%, Window::new 0.53% (u
 
 ### P3-03 — c94628e
 Decompressor::reset (public, doc example uses ?), Backend/Zlib/Gzip/Inflater/Window reset (window storage kept, history dropped via total=0). DESIGN D-35. trace_with in oracle common. Differential (oracle/tests/reset.rs) passes: conformance (41 s release; one scenario per entry + one-byte chunks for every 4th entry <= 64 KiB), options, proptest (both paths), repeated x100. verify (incl proptest-3k, fuzz-smoke) + fastslow-full pass. Next free D = D-36. reset_with not added (DESIGN explains).
+
+### P3-04 — 875d0db
+Mode::Reuse in bench (Fixture.reuse RefCell<Decompressor>), Aggregate.ratio/c_zlib_mode now Option (null for reuse), vs_fresh_streaming, RatioDelta::NotApplicable, profile_decode --mode reuse, Makefile bench/bench-quick modes include reuse. P3-04.json: reuse vs fresh streaming ~1.00 on all aggregates (max +3.9% canterbury/gzip/l6), PHASE3.md has per-file Canterbury table. Changes bench-quick runtime (+1 mode).
