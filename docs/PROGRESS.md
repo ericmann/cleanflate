@@ -39,6 +39,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P5-01 After-profiles and flamegraphs
 - [x] P5-02 Final bench, PHASE3.md report and PERF.md phase-3 section
 - [x] P5-03 Provenance, build report and hand-off push
+- [ ] R1-01 Reset differential: cover the raw dictionary, fail on empty selections, random reset points
 
 ## Log
 (one entry per task, appended by implement)
