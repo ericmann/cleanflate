@@ -60,3 +60,11 @@ None. (Tasks that recorded a negative result are done, not blocked: P2-02, P2-04
 - **API additions:** `Decompressor::reset` (public, D-35). Everything else is crate-private or behind `test-hooks`.
 - **Generated docs:** `docs/BUILD_REPORT.md` and `provenance/SUMMARY.md` were generated before the last two bookkeeping commits, so their commit count is slightly behind.
 - **Guard friction:** a few commands were denied because their text contained forbidden words; each was re-issued in a permitted form and none read any decompressor's source. Logged in `provenance/human-interventions.md` and as a feedback entry.
+
+## Round 1
+
+- Tasks: R1-01 done (1/1), none blocked or skipped. Base dcf4566 (pre-handoff), code commit 8a84b96.
+- R1-01 changed tests only: `reset_reapplies_raw_dictionary` (crates/cleanflate/src/tests/reset.rs); oracle `reset_equals_fresh_options` now builds the raw-dictionary case with `oracle::ffi::deflate_bytes` and panics with a fix hint on an empty zlib-dictionary selection; `reset_proptest` adds `prefix_calls` (0..=6).
+- Interpretation: raw dictionary case uses a fixed dictionary with cyclic data (no checksum needed, C16 safe).
+- Mutation check: dropping `prefill_dictionary` in `Backend::reset` now fails the new unit test.
+- Manual check: n/a. No library code changed.
