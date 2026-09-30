@@ -2,6 +2,8 @@ use crate::decode_path::DecodePath;
 use crate::error::Error;
 use crate::options::{Format, Options, TrailingData};
 use crate::stream::{Decompressor, Status};
+use crate::tests::bitwriter::BitWriter;
+use crate::tests::inflate_fixed::{emit_block_header, emit_end_of_block, emit_match};
 
 fn stored(data: &[u8]) -> Vec<u8> {
     let mut out = vec![0x01u8];
@@ -115,6 +117,38 @@ fn reset_stats_zeroed() {
         assert_eq!(
             d.stats(),
             Decompressor::new(format, Options::default()).stats()
+        );
+    }
+}
+
+#[test]
+fn reset_reapplies_raw_dictionary() {
+    let dict = b"abcdefgh";
+    let mut w = BitWriter::new();
+    emit_block_header(&mut w, true, 0b01);
+    emit_match(&mut w, 3, 3); // copies "fgh" from the dictionary
+    emit_end_of_block(&mut w);
+    let bytes = w.finish();
+    let options = Options {
+        dictionary: Some(dict.to_vec()),
+        ..Options::default()
+    };
+    for path in [DecodePath::Fast, DecodePath::Reference] {
+        let mut fresh = Decompressor::new_with_path(Format::Raw, options.clone(), path);
+        let expected = decode_all(&mut fresh, &bytes).expect("fresh decodes");
+        assert_eq!(expected, b"fgh");
+        let mut d = Decompressor::new_with_path(Format::Raw, options.clone(), path);
+        assert_eq!(decode_all(&mut d, &bytes).expect("first"), expected);
+        d.reset();
+        assert_eq!(
+            decode_all(&mut d, &bytes).expect("after reset"),
+            expected,
+            "{path:?}"
+        );
+        assert_eq!(
+            (d.total_in(), d.total_out()),
+            (fresh.total_in(), fresh.total_out()),
+            "{path:?}"
         );
     }
 }

@@ -8,7 +8,7 @@ use proptest::prelude::*;
 use cleanflate::test_hooks::{decompressor_with_path, DecodePath};
 use cleanflate::{Decompressor, Format, Options, Status, TrailingData};
 use oracle::conformance::{check_entries, dictionary_bytes, repo_root, selected};
-use oracle::ffi::{deflate_bytes, DeflateParams};
+use oracle::ffi::{deflate_bytes, DeflateParams, Framing, Strategy};
 use oracle::manifest::ManifestEntry;
 
 mod common;
@@ -232,24 +232,48 @@ fn reset_equals_fresh_options() {
             }
         }
     }
-    // Dictionaries: raw and zlib entries that need one.
-    for framing in ["raw", "zlib"] {
-        let with = all
-            .iter()
-            .filter(|e| e.framing == framing && e.dictionary.is_some())
-            .min_by_key(|e| e.input_len);
-        let Some(entry) = with else { continue };
-        let bytes = generated_bytes(entry).expect("dictionary entry bytes");
-        let options = options_for(entry).expect("dictionary bytes");
-        let format = format_of(framing);
+    // Dictionaries. Raw: built here with the oracle so the dictionary is
+    // always exercised; zlib: the smallest manifest entry that needs one.
+    let dict = b"the quick brown fox jumps over the lazy dog, again and again";
+    let raw_data: Vec<u8> = dict.iter().cycle().take(4000).copied().collect();
+    let raw_params = DeflateParams {
+        level: 6,
+        strategy: Strategy::Default,
+        window_bits: 15,
+        mem_level: 8,
+        framing: Framing::Raw,
+    };
+    let raw_bytes = deflate_bytes(&raw_data, &raw_params, Some(dict))
+        .expect("oracle raw deflate with dictionary");
+    let raw_options = Options {
+        dictionary: Some(dict.to_vec()),
+        ..Options::default()
+    };
+    let zlib_entry = all
+        .iter()
+        .filter(|e| e.framing == "zlib" && e.dictionary.is_some())
+        .min_by_key(|e| e.input_len)
+        .unwrap_or_else(|| {
+            panic!("no zlib entry with a dictionary in the tier -- run `make corpus`")
+        });
+    let cases: Vec<(&str, Format, Vec<u8>, Options)> = vec![
+        ("raw", Format::Raw, raw_bytes, raw_options),
+        (
+            "zlib",
+            Format::Zlib,
+            generated_bytes(zlib_entry).expect("dictionary entry bytes"),
+            options_for(zlib_entry).expect("dictionary bytes"),
+        ),
+    ];
+    for (framing, format, bytes, options) in &cases {
         for scenario in 0..SCENARIOS {
             for path in [DecodePath::Fast, DecodePath::Reference] {
                 if let Err(e) = compare_reset(
-                    format,
-                    &options,
+                    *format,
+                    options,
                     path,
-                    &bytes,
-                    &bytes,
+                    bytes,
+                    bytes,
                     scenario,
                     (&[777], &[333]),
                 ) {
@@ -306,6 +330,7 @@ proptest! {
         in_sched in chunk_schedule_strategy(),
         out_sched in chunk_schedule_strategy(),
         scenario in 0usize..SCENARIOS,
+        prefix_calls in 0usize..=6,
         flip in proptest::option::of((0.0f64..1.0, 1u8..=255)),
     ) {
         let params = DeflateParams { level, strategy, window_bits, mem_level, framing };
@@ -322,6 +347,28 @@ proptest! {
         }
         let format = to_cleanflate_format(framing);
         for path in [DecodePath::Fast, DecodePath::Reference] {
+            // Drive `prefix_calls` calls with this case's own schedules, then
+            // reset and compare against a fresh decompressor.
+            let mut d = decompressor_with_path(format, Options::default(), path);
+            let mut pos = 0usize;
+            for call in 0..prefix_calls {
+                let in_n = in_sched.get(call % in_sched.len().max(1)).copied().unwrap_or(1);
+                let out_n = out_sched.get(call % out_sched.len().max(1)).copied().unwrap_or(1).max(1);
+                let end = pos.saturating_add(in_n).min(a.len());
+                let mut out = vec![0u8; out_n];
+                if let Ok(p) = d.decompress(a.get(pos..end).unwrap_or(&[]), &mut out) {
+                    pos += p.consumed;
+                }
+            }
+            d.reset();
+            let fresh = trace(format, &Options::default(), path, &b, &in_sched, &out_sched);
+            let after = trace_with(&mut d, &b, &in_sched, &out_sched);
+            if fresh.stalled || after.stalled {
+                return Err(TestCaseError::fail("prefix trace stalled"));
+            }
+            if let Some(e) = describe_diff(&fresh, &after) {
+                return Err(TestCaseError::fail(format!("prefix_calls {prefix_calls} {path:?}: {e}")));
+            }
             if let Err(e) = compare_reset(
                 format, &Options::default(), path, &a, &b, scenario, (&in_sched, &out_sched),
             ) {
