@@ -14,7 +14,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P0-09 bench-compare, bench-noise, bench-md and `bench --stats`
 - [x] P0-10 Cleanflate-only profiling entry point and `make profile`
 - [x] P0-11 Baseline and noise measurement
-- [ ] P0-12 Hypotheses H1–H6 and baseline profile
+- [~] P0-12 Hypotheses H1–H6 and baseline profile
 - [ ] P0-13 M0 acceptance and push
 - [ ] P1-01 Bulk bit refill with an exact give-back invariant
 - [ ] P1-02 Two-level lookup tables for every symbol

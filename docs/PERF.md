@@ -373,3 +373,107 @@ Targets from SPEC section 4.1 (Silesia aggregate, level 6) against the baseline 
 | stretch, raw one-shot | >= 90% | 22.5% | 67.5 points |
 
 No per-file regression against these baseline files, beyond the measured noise, is allowed at the end of phase 2.
+
+### Baseline profile (P0-12)
+
+Cleanflate-only profiles from `make profile` (`perf record --call-graph dwarf -F 499`, Silesia level 6, 3 iterations, debug info on, 12 files, 202 MiB per pass). Self time by symbol, entries above the 0.5% report limit (fewer than 15 symbols exceed it; inlined callees are folded into their callers, see the inclusive table further down). The first iteration includes the example's own length and CRC-32 check, which is the `checksum::crc32` row of the raw and zlib profiles.
+
+**raw (rfc1951), one-shot** (profiled run: 60.4 MiB/s under `perf`):
+
+| self % | symbol |
+|---:|---|
+| 41.16 | `cleanflate::huffman::Huffman::decode_table` |
+| 35.88 | `cleanflate::inflate::Inflater::step` |
+| 6.25 | `cleanflate::inflate::Inflater::peek_symbol` |
+| 5.39 | (addresses with no symbol name, summed) |
+| 4.91 | `cleanflate::checksum::crc32` |
+
+**zlib (rfc1950), one-shot** (profiled run: 56.0 MiB/s under `perf`):
+
+| self % | symbol |
+|---:|---|
+| 40.15 | `cleanflate::huffman::Huffman::decode_table` |
+| 34.99 | `cleanflate::inflate::Inflater::step` |
+| 6.96 | `cleanflate::inflate::Inflater::peek_symbol` |
+| 4.86 | (addresses with no symbol name, summed) |
+| 4.80 | `cleanflate::checksum::crc32` |
+| 2.04 | `cleanflate::zlib::ZlibDecoder::step` |
+
+**gzip (rfc1952), one-shot** (profiled run: 50.8 MiB/s under `perf`):
+
+| self % | symbol |
+|---:|---|
+| 35.52 | `cleanflate::huffman::Huffman::decode_table` |
+| 31.25 | `cleanflate::inflate::Inflater::step` |
+| 12.65 | `cleanflate::gzip::GzipDecoder::step` |
+| 5.70 | `cleanflate::inflate::Inflater::peek_symbol` |
+| 4.18 | `cleanflate::checksum::crc32` |
+| 4.14 | (addresses with no symbol name, summed) |
+| 0.57 | `cleanflate::huffman::Huffman::from_lengths` |
+
+**raw (rfc1951), streaming 64 KiB** (profiled run: 60.0 MiB/s under `perf`):
+
+| self % | symbol |
+|---:|---|
+| 41.45 | `cleanflate::huffman::Huffman::decode_table` |
+| 35.19 | `cleanflate::inflate::Inflater::step` |
+| 7.42 | `cleanflate::inflate::Inflater::peek_symbol` |
+| 4.86 | `cleanflate::checksum::crc32` |
+| 4.61 | (addresses with no symbol name, summed) |
+
+Inclusive share (children included, inlined frames named) for the raw one-shot profile:
+
+| inclusive % | self % | frame |
+|---:|---:|---|
+| 47.41 | 0.00 | `peek_symbol (inlined)` |
+| 41.16 | 41.16 | `cleanflate::huffman::Huffman::decode_table` |
+| 39.50 | 0.00 | `decode_table_method (inlined)` |
+| 35.88 | 35.88 | `cleanflate::inflate::Inflater::step` |
+| 32.06 | 0.00 | `decode (inlined)` |
+| 13.83 | 0.00 | `copy_match_path (inlined)` |
+| 12.95 | 0.00 | `copy_match_bulk (inlined)` |
+| 7.53 | 0.00 | `clone (inlined)` |
+| 6.82 | 0.00 | `copy_from_slice<u8> (inlined)` |
+| 6.25 | 6.25 | `cleanflate::inflate::Inflater::peek_symbol` |
+| 4.91 | 4.91 | `cleanflate::checksum::crc32` |
+| 3.23 | 0.00 | `fill (inlined)` |
+| 2.74 | 0.00 | `peek (inlined)` |
+| 2.26 | 0.00 | `take (inlined)` |
+| 1.81 | 0.00 | `consume (inlined)` |
+
+The rows overlap (an inlined frame is also part of its caller), so they do not add up to 100%. `decode (inlined)` is the bit-serial Huffman walk (32.1% inclusive); about 4% of samples sit in the `any` over the code-length counts that the uniform invalid-code rule of P0-04 added to that walk.
+
+### Hypotheses (P0-12)
+
+Counters come from `make bench-stats` (`docs/perf/P0-12-stats.json`, Silesia level 6, identical across framings because the deflate data is the same); shares from the profiles above. Threshold reminder for gated tasks: max(2%, 2x noise) of samples, with measured aggregate noise of 6.1%.
+
+| hyp | metric | measured | verdict | est. share of decode time | drives |
+|---|---|---|---|---|---|
+| H1 table mostly bypassed | serial / (table + serial) decodes | litlen 46.0%, dist 48.3%; bytes per refill 1.08; `Huffman::decode` inclusive 32.1% | CONFIRMED (about half of all symbols take the serial walk) | ~32% in the serial walk, ~41% in `decode_table` in total | P1-01, P1-02, P2-01 |
+| H2 per-symbol dispatch | `state_dispatches / output_bytes` | 0.644 dispatches per output byte (136405477 total); `Inflater::step` self 35.9%; `clone (inlined)` 7.5% inclusive (the only per-iteration clone is `self.state.clone()`; Silesia l6 has 0 fixed blocks, so no table clones) | CONFIRMED | ~36% self in `step`, ~7.5% of it State clone/drop | P2-01, P2-03 |
+| H3 output written twice | `window_bytes_written / output_bytes` | 1.000; `copy_match_path` 13.8% inclusive, of which `copy_from_slice` 6.8% | CONFIRMED (every output byte is also written into the ring) | ~7-14% | P3-01 |
+| H4 overlapping matches | overlap matches / matches | 0.48% of 17970872 matches; no byte-wise copy frame above the 0.5% report limit | DISCARDED | <1% | P3-02 (expect a small result) |
+| H5 table build cost | `table_builds`, `fixed_table_clones` per block | 8424 builds over 2817 blocks = 2.99 per block; 0 fixed clones; `Huffman::from_lengths` self 0.5-0.6% | DISCARDED for Silesia l6 (about 75 KiB of output per block amortises it) | ~0.6% | P1-03 |
+| H6 wrapper costs | gzip and zlib vs raw one-shot aggregate (baseline.json, Silesia l6); checksum share; `oneshot_resizes` | raw 62.3, zlib 61.3, gzip 51.8 MiB/s (gzip -16.9% vs raw, zlib -1.6%); CRC-32 is inlined in `GzipDecoder::step` at 12.65% self; Adler-32 about 2.0% (`ZlibDecoder::step`); one-shot resizes 9-12 per file (raw) and 513928468 bytes allocated for gzip against 301989888 for raw (212 MB of output) | PARTIAL: CRC-32 CONFIRMED (~12.7% for gzip), Adler-32 small (~2%), and gzip one-shot zero-fills an extra output-sized buffer on its last loop | gzip ~13% CRC + zero-fill; zlib ~2% | P4-01, P4-02, P3-03 |
+
+### Cost ranking (P0-12)
+
+Ordered by measured share of decode time (Silesia level 6, raw one-shot unless noted):
+
+1. **H1, serial Huffman decode: about 32% inclusive** (`decode_table` as a whole 41%). Half of the symbols bypass the table because the bit buffer holds fewer than 10 bits (1.08 bytes per refill). Driven by P1-01 (bulk refill) and P1-02 (two-level tables).
+2. **H2, state-machine dispatch: `Inflater::step` self time 36%**, with State clone/drop about 7.5% of samples. Addressed structurally by the P2-01 fast loop; P2-03 removes the clone in whatever slow path remains.
+3. **H3, second write of every byte into the ring: about 7-14%** (`copy_match_path` 13.8% inclusive). Driven by P3-01.
+4. **H6, CRC-32 on gzip: about 12.7%** (gzip only), plus the extra zero-filled buffer on the last one-shot growth step (P3-03). Driven by P4-01.
+5. **H6, Adler-32 on zlib: about 2%.**
+6. **H5, table building: about 0.6%.**
+7. **H4, overlapping matches: below 1%** (0.48% of matches).
+
+Gated tasks and the likely outcome, against the gate max(2%, 2x noise) = max(2%, ~12%):
+
+- **P1-03 (table reuse): likely a negative result.** Table building is 0.6% and there are no fixed blocks at level 6; it would only matter for many-tiny-block inputs. Re-check with the gate procedure before closing it.
+- **P4-02 (Adler-32): likely a negative result.** About 2% is at or below the gate, and below 2x the measured noise.
+- **P2-03 (State Copy): decide after the fast loop.** State clone/drop is 7.5% today, below 2x noise (~12%) even before P2-01 shrinks the slow path, so a negative result is likely unless the slow path grows.
+- **P1-04 (length/distance payload in table entries): undecided.** Needs `perf annotate` of `Inflater::step` (LenExtra/DistExtra handling is folded into `step`'s 36% self time); do not assume.
+
+The noise (6.1% aggregate) is large next to most of these shares: only H1, H2 and possibly H3/H6-CRC can clear twice the noise on their own.
+
