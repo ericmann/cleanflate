@@ -1,86 +1,80 @@
 # REVIEW: phase 2 (performance) build branch `build/2026-09-29-2`
-Round: 1
+Round: 2
 
-Base `13112c175a17` (feature/perf) .. head `467c29d` (plus two review-stage `chore: pipeline friction` commits). 33 tasks done, 0 blocked, 0 skipped.
+Base `13112c175a17` (feature/perf) .. head `6686b1a`. 35 tasks done (P0-01..P5-03, R1-01, R1-02), 0 blocked, 0 skipped.
 
 ## Verdict
 
-**CHANGES REQUESTED** (two fix tasks: R1-01 for F1, R1-02 for F2)
+**CHANGES REQUESTED** (one fix task, for F1)
 
-The branch is in good shape. Every mechanical constraint passes, every acceptance test the plan names exists and passes, and I found no correctness bug in the decoder. The fast-vs-reference differential, the chunking proptests at 3000 cases, conformance, malformed and regressions are all green. Mutation sampling found one mechanic with no test at all: the pending-literal give-back at the shared `step` exit (D-27 (b)). It is category 3, which blocks approval.
+Both round-1 fixes land as specified and kill the mutants they target. Every mechanical constraint passes, and every verify command is green. I widened mutation sampling to the decode-path plumbing that round 1 did not sample, and found a category-3 gap there. The `DecodePath` a caller asks for is not tested to reach the zlib inflaters or the raw-with-dictionary inflater. If that plumbing regresses, the SPEC 5 differential quietly compares Fast against Fast for every zlib-framed and dictionary stream, and nothing fails.
 
 ## What I checked
 
-- `foundry_verify` (all files, then again with `tools/`, `docs/DESIGN.md`, `fuzz/` and `crates/cleanflate/src/` files so every extraVerify ran). All 15 constraints were ok, with no fixture failures and no hits. Every command passed: `make fmt-check`, `lint` (including the stats, test-hooks and default-lib clippy lines), `corpus`, `test` (207 cleanflate unit tests plus the oracle suites), `crate-checks`, `cleanroom-selftest`, `tools-check`, `design-check`, `fuzz-check` and `proptest-3k`.
-- C12: every commit body on the branch carries `[stage:implement] [task:<id>]` (`git log --format=%B`).
-- C13: `fastslow.rs`, `regressions.rs` and `common/mod.rs` panic on a missing manifest, a missing file or zero rows. They never skip.
-- C15: I read the new arithmetic in `bitreader.rs`, `fast_loop.rs`, `window.rs`, `stream.rs` and `checksum.rs`. It is checked or saturating wherever input controls the value. Everywhere else the bounds are proven locally: count ≤ 63, margins ≥ 16/258, `remaining > 0` guards.
-- C18: the oracle enables `test-hooks` only in `[dev-dependencies]`, and neither feature is a default. C9, C11 and C17 are clean.
-- Boundaries: the `.gitignore` edit (`/testdata/perf-inputs/`, P0-01) and the `fuzz-nightly.yml` matrix entry (P2-02) were both called for. No other ignore, CI or editor config changed. The new tunables live only in `config.rs`, and each one cites its sweep JSON.
-- Every plan-named acceptance test exists: I grepped all 79 names across P0-02..P5-01.
-- DESIGN D-26..D-32 all pass `design-check`, carry the SPEC 2.1 phrase and use the project's own wording. I found no reference-implementation names.
+- `foundry_verify`, with the round-2 touched files so every extraVerify ran. All 15 constraints were ok, with no fixture failures and no hits. `make fmt-check`, `lint` (all five clippy lines), `corpus`, `test` (209 cleanflate unit tests plus the oracle suites), `crate-checks`, `cleanroom-selftest` and `proptest-3k` all pass.
+- C12: every commit in `13112c175a17..HEAD` carries `[stage:<..>] [task:<..>]`. The round-1 fix commits carry `[stage:fix] [task:R1-0N]`.
+- Boundaries: round 1 touched only the files its two tasks named, plus pipeline bookkeeping. No ignore, CI or editor config changed.
+- R1-01 (`0b0ab82`):
+  - Library changes are limited to the two permitted `debug_assert!`s, which are allowed by C4, and the two doc fixes.
+  - `pending_literal_bits_kept_at_output_full` checks cumulative `consumed` against the test's own bit accounting, `ceil((3 + 9w + 9) / 8)`, on both paths at output chunks 1 and 3.
+  - `reference_path_never_gives_back` covers the literal, fixed and dynamic streams at chunks 1 and 3.
+- R1-02 (`773445d`):
+  - The hand-built block has a complete literal/length table (`a` = 1 bit, 256 and 257 = 2 bits) and one distance code of length 1.
+  - The 48 pad bytes satisfy the fast-loop input margin. The mutant's failure message ("in 4611686018427387903 out 4096") shows the fast loop reached the bad code.
+- C13, C15 and the rest of the branch: re-confirmed from round 1. Nothing outside the files above changed since then.
 
-### Mutation sampling (`foundry_mutate`)
+### Mutation sampling (`foundry_mutate`, this round)
 
 | file | mutation | commands | result |
 |---|---|---|---|
-| `fast_loop.rs` | per-iteration refill threshold `< ITERATION_BITS` -> `< 8` | make test | killed (6 tests) |
-| `fast_loop.rs` | distance-lookup `Invalid` -> `Error::BadBlockType` | make test | **survived** |
-| `fast_loop.rs` | same | make proptest-3k | killed, but only by `chunking_invariance_on_corrupted_streams` after 524 random successes |
-| `window.rs` | slice copy chunk `left.min(dist)` -> `left` (overlap) | make test | killed (25 tests) |
-| `huffman.rs` | table symbol trusted when `len <= avail + 1` | make test | killed (11 tests) |
-| `inflate.rs` | exit `give_back(keep_bits)` -> `give_back(keep_bits + 8)` | make test | killed (20 tests) |
-| `inflate.rs` | pending literal `keep_bits = len` -> `len.min(7)` | make test | **survived** |
-| `inflate.rs` | same | make proptest-3k | **survived** |
-| `stream.rs` | drop the `ONESHOT_MAX_PREALLOC` cap in `initial_len` | make test | killed |
-| `checksum.rs` | slice tables not reversed in `crc32_fold_chunk` | make test | killed (6 tests) |
-| `bitreader.rs` | `give_back` no longer masks the returned bytes | make test | killed (oracle chunking proptest) |
+| `inflate.rs:683` | `self.keep_bits = len` -> `len.min(7)` (R1-01 target) | make test | killed (3 tests, including the new one and the new `debug_assert!`) |
+| `fast_loop.rs:137` | distance `Invalid` -> `Error::BadBlockType` (R1-02 target) | make test | killed (`fast_loop_errors_identical_to_reference`) |
+| `gzip.rs:457` | first-member inflater built with `DecodePath::Fast` | make test | killed (`gzip_second_member_uses_same_path`) |
+| `gzip.rs:541` | next-member inflater built with `DecodePath::Fast` | make test | killed |
+| `stream.rs:381` | gzip ISIZE hint disabled | make test | killed (4 `oneshot_sizing` tests) |
+| `stream.rs:173` | raw inflater (no dictionary) built with `DecodePath::Fast` | make test | killed (`stats::reference_path_never_gives_back`) |
+| `stream.rs:172` | raw-with-dictionary inflater built with `DecodePath::Fast` | make test | **survived** |
+| `zlib.rs:47` | `ZlibDecoder::new` inflater built with `DecodePath::Fast` | make test, make lint | **survived** |
+| `zlib.rs:150` | FDICT dictionary inflater built with `DecodePath::Fast` | make test | **survived** |
+| `zlib.rs:150` | same | make lint | killed, but only by the `dead_code` lint on the then-unread `path` field, not by any test |
 
-I could not complete a `dsym >= 30` -> `dsym >= 31` mutation in `fast_loop.rs`. The tool connection closed twice, most likely because the mutant turns distance code 30 into an endless `OutputFull`/grow loop to the 1 GiB limit in one-shot tests. `fast_loop_errors_identical_to_reference` does cover that code by construction.
+Round 1 sampled `fast_loop.rs`, `window.rs`, `huffman.rs`, `inflate.rs`, `stream.rs`, `checksum.rs` and `bitreader.rs` (see its table in git history, `88bbb49`).
 
 ## Findings
 
-### F1 (category 3, tests): the pending-literal give-back at the `step` exit is untested, and the differential cannot see it
-- **Where:** `crates/cleanflate/src/inflate.rs:675` (`self.keep_bits = len;`) and the shared exit at `crates/cleanflate/src/inflate.rs:277-281` (`let k = self.br.give_back(self.keep_bits);`).
-- **What is wrong:** D-27 (b) is the invariant HANDOFF calls "the correctness core". It says an `OutputFull` exit keeps exactly the bits of the decoded-but-unconsumed literal. Mutating `keep_bits = len` to `len.min(7)` survives both `make test` and `make proptest-3k`. The mutant makes both paths hand back a byte that holds the tail of a pending 8- or 9-bit literal.
-  - It goes unseen because the shared exit helper runs on the Reference path too. HANDOFF says it "returns 0 on Reference", but nothing asserts that. A bug in the helper therefore moves Fast and Reference together, and the fast-vs-reference traces stay equal.
-  - `give_back_keeps_pending_bits` only tests `BitReader::give_back` in isolation, not the `keep_bits` the inflater passes to it.
-  - PT3 and C20 require Reference to keep the simple exact-fill behaviour, so that it stays an independent oracle for per-call `consumed`.
-- **What would break:** per-call `consumed` at `OutputFull` silently drifts away from exact-fill accounting (the SPEC 3 streaming contract, "exact consumed accounting", and PLAN's "identical consumed per call"), and no gate notices. A later change to the exit helper, the fast loop's exit or the literal path could also break the D-27 invariant on both paths at once and still pass every differential.
+### F1 (category 3, tests): the decode path is not tested to reach the zlib or raw-with-dictionary inflaters
+- **Where:**
+  - `crates/cleanflate/src/zlib.rs:47`: `inflater: Inflater::new_with_path(path)`.
+  - `crates/cleanflate/src/zlib.rs:150`: `Inflater::with_dictionary(dict, self.path)`.
+  - `crates/cleanflate/src/stream.rs:172`: `Backend::Raw(Inflater::with_dictionary(dict, path))`.
+- **What is wrong:** P0-04 requires that "`ZlibDecoder` and `GzipDecoder` take a path and pass it to every `Inflater` they create", and that the dictionary constructor take a path. The code does this today. Only gzip has a test for it, though (`gzip_second_member_uses_same_path`). Hard-coding `DecodePath::Fast` at any of the three sites above survives `make test`, including the oracle `fastslow` differential. It survives because both sides of that differential then run Fast and agree trivially. The `zlib.rs:150` mutant is caught only because it leaves the `path` field unread, which trips `-D dead_code` in `make lint`. That is incidental, and a refactor that reads `path` anywhere else would remove it.
+- **What would break:** SPEC 5 requires the differential to decode "the entire conformance corpus ... both ways". A regression at `zlib.rs:47` would make every rfc1950 conformance, malformed, proptest and `diff_fast_reference` fuzz case compare Fast against Fast. That is roughly a third of the differential, and it would pass silently. A regression at the two dictionary sites would do the same for every preset-dictionary stream. A later fast-path bug that shows up only under zlib framing or with a dictionary would then pass every gate.
 - **Minimal fix:**
-  1. Add a test that the Reference path never gives bytes back. Under `#[cfg(feature = "stats")]`, check that `Stats::given_back_bytes == 0` on `DecodePath::Reference`. Run it over the hand-built fixed and dynamic streams at output chunks 1 and 3, including fixed-block literals 144..=255 (9-bit codes).
-  2. Add a test that pins per-call `consumed` at `OutputFull` to an independent bit-position model. Use a fixed block of 9-bit literals with 1-byte output on both paths. After every call, the cumulative `consumed` must equal ceil((bits consumed so far + the pending literal's 9 bits) / 8), computed from the test's own bit accounting, not from cleanflate.
-  3. Optionally, add `debug_assert!(self.path == DecodePath::Fast || k == 0)` at the exit, so every Reference-path test enforces it.
-- **Task:** P1-01 (introduced the exit helper and `keep_bits`).
-
-### F2 (category 3, tests): a fast-loop distance `Invalid` is only caught by chance
-- **Where:** `crates/cleanflate/src/fast_loop.rs:137` (`Decoded::Invalid => return FastExit::Error(Error::InvalidSymbol)` for the distance lookup).
-- **What is wrong:** the only way a distance lookup reaches `Invalid` in the fast loop is the unused code of an RFC 1951 S3.2.7 one-code distance table. Changing that error value survives `make test`, which is where SPEC 5 says the differential runs. It is killed under `make proptest-3k` only by a random corrupted stream, after 524 successes. `fast_loop_errors_identical_to_reference` covers too-far distances, distance code 30 and literal/length 286/287, but not this case. The existing malformed fixture `dynamic_single_dist_code` is too short (46 bytes) to enter the loop, which needs a 16-byte input margin.
-- **What would break:** a fast-loop error that differs from the Reference path (SPEC 5 "identical ... errors") could pass the quick tier.
-- **Minimal fix:** add a hand-built case to `fast_loop_errors_identical_to_reference`: a dynamic block with a single distance code of length 1, whose unused code (bit 1) appears after at least `FAST_LOOP_MIN_INPUT` bytes of other symbols. Assert the same `Error` at the same call index on both paths.
-- **Task:** P2-01.
+  1. Add a `pub(crate) fn inflater_path(&self) -> DecodePath` accessor to `ZlibDecoder`, mirroring `GzipDecoder::inflater_path`, with the same `#[cfg_attr(not(test), allow(dead_code))]`.
+  2. Add a `pub(crate)` accessor on `Decompressor` that returns the current backend inflater's path, using the same `cfg_attr`.
+  3. Add tests in `crates/cleanflate/src/tests/decode_path.rs` asserting `DecodePath::Reference` for:
+     - a zlib decoder built with Reference, both before and after it parses a plain header;
+     - a zlib FDICT stream decoded with the matching dictionary, after the DICTID is accepted;
+     - `Decompressor::new_with_path(Format::Raw, options_with_dictionary, Reference)`;
+     - `Decompressor::new_with_path` for Raw, Zlib and Gzip without a dictionary.
+- **Task:** P0-04 (introduced the plumbing and its acceptance tests).
 
 ## Spec issues
 
-- **SPEC 6 M3, one-shot sizing cap.** "always capped by the output limit" plus PLAN's `ONESHOT_MAX_PREALLOC = 64 MiB` means an 18-byte hostile gzip input whose ISIZE is 0xFFFFFFFF makes `decompress_with` allocate and zero-fill 64 MiB before decoding a single byte. The cap was checked by mutation. The allocation is bounded and within SPEC and PLAN, so this is not a finding. It is, however, a large amplification. A human may want a smaller cap, or a hint that is trusted only up to some multiple of `input.len()`.
-- **SPEC 4.1 targets.** The primary 70% one-shot target is NOT MET (66.9% raw, 68.8% zlib, 68.8% gzip). The streaming 60% target is MET. The result is reported honestly with a shortfall analysis, as SPEC 4.1 and 9 allow, so it is not a finding.
+- **SPEC 6 M3, one-shot sizing cap:** carried over from round 1. SPEC says the allocation is "always capped by the output limit", and PLAN sets `ONESHOT_MAX_PREALLOC = 64 MiB`. Together they let an 18-byte hostile gzip input whose ISIZE is 0xFFFFFFFF make `decompress_with` allocate and zero-fill 64 MiB before decoding a single byte. This is bounded and within SPEC, so it is not a finding. A human may want a smaller cap, or to trust the hint only up to some multiple of `input.len()`.
+- **SPEC 4.1 targets:** the primary 70% one-shot target is NOT MET (66.9% raw, 68.8% zlib, 68.8% gzip). The streaming 60% target is MET. The shortfall is reported honestly with an analysis, as SPEC 4.1 and 9 allow.
 
 ## Manual checks still owed (from HANDOFF.md)
 
 - P0-11 / P0-13: aggregate noise is 6.1% (full) and 6.5% (quick), above 5% and 3%, and measured run-to-run drift is about 10%. Re-run the baseline on a quiet machine with a pinned governor (SPEC 8) and repeat the final `make bench`. The ratios depend on the recorded machine state (schedutil governor, load about 3).
 - Every phase-end task: confirm GitHub Actions `ci` is green on the pushed branch. It now lints and tests the `stats` and `test-hooks` features.
 - P0-13: sanity-check the P0-12 profile tables against `make flamegraph`. The provenance log's denied entries from this phase are benign (a recursive grep at the repository root, and a `sed` regex containing a forbidden word).
-- P1-05: review D-27 and D-28 for clean-room wording (SPEC 2.1). P3-04: review D-30 and D-31. P4-04: review the CRC derivation (D-32). P2-04: review the fast-loop code by hand and mutation-sample it (SPEC 5). This review sampled it; see the table above.
+- P1-05: review D-27 and D-28 for clean-room wording (SPEC 2.1). P3-04: review D-30 and D-31. P4-04: review the CRC derivation (D-32). P2-04: review the fast-loop code by hand and mutation-sample it (SPEC 5). Rounds 1 and 2 sampled it; see the tables.
 - P2-02 / P2-04 / P5-03: run `make fuzz-long` or the nightly workflow for all six targets, including `diff_fast_reference`, for the one-hour signal, and triage `make fuzz-divergences`. Only `make fuzz-smoke` was run.
 - P3-04: compare peak RSS of `make bomb` against a phase-1 checkout (`/usr/bin/time -v`).
 - P5-03: review the PERF.md result line and the negative results, and complete `provenance/human-interventions.md`. After review and merge into `feature/perf` (and on to `main`), tag `v0.2.0-cleanroom`. The implementer does not tag.
 
 ## Notes
 
-- Stale doc comments:
-  - `crates/cleanflate/src/bitreader.rs:11` still says the reader "Holds at most 7 bits between completed decode steps (see DESIGN.md D-07)". D-27 superseded that.
-  - `crates/cleanflate/src/huffman.rs:121` still describes `Decoded::Invalid` as "15 bits were available and none of them formed a valid code". D-26 superseded that.
-  - R1-01 may fix these doc comments opportunistically. They are not a finding.
-- P4-03 did not run the full-bench confirmation PLAN asks for after a quick WIN. It re-ran the default quick bench instead and kept every default. The outcome is conservative, and nothing changed.
-- The P3-01 commit is well over the ~400 non-test-line guideline, mostly because `step` was wrapped in a closure and reindented. It reads fine in `git show -w`.
-- The HANDOFF interpretation choices are each consistent with SPEC. P0-04's table delegation is superseded by D-28. P3-03's "grow only on `OutputFull`" keeps D-25's limit semantics: `limit_exact_ok` and `limit_plus_one_err` pass, and no wrapper emits `OutputFull` without a pending byte. P4-02's gate against 2x aggregate noise matches PT2's "aggregate noise".
+- The R1-02 case writes `FAST_LOOP_MIN_INPUT + 8` one-bit literals, which is 3 bytes. The plan asked for that many bytes of symbols. It also runs the file's existing (whole, 4096) / (64, 300) / (whole, 1) schedules rather than the 7/13 schedule the plan named. The 48 pad bytes still put the bad code inside the fast loop, and the mutant is killed on the whole-input call, so the task's goal is met.
+- The round-1 notes on the P3-01 commit size and the P4-03 full-bench confirmation still stand. Neither needs action.

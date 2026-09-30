@@ -38,6 +38,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P5-03 Provenance, build report and hand-off push
 - [x] R1-01 Pin the pending-literal give-back and keep the Reference path exact-fill
 - [x] R1-02 Fast-loop error equivalence for an incomplete distance table's unused code
+- [ ] R2-01 Pin the decode path through the zlib and raw-dictionary inflater constructors
 
 ## Log
 (one entry per task, appended by implement)
