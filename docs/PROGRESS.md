@@ -12,7 +12,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P0-07 `stats` feature counters
 - [x] P0-08 Bench harness: medians, framings, levels, modes, JSON
 - [x] P0-09 bench-compare, bench-noise, bench-md and `bench --stats`
-- [ ] P0-10 Cleanflate-only profiling entry point and `make profile`
+- [x] P0-10 Cleanflate-only profiling entry point and `make profile`
 - [ ] P0-11 Baseline and noise measurement
 - [ ] P0-12 Hypotheses H1–H6 and baseline profile
 - [ ] P0-13 M0 acceptance and push
@@ -66,3 +66,6 @@ bench.rs rewritten (parse_args, medians, reps_for, interleaved samples, aggregat
 
 ### P0-09 — 3e883a7
 bench_compare.rs (Noise, compare, verdicts, render_md, exit_code), bench.rs --stats flag + collect_stats/render_stats/finish_stats (cfg stats), BenchJson.stats array, main.rs bench-noise/bench-compare/bench-md, Makefile targets + lint line for oracle --features stats. Ran two bench-quick runs: single-pair noise up to 6.5% aggregate, xml/zlib per-file 31% -- machine is noisy. bench-stats Silesia l6 shows: litlen table-decode 54%, dist 51.7%, 0.644 dispatches/output byte, 1.08 bytes/refill, 2.99 table builds/block, match len mostly 3-8 (71%), dists spread widely (43% > 1K). Interpretation: no noise file => per-file regression check skipped. Outputs under target/bench not committed.
+
+### P0-10 — e3826e8
+perf_prep.rs (2 tests), examples/profile_decode.rs (cleanflate+std only; verifies len+CRC on iter 0; prints Stats with --features stats), Makefile profile-prep/profile/flamegraph + PROFILE_* vars, README profiling section. make profile PROFILE_ITERS=1 (silesia rfc1951 l6, 52.6 MiB/s) top: decode_table 30.2%+6.4%, Inflater::step 27.2%+5.0%, checksum::crc32 12.8% (example's first-iteration verify; dilutes with more iters), peek_symbol 6.7%+1.0%, Huffman::from_lengths 0.5%. flamegraph SVG written. Interpretation: -g none on perf report; flamegraph recipe moves stray perf.data into target/profile.
