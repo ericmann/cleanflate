@@ -549,3 +549,21 @@ Measured, after P1-01 and P1-02:
 | allocation frames under table building (`reserve`, `grow`) | 0.43% at most |
 
 Table costs together are about 1.7% of samples, below the 2% floor and far below twice the noise. **Negative result: no code was changed.** The two ideas (reference the fixed tables instead of cloning; rebuild dynamic tables in place) would only matter for inputs with very many tiny blocks, which neither corpus contains; the fixed-block clone is a copy of two small tables per fixed block and is not on any measured path. Revisit only if a workload of many small dynamic or fixed blocks is added to the benchmark.
+
+### P1-04 (gated, negative result)
+
+Gate (PT2): the cleanflate-only profile of `make profile PROFILE_FRAMING=rfc1951` (Silesia level 6, 3 iterations, after P1-01 and P1-02), read with `perf report --sort srcline` on `target/profile/perf.data` (the annotate view of `Inflater::step` attributed by source line), together with the dispatch counters. Threshold: max(2%, 2x aggregate noise), at least 3.7% for raw one-shot and about 12% for the worst aggregate.
+
+Share of samples by state arm of `Inflater::step` (source lines of `inflate.rs`):
+
+| region | share |
+|---|---:|
+| `LenExtra` arm (base and extra-bit lookup for lengths) | 0.63% |
+| `DistExtra` arm (base and extra-bit lookup for distances, distance check) | 0.73% |
+| `Dist` arm (decode of the distance symbol) | 1.11% |
+| `Copy` arm | 0.64% |
+| literal/length arm (`LitLen`) | 4.95% |
+| `match &self.state` (dispatch) | 16.5% |
+| `derive(Clone)` of `State` and `self.state.clone()` | 9.5% + 5.6% |
+
+The extra-bit reads themselves go through `BitReader::take`; the whole of `bitreader.rs` (fills, takes, peeks and consumes, including the bulk refill) is about 5.5% of samples, so even attributing all of it to length and distance extras would not be the target of this task. The base and extra-bit table handling that P1-04 would move into the table entries is 0.63% + 0.73% = 1.4% of samples: **below the 2% floor and far below twice the noise. Negative result: no code was changed.** The cost that matters is the dispatch and the per-iteration `State` clone (about 31% together), which the fast loop (P2-01) and the copyable state (P2-03) address; the fast loop will read the length and distance tables directly, so no payload-in-entry step is needed first.
