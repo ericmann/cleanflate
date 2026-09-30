@@ -936,3 +936,48 @@ Measurement: docs/perf/P3-03.json against docs/perf/P3-03-before.json:
 `make bench-stats` one-shot growth steps on Silesia 122 -> 15 (raw and
 zlib) and 134 -> 12 (gzip), gzip bytes allocated 513.9 MB -> 211.9 MB
 (equal to the output); Silesia level 6 gzip one-shot 108.1 -> 117.9 MiB/s.
+
+### D-32: [perf] CRC-32 several bytes per step
+
+RFC: RFC 1952 S8, S2.3.1
+Decision: `Crc32::update` folds `CRC32_SLICES` (8, a tunable, at least 4)
+bytes per step with that many 256-entry tables, built by `const fn` into a
+`static` from the reflected polynomial 0xEDB88320. Table 0 is the classic
+one-byte table. Table `k` maps a byte `b` to the register after `b`
+followed by `k` zero bytes, so table `k` follows from table `k-1` by one
+more zero-byte step (eight shifts). For each chunk of `N = CRC32_SLICES`
+bytes, the running register is XORed into the chunk's first four bytes and
+byte `i` is looked up in table `N-1-i`; the XOR of the `N` results is the
+new register. The tail (fewer than `N` bytes) uses the one-byte step, which
+stays as the test reference. The public `Crc32` and `crc32` are unchanged.
+Derivation. Let `Z(r)` be eight steps of "shift right one bit; if the bit
+shifted out was 1, XOR in the polynomial". Each step is linear over GF(2),
+so `Z` is too. Processing a byte `b` with register `R` gives `Z(R ^ b)`
+(the byte is XORed into the low eight bits, which the eight steps then
+consume), which equals `Z(R) ^ Z(b)`, and `Z(b)` is table 0. A zero byte
+is `Z` again. So, from register 0, `b` followed by `k` zero bytes is
+`Z^k(Z(b))`, which is the definition of table `k`, and table `k` is
+`Z(table k-1)`: the recurrence above. For a chunk `x_0 .. x_{N-1}` and
+register `R`, the register after the chunk is
+`Z^N(R) ^ XOR_i Z^(N-i)(x_i)`, and `Z^(N-i)(x_i)` is table `N-1-i` at
+`x_i`. It remains to express `Z^N(R)`. Write `R` as its four bytes `R_0` to
+`R_3`, byte `R_j` sitting at bits `8j..8j+7`. During the eight steps of one
+`Z`, only bits 0 to 7 can produce the XOR feedback, so the part of `R` above
+bit 7 just shifts down by eight bits: `Z(R_j << 8j)` is `R_j << 8(j-1)` for
+`j >= 1`. After `j` applications `R_j` therefore sits in the low byte, and
+the remaining `N-j` applications give `Z^(N-j)(R_j)`, which is table
+`N-1-j` at `R_j` (this needs `N >= 4`, hence the lower bound on the
+tunable). Because every table is linear, `T[a] ^ T[b] = T[a ^ b]`, so adding
+`R_j` into byte `j` of the chunk and doing one lookup per byte gives the
+same value. `tests/checksum.rs` checks the recurrence, the results against
+the one-byte reference for every length up to 64 at every offset and for
+random lengths, and `tests/checksums.rs` (oracle) checks long buffers
+updated in random pieces against C zlib.
+Rationale: The CRC-32 was the largest cost specific to gzip, about 13% of
+samples in the M0 profile, because it touched every output byte through a
+single dependent table lookup. Eight independent lookups per step remove
+most of that chain.
+Provenance: general technique; not derived from any specific implementation.
+Measurement: docs/perf/P4-01.json against docs/perf/P4-01-before.json:
+Silesia level 6 one-shot gzip 120.2 -> 154.3 MiB/s (+28.4%, WIN); the gzip
+overhead over raw fell from 36.3% to 4.6%.

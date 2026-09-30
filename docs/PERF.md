@@ -731,3 +731,27 @@ Streaming (`Decompressor`, 64 KiB input and 64 KiB output windows), target 60% o
 `make bench-compare` against `baseline.json`: no LOSS and no per-file REGRESSION. Against `P2-04.json` (M2): every Silesia level-6 aggregate is a WIN (+18% to +28%), no LOSS, and two per-file REGRESSION lines (silesia mr and ooffice zlib streaming, -3.7% and -3.9%), recorded as findings: the aggregates for the same keys are +18.0% WINs and per-file thresholds of 1.1% rest on a single noise pair. The remaining gap is dominated by CRC-32 for gzip (P4-01) and, for raw and zlib one-shot, by decode itself; the primary targets are re-assessed at M4.
 
 Bomb and memory: `make bomb` (run by `make heavy`) passes unchanged, 3 tests in 9.8 s. `decompressor_size_not_grown`: `size_of::<Decompressor>()` is 33,688 bytes, identical to the pre-P3-01 size (limit 33,688 + 1,024). One-shot allocation is bounded by the output limit and by `ONESHOT_MAX_PREALLOC` for hints (D-31); gzip one-shot now allocates exactly its output size (211.9 MB for the Silesia set, down from 513.9 MB).
+
+### P4-01
+
+CRC-32 several bytes per step (D-32). `make bench-quick` before (`docs/perf/P4-01-before.json`) and after (`docs/perf/P4-01.json`), back to back, compared with `docs/perf/noise-quick.json`:
+
+| key | before MiB/s | after MiB/s | delta % | 2x noise % | verdict |
+|---|---:|---:|---:|---:|---|
+| silesia/gzip/l6/oneshot | 120.2 | 154.3 | +28.4 | 1.4 | WIN |
+| silesia/gzip/l6/streaming | 119.2 | 153.0 | +28.3 | 2.2 | WIN |
+| canterbury/gzip/l6/oneshot | 152.5 | 206.7 | +35.6 | 6.0 | WIN |
+| canterbury/gzip/l6/streaming | 145.1 | 206.0 | +42.0 | 4.9 | WIN |
+| silesia/raw/l6/oneshot | 163.8 | 161.5 | -1.4 | 7.2 | NEUTRAL |
+| silesia/zlib/l6/oneshot | 151.4 | 148.8 | -1.7 | 13.0 | NEUTRAL |
+
+The zlib and raw aggregates, which do not compute a CRC-32, stay NEUTRAL, as they should. Overhead of gzip over raw (raw / gzip - 1, medians):
+
+| corpus, mode | before | after |
+|---|---:|---:|
+| silesia one-shot | 36.3% | 4.6% |
+| silesia streaming | 38.5% | 4.4% |
+| canterbury one-shot | 46.5% | 13.4% |
+| canterbury streaming | 51.8% | 11.0% |
+
+No per-file REGRESSION line was printed for a gzip key. Seven were printed for raw and zlib keys (for example silesia dickens zlib -18%), whose code path does not touch the CRC-32; they are run-to-run drift (this pair's noise file is from a single earlier pair) and confirm that per-file lines are prompts to re-measure, not verdicts. Result: **kept**, a WIN of about +28% on Silesia gzip, which closes almost all of the gap between gzip and raw framing.

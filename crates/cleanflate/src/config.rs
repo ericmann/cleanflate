@@ -70,3 +70,9 @@ pub(crate) const ONESHOT_INITIAL_RATIO: usize = 4;
 /// up-front allocation: memory stays proportional to the output actually
 /// produced beyond this fixed cap. Initial value; re-swept in P4-03.
 pub(crate) const ONESHOT_MAX_PREALLOC: usize = 64 << 20;
+
+/// Bytes the CRC-32 update consumes per step, and so the number of lookup
+/// tables it uses (SPEC S6 M4; DESIGN.md D-32 derives the tables). Must be
+/// at least 4: the running register is folded into the first four bytes of
+/// each chunk. Initial value; re-swept in P4-03.
+pub(crate) const CRC32_SLICES: usize = 8;
