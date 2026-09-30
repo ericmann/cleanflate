@@ -11,7 +11,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P0-06 Regression fixture store and repro tooling
 - [x] P0-07 `stats` feature counters
 - [x] P0-08 Bench harness: medians, framings, levels, modes, JSON
-- [ ] P0-09 bench-compare, bench-noise, bench-md and `bench --stats`
+- [x] P0-09 bench-compare, bench-noise, bench-md and `bench --stats`
 - [ ] P0-10 Cleanflate-only profiling entry point and `make profile`
 - [ ] P0-11 Baseline and noise measurement
 - [ ] P0-12 Hypotheses H1–H6 and baseline profile
@@ -63,3 +63,6 @@ stats.rs (stat! macro on/off + Stats + len_bucket/dist_bucket), counters in Infl
 
 ### P0-08 — b22aa52
 bench.rs rewritten (parse_args, medians, reps_for, interleaved samples, aggregates_of, render_markdown), bench_json.rs (schema 1, format_utc), main.rs run_bench writes JSON, Makefile bench/bench-quick with BENCH_ID/BENCH_OUT, docs/perf/README.md schema. make bench-quick took 62s; baseline median ratios 0.18-0.23 (silesia raw l6 oneshot 51 MiB/s vs C 275). JSON in target/bench/P0-08.json not committed. Interpretation: reps per implementation; no corpus fallback.
+
+### P0-09 — 3e883a7
+bench_compare.rs (Noise, compare, verdicts, render_md, exit_code), bench.rs --stats flag + collect_stats/render_stats/finish_stats (cfg stats), BenchJson.stats array, main.rs bench-noise/bench-compare/bench-md, Makefile targets + lint line for oracle --features stats. Ran two bench-quick runs: single-pair noise up to 6.5% aggregate, xml/zlib per-file 31% -- machine is noisy. bench-stats Silesia l6 shows: litlen table-decode 54%, dist 51.7%, 0.644 dispatches/output byte, 1.08 bytes/refill, 2.99 table builds/block, match len mostly 3-8 (71%), dists spread widely (43% > 1K). Interpretation: no noise file => per-file regression check skipped. Outputs under target/bench not committed.
