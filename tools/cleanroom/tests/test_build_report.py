@@ -125,5 +125,36 @@ class TestKnownLimitationsIncludePerfResult(BuildReportTestBase):
         self.assertIn("gap B", section)
 
 
+class TestSinceLimitsCommits(BuildReportTestBase):
+    def test_since_limits_commits(self):
+        self.commit("P0-01: old\n\n[stage:implement] [task:P0-01]\n\nDefects-caught: none")
+        self.commit("P0-02: old\n\n[stage:implement] [task:P0-02]\n\nDefects-caught: none")
+        base = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.root, check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        self.commit("P1-01: new\n\n[stage:implement] [task:P1-01]\n\nDefects-caught: none")
+        full = build_report.build_report(self.root)
+        scoped = build_report.build_report(self.root, since=base)
+        self.assertIn("| P0 | 2 | 2 |", full)
+        self.assertIn("| P1 | 1 | 1 |", full)
+        self.assertNotIn("| P0 |", scoped)
+        self.assertIn("| P1 | 1 | 1 |", scoped)
+        self.assertIn(f"Range: commits in `{base}..HEAD` (1 commit(s)).", scoped)
+
+
+class TestReadsLastResultLine(BuildReportTestBase):
+    def test_reads_last_result_line(self):
+        (self.root / "docs" / "PERF.md").write_text(
+            "phase one\n\n**Result:** phase one: 25% NOT MET\n\n"
+            "phase two text\n\n**Result:** phase two: 66% NOT MET,\n"
+            "second physical line\n\ntrailer\n"
+        )
+        line = build_report.read_perf_result_line(self.root)
+        self.assertEqual(
+            line, "**Result:** phase two: 66% NOT MET, second physical line"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -129,11 +129,14 @@ sources-check:
 provenance-snapshot:
 	bash tools/cleanroom/snapshot-log.sh
 
+# The last phase-1 commit: phase-2 summaries and reports cover PHASE_BASE..HEAD.
+PHASE_BASE ?= 599ca51
+
 provenance-summary:
-	python3 tools/cleanroom/summarize.py
+	python3 tools/cleanroom/summarize.py --since-commit $(PHASE_BASE)
 
 build-report:
-	python3 tools/cleanroom/build_report.py
+	python3 tools/cleanroom/build_report.py --since $(PHASE_BASE)
 
 hooks-install:
 	git config core.hooksPath tools/git-hooks

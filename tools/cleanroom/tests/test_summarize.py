@@ -244,5 +244,44 @@ class TestIncludesHumanInterventions(SummarizeTestBase):
         self.assertIn("gap two", gaps_section)
 
 
+class TestSinceCommit(SummarizeTestBase):
+    def _git(self, *args, env=None):
+        import subprocess
+
+        full_env = dict(os.environ)
+        full_env.update(env or {})
+        subprocess.run(
+            ["git", *args], cwd=self.root, check=True, capture_output=True,
+            text=True, env=full_env,
+        )
+
+    def test_since_commit_filters_entries(self):
+        self._git("init", "-q")
+        self._git("config", "user.email", "test@example.com")
+        self._git("config", "user.name", "Test")
+        (self.root / "marker.txt").write_text("x")
+        self._git("add", "marker.txt")
+        # Committed between the 12 implement entries (00:00:00 to 00:00:32)
+        # and the 2 review entries (01:00:00, 01:00:05) of the fixture.
+        stamp = "2026-01-01T00:30:00+00:00"
+        self._git(
+            "commit", "-q", "-m", "phase boundary",
+            env={"GIT_COMMITTER_DATE": stamp, "GIT_AUTHOR_DATE": stamp},
+        )
+        text = summarize.build_summary(self.log_path, self.root, since_commit="HEAD")
+        self.assertIn("| **total** | **2** |", text)
+        self.assertIn("| review | 2 |", text)
+        self.assertNotIn("| implement |", text)
+        self.assertIn("Range: entries at or after commit `HEAD`", text)
+        self.assertIn("2 of 14 parsed line(s)", text)
+        # Unparseable lines are still counted, never dropped.
+        self.assertIn("1 line(s) failed to parse", text)
+
+    def test_since_commit_unknown_rev_is_an_error(self):
+        self._git("init", "-q")
+        with self.assertRaises(ValueError):
+            summarize.build_summary(self.log_path, self.root, since_commit="nonexistent")
+
+
 if __name__ == "__main__":
     unittest.main()
