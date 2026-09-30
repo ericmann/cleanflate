@@ -620,3 +620,33 @@ Gate (PT2): `make profile PROFILE_FRAMING=rfc1951` (Silesia level 6, 3 iteration
 | decode rate under `perf` | 60 MiB/s | 138 MiB/s |
 
 The slow path's `Inflater::step` self time plus the State clone frame is about 0.6% of samples, far below the 2% floor: the fast loop already took the per-symbol state handling out of the hot path, and the state machine now only runs at block boundaries, near buffer edges and for stored blocks. **Negative result: no code was changed.** Making `State` `Copy` and moving the sticky error into its own field would touch every error path for a saving that cannot be measured. Revisit only if a workload dominated by tiny blocks or by very small output buffers (where the loop's margins never hold) is added; the streaming target with 64 KiB windows keeps the loop active.
+
+### M2 acceptance (P2-04)
+
+Commands run on the M2 head: `make ci` (green, 1m30s), `make heavy` (proptest-10k for chunking and fastslow, bomb, conformance-full, fastslow-full: all green, including the full-tier fast-vs-reference differential over the whole corpus), `make fuzz-smoke` (all six targets, 60 s each, zero crashes: `diff_fast_reference` 96,588 runs, and 186,792 / 150,029 / 165,061 / 51,359 / 142,290 runs for the five phase-1 targets in Makefile order), `make bench BENCH_ID=P2-04 BENCH_OUT=docs/perf/P2-04.json` (7.8 min), and `make bench-stats` (not committed). `docs/perf/P2-04.json` is committed.
+
+Aggregate gains, Silesia level 6, median MiB/s (C zlib is the same-run one-shot median):
+
+| key | baseline | M1 (P1-05) | M2 | gain vs baseline | C zlib (M2 run) | cleanflate / C zlib |
+|---|---:|---:|---:|---:|---:|---:|
+| silesia/raw/l6/oneshot | 62.3 | 98.9 | 153.8 | +147.0% | 274.9 | 56.0% |
+| silesia/raw/l6/streaming | 65.0 | 107.8 | 176.8 | +172.1% | 274.9 | 64.3% |
+| silesia/zlib/l6/oneshot | 61.3 | 94.5 | 147.9 | +141.4% | 251.6 | 58.8% |
+| silesia/zlib/l6/streaming | 63.7 | 102.4 | 166.8 | +161.8% | 251.6 | 66.3% |
+| silesia/gzip/l6/oneshot | 51.8 | 75.3 | 105.8 | +104.2% | 255.9 | 41.3% |
+| silesia/gzip/l6/streaming | 55.7 | 82.0 | 124.9 | +124.2% | 255.9 | 48.8% |
+
+`make bench-compare` against `baseline.json` and against `P1-05.json` reports no per-file REGRESSION and no LOSS. Against the SPEC targets (recorded, not blocking): streaming for raw and zlib is above the 60% target already (64.3% and 66.3%; gzip streaming 48.8%); one-shot raw and zlib are at 56.0% and 58.8% (target 70%), gzip one-shot 41.3%, held back by its CRC-32 (P4-01) and by the one-shot output buffer (M3). These are NOT YET MET for the one-shot primary target; the M4 acceptance repeats the comparison.
+
+Fast-loop coverage (`make bench-stats`, Silesia level 6 raw): `fast_loop_symbols` = 45,894,668 of 45,902,136 symbols (literals, matches and end-of-block symbols), 99.98%; `fast_loop_entries` = 2,918; dispatches per output byte 0.0032 (baseline 0.644).
+
+Repro audit: every fixture in `testdata/regressions/` was added in phase 2 and passes on both decode paths (`crates/oracle/tests/regressions.rs`, run by `make test` and `make heavy`):
+
+| fixture | origin |
+|---|---|
+| `rfc1951/fixed-heavy-match-11k.bin` | seed: shape of the lost phase-1 P4-08 repro (Fixed, ~11 KiB, match-heavy), not its bytes |
+| `rfc1950/fixed-heavy-match-11k.bin` | same data as zlib, chunks 7,1,13 / 1,258,3 |
+| `rfc1952/two-members.bin` | seed: two concatenated gzip members with different data |
+| `rfc1951/dynamic-l9-64k.bin` | seed: 64 KiB text-like data at level 9 (dynamic blocks) |
+
+No wrong output, error or `consumed` was found by any differential run, proptest or fuzz run in phase 2, so no further fixture was needed; the boundary and error tests of P2-01 (`tests/fast_loop.rs`) were mutation-checked instead.
