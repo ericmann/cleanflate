@@ -767,3 +767,36 @@ Gate (PT2): the Adler-32 share in `make profile PROFILE_FRAMING=rfc1950` (Silesi
 | `fast_loop::run` / `Huffman::decode_table` / `Window::copy_match` | 41.2% / 26.7% / 9.0% |
 
 At M0 the Adler-32 was about 2% of samples; the rest of the decoder became about three times faster, so its share rose to 6.15% while its absolute cost is unchanged. Noise thresholds for the affected keys: the full-run noise of silesia zlib one-shot is 2.6% (twice: 5.2%) and of streaming 1.1% (2.3%), but the quick bench that PT1 uses for a before/after pair has 6.5% (twice: 13.0%) for one-shot and 3.5% (7.1%) for streaming. Even removing the Adler-32 completely would speed zlib framing up by at most 1 / (1 - 0.0615) - 1 = 6.6%, which is below twice the quick noise for both keys, so no implementation of this task could be shown as a WIN under PT1 (and PT4 would then require reverting it). The measured gain the previous, larger cost centres delivered (D-27 to D-32) is where the remaining budget sits. **Negative result: no code was changed.** Revisit if the quick-bench noise falls below about 3% (a pinned governor on a quiet machine would do it): the allowed change would be fixed-size sub-blocks (`chunks_exact`) inside the existing `ADLER_NMAX` reduction, and the tests named in the plan (`adler32_chunked_matches_bytewise`, the oracle long-buffer test) would go with it.
+
+### Tunables (P4-03)
+
+Every performance tunable that exists on the final code was re-swept, one key at a time with the others at their defaults: `oracle` quick bench (`make bench-quick`, level 6, Silesia and Canterbury, all framings, one-shot and streaming), one run per candidate, with a run of the default first in each group (`docs/perf/P4-03/<KEY>-<value>.json`). A quick WIN must be confirmed by the full bench and leave no REGRESSION before a default may change; otherwise the default is kept and the measured "no change" is recorded.
+
+Result: **no default changed.** Medians of the relevant aggregate (raw for the decode tunables, gzip for the CRC), default -> candidate, MiB/s:
+
+| key | default | candidate | aggregate | one-shot | streaming |
+|---|---:|---:|---|---|---|
+| `LITLEN_TABLE_BITS` | 10 | 9 | Silesia raw l6 | 158.6 -> 157.0 (-1.0%) | 160.0 -> 162.8 (+1.7%) |
+| `LITLEN_TABLE_BITS` | 10 | 11 | Silesia raw l6 | 158.6 -> 161.4 (+1.8%) | 160.0 -> 165.2 (+3.3%) |
+| `LITLEN_TABLE_BITS` | 10 | 12 | Silesia raw l6 | 158.6 -> 161.2 (+1.6%) | 160.0 -> 161.0 (+0.7%) |
+| `DIST_TABLE_BITS` | 8 | 7 | Silesia raw l6 | 156.0 -> 148.3 (-5.0%) | 160.3 -> 149.9 (-6.5%) |
+| `DIST_TABLE_BITS` | 8 | 9 | Silesia raw l6 | 156.0 -> 145.6 (-6.7%) | 160.3 -> 147.2 (-8.2%) |
+| `DIST_TABLE_BITS` | 8 | 10 | Silesia raw l6 | 156.0 -> 142.2 (-8.8%) | 160.3 -> 147.6 (-7.9%) |
+| `FAST_LOOP_MIN_INPUT` | 16 | 8 | Silesia raw l6 | 150.8 -> 165.6 (+9.8%) | 152.7 -> 165.9 (+8.6%) |
+| `FAST_LOOP_MIN_INPUT` | 16 | 32 | Silesia raw l6 | 150.8 -> 164.5 (+9.1%) | 152.7 -> 167.8 (+9.9%) |
+| `FAST_LOOP_MIN_OUTPUT` | 258 | 320 | Silesia raw l6 | 153.0 -> 162.2 (+6.0%) | 154.1 -> 163.7 (+6.2%) |
+| `FAST_LOOP_MIN_OUTPUT` | 258 | 512 | Silesia raw l6 | 153.0 -> 161.2 (+5.3%) | 154.1 -> 162.7 (+5.6%) |
+| `CRC32_SLICES` | 8 | 4 | Silesia gzip l6 | 153.1 -> 135.6 (-11.4%) | 153.3 -> 137.0 (-10.6%) |
+| `CRC32_SLICES` | 8 | 16 | Silesia gzip l6 | 153.1 -> 151.7 (-0.9%) | 153.3 -> 151.6 (-1.1%) |
+| `ONESHOT_INITIAL_RATIO` | 4 | 2 | Silesia raw l6 | 161.7 -> 150.6 (-6.8%) | 167.7 -> 152.5 (-9.1%) |
+| `ONESHOT_INITIAL_RATIO` | 4 | 8 | Silesia raw l6 | 161.7 -> 140.9 (-12.9%) | 167.7 -> 161.7 (-3.6%) |
+
+How to read this table. Consecutive runs on this machine drift by up to about 10% (the M0 and M3 sections show the same; in this sweep `ONESHOT_INITIAL_RATIO` candidates of 2 and 8 print LOSS on the streaming keys, which the ratio cannot touch, and both `FAST_LOOP_MIN_INPUT` candidates print a +9% one-shot WIN against a default run that was itself a slow outlier). A repeat run of the unchanged defaults, taken at the end of the sweep (`docs/perf/P4-03/default-repeat.json`), gave Silesia level 6 raw one-shot 159.1 and streaming 162.9 MiB/s, gzip one-shot 141.4, which is the level of the "candidate" runs in the `FAST_LOOP_MIN_INPUT` and `FAST_LOOP_MIN_OUTPUT` groups. Against that repeat no candidate is a confirmed improvement. Verdicts by tunable:
+
+- `LITLEN_TABLE_BITS` (9, 11, 12 against 10): within +-3.3%, no verdict beyond twice the noise on the raw keys; keep 10.
+- `DIST_TABLE_BITS` (7, 9, 10 against 8): 9 and 10 are 7% to 9% slower on raw (the larger tables cost more than they save), 7 is 5% to 6.5% slower on raw; keep 8.
+- `FAST_LOOP_MIN_INPUT` (8, 32 against 16) and `FAST_LOOP_MIN_OUTPUT` (320, 512 against 258): the quick "WINs" are the outlier default run, the effects have no consistent sign across framings (`FAST_LOOP_MIN_OUTPUT` 320 is a LOSS on gzip and a NEUTRAL +6% on raw), and none was confirmed by the full bench; keep 16 and 258. The margins matter for correctness (D-29), not for speed at these values.
+- `CRC32_SLICES` (4, 16 against 8): 4 is 11% slower on gzip (a real effect: a shorter fold does less independent work per step), 16 is -1% (no gain); keep 8.
+- `ONESHOT_INITIAL_RATIO` (2, 8 against 4): every difference is inside or below drift, with the streaming keys moving as much as the one-shot ones; the allocation counters of P3-03 do not favour either; keep 4.
+
+Not swept, because they are safety bounds and not performance tunables: `DEFAULT_MAX_OUTPUT`, `DEFAULT_MAX_GZIP_FIELD`, `DEFAULT_MAX_GZIP_HEADERS`, `ONESHOT_GROWTH_FLOOR` and `ONESHOT_MAX_PREALLOC`.
