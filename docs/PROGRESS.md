@@ -5,7 +5,7 @@ Started: 2026-09-30T14:32:48.581Z
 ## Tasks
 - [x] P0-01 Phase-3 scaffolding: fuzz gates, quick-bench levels, baseline copy, report skeleton
 - [x] P0-02 design-check requires profile evidence in phase-3 [perf] entries
-- [ ] P0-03 Oracle FFI: C zlib build flags and bounded streaming inflate
+- [x] P0-03 Oracle FFI: C zlib build flags and bounded streaming inflate
 - [ ] P0-04 Bench schema 2: "best" replaces "min", every column documented
 - [ ] P0-05 C zlib streaming rows and like-for-like ratios
 - [ ] P0-06 Environment capture in every bench run
@@ -52,3 +52,6 @@ fuzz-milestone: diff_fast_reference seconds=40 execs=28203 exit=0 artifacts=0
 
 ### P0-02 — 5046b86
 PROFILE_REQUIRED_FROM=34 in design-check.sh; 3 new cases. Interpretation: existing perf fixtures renumbered D-90..92 -> D-30..32 (else they'd need Profile:).
+
+### P0-03 — 6b41bf8
+ffi.rs: zlib_compile_flags() (sys::zlibCompileFlags exported by libz-sys, no extern block needed), inflate_streaming_into(input, framing, in_chunk, out, out_chunk) -> Result<usize, OracleStatus>; zero chunk -> OtherError(-2). 5 tests added. No-progress rule: full out => OutputLimit, else exhausted input => Truncated.
