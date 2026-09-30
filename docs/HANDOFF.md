@@ -77,3 +77,11 @@ Introduced in this phase, all in `crates/cleanflate/src/config.rs`, each with th
 - Each kept technique is a `### D-NN: [perf]` entry (D-27 to D-32) with the derivation from first principles, the phrase required by SPEC 2.1 and a `Measurement:` line citing `docs/perf/`. D-26 (decode path and the uniform invalid-code rule) is not a performance entry.
 - All timing files are produced by `oracle bench` and live in `docs/perf/`; PERF.md tables come from them. The guard now denies profiling of anything but the cleanflate-only `profile_decode` example (`make profile`); the profiled process never runs C zlib.
 - Known weak spots to look at: timing conclusions rest on a noisy machine (use the one-shot to streaming ratio or repeat runs, as P3-03 and P4-03 did); the doubling copy (P3-02) was reverted, so overlapping matches copy `distance` bytes at a time.
+
+## Round 1
+
+Branch build/2026-09-29-2. Tasks: 2 of 2 done (R1-01, R1-02), none blocked or skipped. Test-only changes plus one debug_assert and two doc fixes; no behaviour change.
+
+- R1-01: tests/bitreader_bulk.rs::pending_literal_bits_kept_at_output_full and tests/stats.rs::reference_path_never_gives_back. Added `debug_assert!` in `Inflater::step` that the Reference path never gives bytes back. Fixed stale docs in bitreader.rs (D-27) and huffman.rs (D-26). The `keep_bits = len.min(7)` mutant was applied by hand and is killed.
+- R1-02: new case in tests/fast_loop.rs::fast_loop_errors_identical_to_reference. Interpretation: the block is hand-built (raw header plus manual code-length program) because the dynamic builder always appends an end-of-block code. The `Error::BadBlockType` mutant at fast_loop.rs:137 was applied by hand and is killed.
+- No new config keys. Manual check: none.
