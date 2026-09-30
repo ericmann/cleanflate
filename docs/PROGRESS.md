@@ -23,7 +23,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P2-05 Output-sink abstraction in the decoder core (slice sink only)
 - [x] P2-06 Vec sink and the sink differential
 - [x] P2-07 One-shot decoding appends to a Vec: no zero-fill
-- [ ] P2-08 One-shot size-hint revisit (gated)
+- [x] P2-08 One-shot size-hint revisit (gated)
 - [ ] P2-09 M2 acceptance and push
 - [ ] P3-01 Per-block Huffman table reuse (gated)
 - [ ] P3-02 Per-stream setup: reusable inflater, lazy window, no redundant fills (gated)
@@ -108,3 +108,6 @@ VecSink (capacity-bounded, no zero-fill), Decompressor::decompress_vec via allow
 
 ### P2-07 — 3567195
 NEGATIVE RESULT (PT4): switched public one-shot to decompress_core_vec, measured, reverted. Page faults identical before/after (110,179 l1; 110,749 l6); resizes/bytes_allocated identical; after-switch extend_from_within 13.4% inclusive offsets zero-fill removal; A/B neutral (-2.3%..+3%). stream.rs/sink.rs/test_hooks.rs back to P2-06 state except decompress_core now pub(crate). 3 new oneshot_sizing tests kept. Finding: the fresh-page fault cost of one-shot cannot be removed by a sink; only buffer reuse (M3) can. No D entry. Next free D = D-35.
+
+### P2-08 — 4a0a212
+GATED OUT. No growth/realloc/copy frames; zero-fill resize<u8> 2.26% (Silesia), 0.57% (Canterbury), mostly first allocation; over-allocation bound ~0.7%/0.2% vs gates 2%/4.84%. No code. oneshot stats: 14 resizes/12 files, 1.49x alloc/output (Silesia).
