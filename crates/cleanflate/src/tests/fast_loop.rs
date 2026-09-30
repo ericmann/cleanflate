@@ -4,7 +4,8 @@ use crate::error::Error;
 use crate::inflate::{InflateStatus, Inflater};
 use crate::tests::bitwriter::BitWriter;
 use crate::tests::dynbuilder::{
-    emit_dynamic_block, huffman_lengths_from_freqs_u16, literal_cl_program, DynBlock, PayloadSym,
+    canonical_codes, emit_dynamic_block, emit_dynamic_header_raw, huffman_lengths_from_freqs_u16,
+    literal_cl_program, DynBlock, PayloadSym,
 };
 use crate::tests::inflate_fixed::{emit_block_header, emit_end_of_block, emit_literal, emit_match};
 
@@ -348,6 +349,48 @@ fn fast_loop_errors_identical_to_reference() {
             Error::InvalidSymbol,
         ));
     }
+
+    // A dynamic block whose distance table is a single code of length 1
+    // (RFC 1951 S3.2.7): code 0 is distance symbol 0, code 1 is unused.
+    // Literals and matches (enough to enter the fast loop), then a length
+    // symbol followed by the unused distance code. The block is written by
+    // hand so that nothing (no end-of-block code) follows the bad bits.
+    let mut litlen = vec![0u8; 258];
+    litlen[b'a' as usize] = 1;
+    litlen[256] = 2;
+    litlen[257] = 2;
+    let mut cl_lengths = [0u8; 19];
+    cl_lengths[0] = 1;
+    cl_lengths[1] = 2;
+    cl_lengths[2] = 2;
+    let cl_codes = canonical_codes(&cl_lengths);
+    let mut w = BitWriter::new();
+    emit_dynamic_header_raw(&mut w, true, litlen.len(), 1, &cl_lengths);
+    let mut all = litlen.clone();
+    all.push(1); // the single distance code
+    for &l in &all {
+        let (c, n) = cl_codes[l as usize].expect("length has a cl code");
+        w.write_code(c, n);
+    }
+    let litlen_codes = canonical_codes(&litlen);
+    let emit_sym = |w: &mut BitWriter, sym: usize| {
+        let (c, n) = litlen_codes[sym].expect("symbol has a code");
+        w.write_code(c, n);
+    };
+    for _ in 0..FAST_LOOP_MIN_INPUT + 8 {
+        emit_sym(&mut w, b'a' as usize);
+    }
+    for _ in 0..2 {
+        emit_sym(&mut w, 257); // length 3, no extra bits
+        w.write_bits(0, 1); // distance code 0: distance 1
+    }
+    emit_sym(&mut w, 257);
+    w.write_bits(1, 1); // the unused distance code
+    cases.push((
+        "incomplete distance table unused code",
+        padded(w, 48),
+        Error::InvalidSymbol,
+    ));
 
     for (name, input, expected) in cases {
         for (i, o) in [(usize::MAX / 4, 4096usize), (64, 300), (usize::MAX / 4, 1)] {
