@@ -28,7 +28,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P3-01 Output as match history; window carried only across calls
 - [x] P3-02 Overlapping matches by pattern doubling
 - [x] P3-03 One-shot output sizing from hints
-- [~] P3-04 M3 acceptance and push
+- [x] P3-04 M3 acceptance and push
 - [ ] P4-01 CRC-32 several bytes at a time
 - [ ] P4-02 Adler-32 revisit (gated)
 - [ ] P4-03 Re-sweep tunables on the final code
@@ -117,3 +117,7 @@ NEGATIVE RESULT, code reverted per PT4. Doubling implemented in Window::copy_mat
 
 ### P3-03 — 68c8f86
 config: ONESHOT_GROWTH_FLOOR=32768, ONESHOT_INITIAL_RATIO=4, ONESHOT_MAX_PREALLOC=64<<20. stream.rs: initial_len(format,input,max_output) (gzip ISIZE else ratio, capped), decompress_core rewritten: first allocation max(next_len(0), hint), growth only on OutputFull, limit backstop = cannot grow (D-25 restated). D-31 [perf]. 6 tests in tests/oneshot_sizing.rs (gzip literal CRCs f3ddb8f7 / d09108fc), stats test updated. bench-stats: growth steps 122->15 raw/zlib, 134->12 gzip; gzip bytes allocated 513.9MB->211.9MB (=output). Timing: drift up to 10% (untouched streaming keys swing too); one-shot/streaming ratio for silesia gzip 0.897 -> 0.991/0.999 (WIN run1 +9.1%); raw/zlib neutral. Kept. make test, proptest-3k, bomb pass. Interpretation: growth only on OutputFull.
+
+### P3-04 — d1c9ac1
+make ci, make heavy (incl. bomb 3 tests, fastslow-full 189s) green; docs/perf/P3-04.json committed; PERF.md M3 acceptance. Silesia l6 one-shot: raw 190.6 (66.7% of C zlib), zlib 177.5 (69.6%), gzip 135.5 (53.4%) -> 70% target NOT MET (zlib 0.4 pt short). Streaming: raw 212.4 (74.3%), zlib 196.8 (77.2%) MET (60%), gzip 141.7 (55.8%) NOT MET. No LOSS vs baseline; vs P2-04 all WIN, 2 per-file REGRESSION (mr/ooffice zlib streaming) noted. Decompressor size 33688 (unchanged). Push: pushed to origin.
+Manual check: NOT VERIFIED (human): (1) GitHub Actions ci green. (2) Watch peak RSS of make bomb (/usr/bin/time -v) against a phase-1 checkout. (3) Review D-30/D-31 DESIGN entries.
