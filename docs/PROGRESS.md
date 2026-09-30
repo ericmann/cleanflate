@@ -38,7 +38,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P4-06 M4 acceptance and push
 - [x] P5-01 After-profiles and flamegraphs
 - [x] P5-02 Final bench, PHASE3.md report and PERF.md phase-3 section
-- [ ] P5-03 Provenance, build report and hand-off push
+- [x] P5-03 Provenance, build report and hand-off push
 
 ## Log
 (one entry per task, appended by implement)
@@ -153,3 +153,7 @@ After flamegraphs (3, checked) + After section of phase3-profile.md (9 keys, hot
 
 ### P5-02 — adc0f97
 P5-02.json (quiet machine, load 1.8) + PHASE3.md Summary/Final tables/Targets/Flamegraphs/Attribution/Tried and reverted/Conditions + PERF.md Phase 3 section with Result line. Silesia l6 like-for-like: oneshot 84.1/85.7/85.4% raw/zlib/gzip (phase 2: 66.9/68.8/68.8), streaming 81.8/83.9/78.0%. Targets: T5 MET; T1 (worst gzip l1 streaming 0.710), T2 (0.88-0.94), T3 (0.636), T4 (22%), T6 (5 canterbury/ptt5 per-file rows; all aggregates +7.3..+25.8% vs phase 2) NOT MET, with next steps. design-check passes.
+
+### P5-03 — f57be5d
+PHASE_BASE=cd4a472; SUMMARY.md / BUILD_REPORT.md regenerated (range cd4a472..HEAD, BUILD_REPORT performance line = phase-3 result line); human-interventions.md: dated sentence (no interventions; 9 guard denials explained, none a source read); make ci + make heavy pass; pushed.
+Manual check: NOT VERIFIED (human): 1) final make bench on a quiet machine with pinned governor vs P5-02.json; 2) make fuzz-long / nightly for all six targets + triage fuzz-divergences; 3) GitHub Actions ci green; 4) review PHASE3.md T1-T6 verdicts/attribution/negative results + PERF.md result line; 5) review flamegraphs and assembly evidence; 6) after merge tag v0.3.0-cleanroom; 7) complete human-interventions.md.
