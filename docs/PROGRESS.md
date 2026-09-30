@@ -18,7 +18,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P1-03 M1 acceptance and push
 - [x] P2-01 Checksum microbenchmark (cleanflate only)
 - [x] P2-02 Adler-32 over a bound-derived unrolled batch (gated)
-- [ ] P2-03 CRC-32 slicing-by-16 against 8 (gated)
+- [x] P2-03 CRC-32 slicing-by-16 against 8 (gated)
 - [ ] P2-04 Wrapper per-call overhead in streaming (gated)
 - [ ] P2-05 Output-sink abstraction in the decoder core (slice sink only)
 - [ ] P2-06 Vec sink and the sink differential
@@ -93,3 +93,6 @@ checksum_bench example + test_hooks::checksum variants; generic crc32_update_sli
 
 ### P2-02 — 6bbab78
 GATED OUT (negative result). adler_fold inclusive 6.34% (silesia/rfc1950/l6/streaming) and 4.83% (canterbury/rfc1950/l1/oneshot) vs gate 7.02% (2x 3.51% quick noise). No code, no DESIGN entry, no JSONs. PHASE3.md ### P2-02 has numbers.
+
+### P2-03 — 8e4fe84
+Gate passed (Crc32::update 8.31% / 8.99% vs 5.14% / 4.84%). Microbench sliced16 +13.5..+17.9% over sliced8 (> 2x noise) so CRC32_SLICES=16 was tried; bounded whole-decode gain <= 1.2%; bench-quick pair load-polluted (loadavg to 8.4), targeted gzip keys NEUTRAL, canterbury/gzip/l1/streaming ratio LOSS; interleaved A/B +2.3% (4 of 5 pairs). PT4: reverted to 8 (config.rs unchanged). JSONs P2-03-before/P2-03/P2-03-checksum committed. Machine noise note: a shared desktop; loadavg varies 1-8 during runs, making bench JSON pairs unreliable for gains under ~5%.
