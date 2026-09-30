@@ -787,6 +787,20 @@ PT1 (`docs/perf/phase3/P2-03-before.json`, `P2-03.json`, bench-quick; hotspot sh
 
 PT4: neither a WIN verdict nor a named prerequisite of a later task, so the value is reverted to 8. The microbench numbers, the tests (`crc32_sliced_variants_match_bytewise` covers width 16) and the fixtures stay. Width 16 remains a one-line change if the checksum share grows after the M4 loop work shrinks everything else.
 
+### P2-04
+**Negative result (gated out, PT2). No code change.**
+
+Named frames: wrapper `step` time excluding its inlined checksum frames (inclusive `ZlibDecoder::step` minus inclusive `adler_fold`, from `top-children.txt` of fresh `make profile` runs; `GzipDecoder::step` does not reach the profile's 0.5% display floor and its checksum, `Crc32::update`, is a separate symbol):
+
+| key | wrapper `step` inclusive | checksum inclusive | wrapper excess |
+|---|---:|---:|---:|
+| `silesia/rfc1950/l6/streaming` | 6.39% | 6.34% (`adler_fold`) | 0.05% |
+| `silesia/rfc1952/l6/streaming` | below 0.5% (not listed) | 8.31% (`Crc32::update`) | below 0.5% |
+| `canterbury/rfc1950/l1/streaming` | 5.45% | 5.41% (`adler_fold`) | 0.04% |
+| `canterbury/rfc1952/l1/streaming` | below 0.5% (not listed) | 8.21% (`Crc32::update`) | below 0.5% |
+
+Gate: max(2%, 2 x quick noise of the key); the floor alone is 2%, and every key is under it by a wide margin. The wrapper's own work (header and trailer state, output bookkeeping, the per-call state handling) is unmeasurable beyond the checksum it calls, and `Inflater::step` underneath is 0.7% to 1.2% inclusive. Pattern 4's gap in streaming mode is therefore checksum cost (see P2-02 and P2-03), not per-call wrapper overhead, and no code changes.
+
 ## Targets
 Filled by P5-02 (acceptance tasks).
 
