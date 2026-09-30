@@ -4,7 +4,7 @@ Started: 2026-09-30T14:32:48.581Z
 
 ## Tasks
 - [x] P0-01 Phase-3 scaffolding: fuzz gates, quick-bench levels, baseline copy, report skeleton
-- [ ] P0-02 design-check requires profile evidence in phase-3 [perf] entries
+- [x] P0-02 design-check requires profile evidence in phase-3 [perf] entries
 - [ ] P0-03 Oracle FFI: C zlib build flags and bounded streaming inflate
 - [ ] P0-04 Bench schema 2: "best" replaces "min", every column documented
 - [ ] P0-05 C zlib streaming rows and like-for-like ratios
@@ -49,3 +49,6 @@ fuzz-milestone 20s output:
 fuzz-milestone: diff_oracle_roundtrip seconds=40 execs=18406 exit=0 artifacts=0
 fuzz-milestone: diff_fast_reference seconds=40 execs=28203 exit=0 artifacts=0
 (wall 40s includes build time.)
+
+### P0-02 — 5046b86
+PROFILE_REQUIRED_FROM=34 in design-check.sh; 3 new cases. Interpretation: existing perf fixtures renumbered D-90..92 -> D-30..32 (else they'd need Profile:).
