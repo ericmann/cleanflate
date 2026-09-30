@@ -839,3 +839,81 @@ Against the SPEC section 4.1 targets (recorded, not blocking): **primary target,
 `make bench-compare` against `baseline.json`: no LOSS and no per-file REGRESSION line. Against `P3-04.json`: 15 WIN (the gzip keys, from P4-01), and 9 LOSS on raw and zlib aggregates whose code did not change since M3 (for example canterbury raw level 1 one-shot -5.1%, silesia raw level 9 one-shot -2.7%), plus 74 per-file REGRESSION lines (31 Canterbury, 43 Silesia). The verdict on those keys is run-to-run drift (single-pair noise file; the same swings appear on keys of code that did not change), recorded as findings; the comparison that matters for the "no per-file regression" rule, against the phase-2 baseline, is clean.
 
 Tunables: every tunable's doc comment in `config.rs` cites its sweep (`docs/perf/P4-03/`, all committed) and the outcome (kept, with the measurement), and the safety bounds say that they were not swept. The CRC-32 derivation is in DESIGN D-32.
+
+### Final (P5-02)
+
+Final full bench of the phase-2 code: `make bench BENCH_ID=P5-02 BENCH_OUT=docs/perf/P5-02.json` (about 6.6 minutes), compared with `docs/perf/baseline.json`.
+
+**Targets (SPEC section 4.1), Silesia aggregate, level 6:**
+
+| target | goal | result | verdict |
+|---|---|---:|---|
+| primary, raw one-shot | >= 70% of C zlib | 66.9% | NOT MET |
+| primary, zlib one-shot | >= 70% | 68.8% | NOT MET |
+| primary, gzip one-shot | >= 70% | 68.8% | NOT MET |
+| streaming, raw (64 KiB in and out) | >= 60% | 74.9% | MET |
+| streaming, zlib | >= 60% | 77.1% | MET |
+| streaming, gzip | >= 60% | 74.2% | MET |
+| stretch, raw one-shot | >= 90% | 66.9% | NOT MET |
+| no per-file regression against the phase-2 baseline | no file slower than baseline by more than the noise | 0 REGRESSION and 0 LOSS lines in `make bench-compare` (36 WIN aggregates) | MET |
+
+The primary target is missed by 3.1 points (raw), 1.2 points (zlib) and 1.2 points (gzip); the streaming target is met with 14 to 17 points to spare. Speeds have risen from the baseline of 62.3 (raw), 61.3 (zlib) and 51.8 (gzip) MiB/s one-shot to 190.1, 177.3 and 177.7 (about 3.0x, 2.9x and 3.4x), while C zlib on this machine stayed at 258 to 284 MiB/s.
+
+**Per-milestone gains** (Silesia level 6, median MiB/s, from the committed full-bench JSONs; C zlib in the last column is the final run's one-shot median):
+
+| key | baseline | M1 (P1-05) | M2 (P2-04) | M3 (P3-04) | M4 (P4-04) | final (P5-02) | C zlib | final ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| raw one-shot | 62.3 | 98.9 | 153.8 | 190.6 | 189.8 | 190.1 | 284.2 | 66.9% |
+| zlib one-shot | 61.3 | 94.5 | 147.9 | 177.5 | 174.8 | 177.3 | 257.8 | 68.8% |
+| gzip one-shot | 51.8 | 75.3 | 105.8 | 135.5 | 176.2 | 177.7 | 258.1 | 68.8% |
+| raw streaming | 65.0 | 107.8 | 176.8 | 212.4 | 211.9 | 212.8 | 284.2 | 74.9% |
+| zlib streaming | 63.7 | 102.4 | 166.8 | 196.8 | 195.7 | 198.8 | 257.8 | 77.1% |
+| gzip streaming | 55.7 | 82.0 | 124.9 | 141.7 | 189.5 | 191.6 | 258.1 | 74.2% |
+
+What each milestone bought (all from the PT1 before/after pairs in the sections above): bulk refill (D-27) about +50% and the table-decode share from 54% to 100% (D-28, NEUTRAL by itself, kept as the prerequisite of the loop); the fast loop (D-29) about +60%; the output as history (D-30) about +20%; hint-sized one-shot output (D-31) about +10% for gzip one-shot; the multi-byte CRC-32 (D-32) about +28% for gzip.
+
+**Hypotheses (SPEC 4.4), final verdicts:**
+
+| hyp | verdict | outcome |
+|---|---|---|
+| H1 table mostly bypassed | CONFIRMED, fixed | serial decodes 46%/48% -> 0; bytes per refill 1.08 -> 6.21 (D-27, D-28) |
+| H2 per-symbol dispatch | CONFIRMED, fixed | dispatches per output byte 0.644 -> 0.0032, `Inflater::step` self 35.9% -> 0.5%, State clone 7.5% -> 0.15% (D-29); P2-03 gated out afterwards |
+| H3 output written twice | CONFIRMED, fixed | bytes copied into the ring per output byte 1.0 -> 0.019 one-shot and 0.50 streaming (D-30) |
+| H4 overlapping matches | DISCARDED | 0.48% of matches; the doubling attempt was measured twice and reverted (P3-02) |
+| H5 table build cost | DISCARDED | about 1.7% of samples, no fixed blocks at level 6; P1-03 gated out |
+| H6 wrapper costs | PARTIAL, mostly fixed | CRC-32 fixed (D-32: gzip overhead over raw 20.2% -> 7.7% one-shot at M4) and the extra zero-filled buffer removed (D-31); Adler-32 (6.15% of samples) left as is (P4-02) |
+
+**Negative results and reverted attempts** (none needed a bug fixture; the correctness tests written for them stay):
+
+- P1-03 table reuse (gated out): tables are 1.7% of samples. No code, no fixture.
+- P1-04 length/distance payload in table entries (gated out): 1.4% of samples. No code, no fixture.
+- P2-03 copyable state (gated out): State clone 0.15% after the fast loop. No code, no fixture.
+- P3-02 pattern doubling (implemented, measured twice, reverted): not a reliable WIN. Kept: `tests/history.rs::pattern_doubling_matches_model_exhaustive` and `pattern_doubling_straddling_window`, and `docs/perf/P3-02-before.json`, `P3-02.json`, `P3-02-rerun.json`.
+- P4-02 Adler-32 (gated out): at most +6.6% attainable, below twice the quick-bench noise. No code, no fixture.
+- P4-03 tunables: no default changed; the sweep JSONs are in `docs/perf/P4-03/`.
+- Repro fixtures in `testdata/regressions/` (all passing, both decode paths): `rfc1951/fixed-heavy-match-11k`, `rfc1950/fixed-heavy-match-11k`, `rfc1952/two-members`, `rfc1951/dynamic-l9-64k`. No differential, proptest or fuzz run found a wrong output, error or `consumed` in phase 2.
+
+**Per-file regression check against the baseline:** `make bench-compare A=docs/perf/baseline.json B=docs/perf/P5-02.json` prints no REGRESSION line, no LOSS aggregate and 36 WIN aggregates (all 12 framing and mode combinations at each of levels 1, 6 and 9, for both corpora).
+
+**Levels 1 and 9** (Silesia, median MiB/s; ratio = cleanflate / C zlib):
+
+| level | key | baseline | final | baseline ratio | final ratio |
+|---|---|---:|---:|---:|---:|
+| 1 | raw one-shot | 51.0 | 162.2 | 20.0% | 61.6% |
+| 1 | raw streaming | 53.7 | 176.3 | 21.0% | 66.9% |
+| 1 | zlib one-shot | 51.0 | 155.1 | 21.3% | 64.6% |
+| 1 | zlib streaming | 52.6 | 166.9 | 22.0% | 69.5% |
+| 1 | gzip one-shot | 45.2 | 151.8 | 18.5% | 62.6% |
+| 1 | gzip streaming | 48.4 | 162.9 | 19.8% | 67.2% |
+| 9 | raw one-shot | 62.6 | 194.0 | 22.7% | 66.9% |
+| 9 | raw streaming | 65.9 | 219.5 | 23.9% | 75.7% |
+| 9 | zlib one-shot | 60.7 | 182.8 | 24.3% | 69.8% |
+| 9 | zlib streaming | 65.4 | 200.9 | 26.2% | 76.8% |
+| 9 | gzip one-shot | 52.9 | 182.4 | 20.5% | 69.4% |
+| 9 | gzip streaming | 57.2 | 193.1 | 22.1% | 73.5% |
+
+**Conditions.** AMD Ryzen 5 3400G with Radeon Vega Graphics, 8 logical CPUs, Linux 7.1.5-76070105-generic x86_64, rustc 1.89.0 (29483883e 2025-08-04), C zlib 1.3.2, governor schedutil (not pinned), load average 2.66 2.60 3.05 at the start, run at `d1778c1a4f72` (the tree was marked dirty only by the pipeline's uncommitted `docs/PROGRESS.md`). Run-to-run drift on this machine is about 10% (see the M0, P3-03 and P4-03 sections), so single-run differences below that are not evidence. A human should repeat the final bench on a quiet machine with a fixed governor (SPEC section 8) before quoting the ratios.
+
+**Shortfall and the next most promising step.** The one-shot ratios are 1.2 to 3.1 points short of 70%. The final cleanflate-only profile of Silesia level 6 raw (`make profile`, 172 MiB/s under `perf`) has `fast_loop::run` at 46.9% self, `Huffman::decode_table` (the lookup, not inlined into the loop) at 27.4% self (25.6% inclusive as `decode_table_method`), `Window::copy_match` at 8.6% self (15.8% inclusive, of which `copy_within` 9.0%), `refill_bulk` 6.1% inclusive, and `peek` plus `consume` about 13% inclusive. The evidence points to three steps, in this order: (1) inline the two-level lookup into the fast loop and keep the bit buffer and count in locals as registers (removes a call and the repeated `peek`/`consume` bounds handling per symbol: up to about 25% of samples are in that path); (2) a short-match path for the 71% of matches of length 3 to 8 (the `copy_within` call and its bounds checks cost 9.0% for copies that are a few bytes long); (3) carry the length and distance base and extra-bit counts in the table entries (P1-04's gate was closed at 1.4% only because the state machine dominated then; inside the fast loop that handling is now part of the 46.9%). The Adler-32 (6.15% of samples for zlib) would follow. Each of these is a few percent, so proving it needs the quiet machine and pinned governor named above.
+
+**Result:** phase 2: cleanflate / C zlib (Silesia, level 6, one-shot) = 66.9% raw, 68.8% zlib, 68.8% gzip (target 70%: NOT MET); streaming 64 KiB = 74.9% raw (target 60%: MET).

@@ -34,7 +34,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P4-03 Re-sweep tunables on the final code
 - [x] P4-04 M4 acceptance and push
 - [x] P5-01 Phase-scoped provenance summary and build report
-- [ ] P5-02 Final PERF.md phase-2 report and DESIGN audit
+- [~] P5-02 Final PERF.md phase-2 report and DESIGN audit
 - [ ] P5-03 Provenance, build report and hand-off push
 
 ## Log
