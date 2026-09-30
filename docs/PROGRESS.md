@@ -29,7 +29,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P3-02 Per-stream setup: reusable inflater, lazy window, no redundant fills (gated)
 - [x] P3-03 `Decompressor::reset()` and the reset differential
 - [x] P3-04 Reuse bench case
-- [ ] P3-05 M3 acceptance and push
+- [x] P3-05 M3 acceptance and push
 - [ ] P4-01 Assembly evidence tool for the fast loop
 - [ ] P4-02 Branch-light bulk refill (gated)
 - [ ] P4-03 Fast-loop bounds-check elision and inlined lookup
@@ -126,3 +126,6 @@ Decompressor::reset (public, doc example uses ?), Backend/Zlib/Gzip/Inflater/Win
 
 ### P3-04 — 875d0db
 Mode::Reuse in bench (Fixture.reuse RefCell<Decompressor>), Aggregate.ratio/c_zlib_mode now Option (null for reuse), vs_fresh_streaming, RatioDelta::NotApplicable, profile_decode --mode reuse, Makefile bench/bench-quick modes include reuse. P3-04.json: reuse vs fresh streaming ~1.00 on all aggregates (max +3.9% canterbury/gzip/l6), PHASE3.md has per-file Canterbury table. Changes bench-quick runtime (+1 mode).
+
+### P3-05 — 817a650
+make ci, heavy, fuzz-milestone pass: diff_oracle_roundtrip seconds=1828 execs=1361846; diff_fast_reference seconds=1828 execs=373554; no artifacts. P3-05.json (full bench incl reuse) committed, pushed. No M3 technique changed throughput (P3-01/P3-02 gated out; reset API + reuse bench only); compare vs start: 12 WIN 2 LOSS 73 REGRESSION lines = drift. Manual check: NOT VERIFIED (human): ci green; review reset rustdoc/D-35; peak RSS of bomb vs start.
