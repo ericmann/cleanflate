@@ -24,9 +24,10 @@ The bench prints an `Environment` block listing every captured value at the top 
 Output columns:
 
 - `bench` stdout table: `key`, `cleanflate MiB/s (median)`, `cleanflate MiB/s (best)`, `C zlib MiB/s (median)`, `ratio`, followed by a two-line footer with the definitions above.
-- `bench-md` (`J=`) aggregates table: the same five columns; with `--files`, a second table `file key`, `cleanflate MiB/s`, `C zlib MiB/s`, `ratio` (median-based).
-- `bench-compare`: `key`, `A MiB/s`, `B MiB/s` (cleanflate median), `delta %`, `2x noise %` (twice the recorded noise, `-` when unknown), `verdict` (`WIN|LOSS|NEUTRAL|UNKNOWN`), then per-file `REGRESSION` lines.
-- `bench-noise`: writes a JSON of noise percentages (median-based), no table.
+- `bench-md` (`make bench-md J=file [FILES=1] [FILTER=prefix] [BASELINE=path]`) aggregates table: `key`, `cleanflate MiB/s (median)`, `cleanflate MiB/s (best)`, `C zlib MiB/s (median, same mode)`, `ratio (like for like)`, `vs phase-2 %` (this file's cleanflate median against the baseline's median of the same key). With `--files`, a second table: `file key`, `bytes`, `cleanflate MiB/s`, `C zlib MiB/s`, `ratio (like for like)`, `vs phase-2 %`, sorted by corpus and then bytes ascending.
+- `bench-compare` (`make bench-compare A= B= [NOISE=] [BASELINE=]`): `key`, `A MiB/s`, `B MiB/s` (cleanflate median), `delta %`, `2x noise %` (`-` when unknown), `verdict` (`WIN|LOSS|NEUTRAL|UNKNOWN`), `vs phase-2 %` (B against the baseline, `n/a` if absent), `B ratio` (like for like), `ratio delta %` (B ratio / A ratio - 1), `ratio verdict` (same 2x rule against the ratio noise; `UNKNOWN` when the noise file has none; `n/a (denominator changed)` when A and B divided by different C zlib modes, as for schema-1 streaming keys). Then per-file `REGRESSION` lines. `--baseline` defaults to `docs/perf/baselines/phase2.json`; if missing it prints `baseline missing: <path>`.
+- Default noise file for two files of the same kind: `full` uses `docs/perf/baselines/phase3-noise.json` else `docs/perf/noise.json` (printing "using phase-2 noise"); `quick` uses `docs/perf/baselines/phase3-noise-quick.json` else `docs/perf/noise-quick.json`; mixed kinds get none.
+- `bench-noise`: writes a JSON of noise percentages (`aggregate`, `aggregate_max_pct`, `per_file`, and `ratio_aggregate`, `ratio_aggregate_max_pct` for the like-for-like ratio), no table.
 
 ## Schema 1 (read-only compatibility)
 

@@ -169,16 +169,16 @@ regress-seed:
 	cargo run --release -q -p oracle -- regress-seed
 
 bench-compare:
-	@test -n "$(A)" -a -n "$(B)" || { echo "usage: make bench-compare A=before.json B=after.json [NOISE=noise.json]"; exit 2; }
-	cargo run --release -q -p oracle -- bench-compare $(A) $(B) $(if $(NOISE),--noise $(NOISE))
+	@test -n "$(A)" -a -n "$(B)" || { echo "usage: make bench-compare A=before.json B=after.json [NOISE=noise.json] [BASELINE=path]"; exit 2; }
+	cargo run --release -q -p oracle -- bench-compare $(A) $(B) $(if $(NOISE),--noise $(NOISE)) $(if $(BASELINE),--baseline $(BASELINE))
 
 bench-noise:
 	@test -n "$(A)" -a -n "$(B)" -a -n "$(OUT)" || { echo "usage: make bench-noise A=run1.json B=run2.json OUT=docs/perf/noise.json"; exit 2; }
 	cargo run --release -q -p oracle -- bench-noise $(A) $(B) --out $(OUT)
 
 bench-md:
-	@test -n "$(J)" || { echo "usage: make bench-md J=results.json"; exit 2; }
-	cargo run --release -q -p oracle -- bench-md $(J)
+	@test -n "$(J)" || { echo "usage: make bench-md J=results.json [FILES=1] [FILTER=prefix] [BASELINE=path]"; exit 2; }
+	cargo run --release -q -p oracle -- bench-md $(J) $(if $(FILES),--files) $(if $(FILTER),--filter $(FILTER)) $(if $(BASELINE),--baseline $(BASELINE))
 
 bench-stats:
 	mkdir -p $(dir $(BENCH_OUT))
