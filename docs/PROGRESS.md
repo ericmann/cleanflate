@@ -22,7 +22,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P2-04 Wrapper per-call overhead in streaming (gated)
 - [x] P2-05 Output-sink abstraction in the decoder core (slice sink only)
 - [x] P2-06 Vec sink and the sink differential
-- [ ] P2-07 One-shot decoding appends to a Vec: no zero-fill
+- [x] P2-07 One-shot decoding appends to a Vec: no zero-fill
 - [ ] P2-08 One-shot size-hint revisit (gated)
 - [ ] P2-09 M2 acceptance and push
 - [ ] P3-01 Per-block Huffman table reuse (gated)
@@ -105,3 +105,6 @@ OutputSink/SliceSink (sink.rs), generic step_into on Inflater/ZlibDecoder/GzipDe
 
 ### P2-06 — f1c3f9c
 VecSink (capacity-bounded, no zero-fill), Decompressor::decompress_vec via allowance()/decompress_into(), decompress_core_vec + grow_output + shared finish_core, test_hooks::{OneShotSink, decompress_with_sink}. Differential sinks_* (4 combos) pass in proptest-3k and fastslow-full; fuzz diff_fast_reference extended, 120 s smoke pass (33308 runs). Public one-shot unchanged (P2-07 switches). Interpretation: VecSink room bounded by capacity so writes cannot fail; OutputFull = capacity full; driver grows by next_len exactly like the old one. Dead-code attrs cfg_attr(not(any(test, feature="test-hooks")), allow(dead_code)) on VecSink/decompress_vec/decompress_core_vec/grow_output — remove in P2-07 when production uses them.
+
+### P2-07 — 3567195
+NEGATIVE RESULT (PT4): switched public one-shot to decompress_core_vec, measured, reverted. Page faults identical before/after (110,179 l1; 110,749 l6); resizes/bytes_allocated identical; after-switch extend_from_within 13.4% inclusive offsets zero-fill removal; A/B neutral (-2.3%..+3%). stream.rs/sink.rs/test_hooks.rs back to P2-06 state except decompress_core now pub(crate). 3 new oneshot_sizing tests kept. Finding: the fresh-page fault cost of one-shot cannot be removed by a sink; only buffer reuse (M3) can. No D entry. Next free D = D-35.
