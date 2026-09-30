@@ -25,7 +25,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P2-02 Differential fuzz target: fast vs reference
 - [x] P2-03 Copyable state in the slow path (gated)
 - [x] P2-04 M2 acceptance and push
-- [~] P3-01 Output as match history; window carried only across calls
+- [x] P3-01 Output as match history; window carried only across calls
 - [ ] P3-02 Overlapping matches by pattern doubling
 - [ ] P3-03 One-shot output sizing from hints
 - [ ] P3-04 M3 acceptance and push
@@ -108,3 +108,6 @@ GATED OUT (negative result), no code change. After P2-01: Inflater::step self 0.
 ### P2-04 — 139a5d4
 make ci, make heavy (incl. full-tier differential), make fuzz-smoke (6 targets, 0 crashes; diff_fast_reference 96,588 runs) green; docs/perf/P2-04.json committed; PERF.md M2 acceptance. Silesia l6 vs baseline: one-shot raw 62.3->153.8, zlib 61.3->147.9, gzip 51.8->105.8; streaming raw 176.8 (64.3% of C zlib), zlib 166.8 (66.3%) => streaming target 60% met for raw/zlib; one-shot 56.0%/58.8%/41.3% (target 70% NOT YET MET). Fast loop covers 99.98% of symbols, 0.0032 dispatches/output byte. No REGRESSION. Repro audit: 4 seed fixtures pass. Push: pushed to origin.
 Manual check: NOT VERIFIED (human): (1) GitHub Actions ci green. (2) Run make fuzz-long or nightly workflow incl. diff_fast_reference for the 1-hour signal. (3) Review the fast-loop code by hand and mutation-sample it (SPEC 5).
+
+### P3-01 — 03480a4
+Window now append/read_back/history_available/copy_match(path, output, cur, dist, n) (slice copies on Fast; Reference byte-by-byte via output or get_back); step wrapper appends output[..out_pos] to the window exactly once on every return (step_inner returns (pos,out_pos,Result) via closure wrap); literals/stored copy write only to output; fast loop takes &Window. D-30 [perf]. tests/history.rs (5 tests, incl. Decompressor size <= 33688+1024; pre-change size was 33688 default/34080 stats); window/fastpath/decode_path tests rewritten to the new API. PT1: all 12 aggregates WIN (silesia l6 oneshot raw 133.4->160.6, zlib 122.1->151.1, gzip 87.9->108.2); 3 per-file REGRESSION lines (canterbury xargs.1 gzip, silesia sao gzip streaming) recorded as findings. window_bytes_written/output: 1.0 -> 0.019 oneshot, 0.50 streaming. make test, proptest-3k, fastslow-full (189s), bomb pass. Interpretation: exit append on every return incl. Err; stat counts bytes actually copied.
