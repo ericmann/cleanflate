@@ -28,7 +28,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P3-01 Output as match history; window carried only across calls
 - [x] P3-02 Overlapping matches by pattern doubling
 - [x] P3-03 One-shot output sizing from hints
-- [ ] P3-04 M3 acceptance and push
+- [~] P3-04 M3 acceptance and push
 - [ ] P4-01 CRC-32 several bytes at a time
 - [ ] P4-02 Adler-32 revisit (gated)
 - [ ] P4-03 Re-sweep tunables on the final code

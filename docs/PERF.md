@@ -705,3 +705,29 @@ Timing, Silesia level 6 one-shot medians (MiB/s), with the untouched streaming p
 | raw one-shot / streaming | 1.021 | 1.005 | 1.001 |
 
 The machine drifts by up to 10% between runs (the untouched streaming keys show the same swings, including two LOSS verdicts on Canterbury zlib and gzip streaming in the repeat), so absolute deltas are not reliable here; the one-shot to streaming ratio removes the drift. It shows the expected effect: gzip one-shot, which allocated twice its output and zero-filled the extra buffer, gains about 10% relative to streaming, and raw and zlib one-shot are unchanged (the decode dominates; the growth steps were cheap next to it). Result: **kept**, a WIN for gzip one-shot (H6) and neutral elsewhere, with the allocation counters as the direct evidence. The bomb test passes unchanged.
+
+### M3 acceptance (P3-04)
+
+Commands run on the M3 head: `make ci` (green, 1m34s), `make heavy` (proptest-10k for chunking and fastslow, bomb, conformance-full, fastslow-full: all green; fastslow-full 188.6 s), and `make bench BENCH_ID=P3-04 BENCH_OUT=docs/perf/P3-04.json` (7.0 min). `docs/perf/P3-04.json` is committed.
+
+Silesia level 6, median MiB/s (C zlib is the same-run one-shot median, the denominator for both tables):
+
+One-shot (`decompress_with`), target 70% of C zlib:
+
+| framing | baseline | M2 (P2-04) | M3 | gain vs baseline | C zlib (M3 run) | cleanflate / C zlib | target |
+|---|---:|---:|---:|---:|---:|---:|---|
+| raw | 62.3 | 153.8 | 190.6 | +206.0% | 285.9 | 66.7% | NOT MET (70%) |
+| zlib | 61.3 | 147.9 | 177.5 | +189.8% | 255.1 | 69.6% | NOT MET (70%), 0.4 points short |
+| gzip | 51.8 | 105.8 | 135.5 | +161.5% | 253.8 | 53.4% | NOT MET (70%) |
+
+Streaming (`Decompressor`, 64 KiB input and 64 KiB output windows), target 60% of C zlib one-shot:
+
+| framing | baseline | M2 (P2-04) | M3 | gain vs baseline | C zlib (M3 run) | cleanflate / C zlib | target |
+|---|---:|---:|---:|---:|---:|---:|---|
+| raw | 65.0 | 176.8 | 212.4 | +227.0% | 285.9 | 74.3% | MET (60%) |
+| zlib | 63.7 | 166.8 | 196.8 | +208.8% | 255.1 | 77.2% | MET (60%) |
+| gzip | 55.7 | 124.9 | 141.7 | +154.3% | 253.8 | 55.8% | NOT MET (60%) |
+
+`make bench-compare` against `baseline.json`: no LOSS and no per-file REGRESSION. Against `P2-04.json` (M2): every Silesia level-6 aggregate is a WIN (+18% to +28%), no LOSS, and two per-file REGRESSION lines (silesia mr and ooffice zlib streaming, -3.7% and -3.9%), recorded as findings: the aggregates for the same keys are +18.0% WINs and per-file thresholds of 1.1% rest on a single noise pair. The remaining gap is dominated by CRC-32 for gzip (P4-01) and, for raw and zlib one-shot, by decode itself; the primary targets are re-assessed at M4.
+
+Bomb and memory: `make bomb` (run by `make heavy`) passes unchanged, 3 tests in 9.8 s. `decompressor_size_not_grown`: `size_of::<Decompressor>()` is 33,688 bytes, identical to the pre-P3-01 size (limit 33,688 + 1,024). One-shot allocation is bounded by the output limit and by `ONESHOT_MAX_PREALLOC` for hints (D-31); gzip one-shot now allocates exactly its output size (211.9 MB for the Silesia set, down from 513.9 MB).
