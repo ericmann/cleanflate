@@ -85,3 +85,9 @@ Branch build/2026-09-29-2. Tasks: 2 of 2 done (R1-01, R1-02), none blocked or sk
 - R1-01: tests/bitreader_bulk.rs::pending_literal_bits_kept_at_output_full and tests/stats.rs::reference_path_never_gives_back. Added `debug_assert!` in `Inflater::step` that the Reference path never gives bytes back. Fixed stale docs in bitreader.rs (D-27) and huffman.rs (D-26). The `keep_bits = len.min(7)` mutant was applied by hand and is killed.
 - R1-02: new case in tests/fast_loop.rs::fast_loop_errors_identical_to_reference. Interpretation: the block is hand-built (raw header plus manual code-length program) because the dynamic builder always appends an end-of-block code. The `Error::BadBlockType` mutant at fast_loop.rs:137 was applied by hand and is killed.
 - No new config keys. Manual check: none.
+
+## Round 2
+Branch build/2026-09-29-2; fix commit c43ea88. Tasks: 36 done, 0 blocked, 0 skipped.
+- R2-01: added pub(crate) read-only accessors `ZlibDecoder::inflater_path` and `Decompressor::inflater_path` (dead_code allow only) and tests `zlib_decoder_uses_same_path` and `decompressor_passes_path_every_format` in tests/decode_path.rs. The three listed mutants were each confirmed killed by hand (sed plus cargo test), since foundry_mutate was not available.
+- Interpretation: none. No behaviour or public API change.
+- Manual check: n/a.
