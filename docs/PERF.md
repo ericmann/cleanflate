@@ -917,3 +917,34 @@ What each milestone bought (all from the PT1 before/after pairs in the sections 
 **Shortfall and the next most promising step.** The one-shot ratios are 1.2 to 3.1 points short of 70%. The final cleanflate-only profile of Silesia level 6 raw (`make profile`, 172 MiB/s under `perf`) has `fast_loop::run` at 46.9% self, `Huffman::decode_table` (the lookup, not inlined into the loop) at 27.4% self (25.6% inclusive as `decode_table_method`), `Window::copy_match` at 8.6% self (15.8% inclusive, of which `copy_within` 9.0%), `refill_bulk` 6.1% inclusive, and `peek` plus `consume` about 13% inclusive. The evidence points to three steps, in this order: (1) inline the two-level lookup into the fast loop and keep the bit buffer and count in locals as registers (removes a call and the repeated `peek`/`consume` bounds handling per symbol: up to about 25% of samples are in that path); (2) a short-match path for the 71% of matches of length 3 to 8 (the `copy_within` call and its bounds checks cost 9.0% for copies that are a few bytes long); (3) carry the length and distance base and extra-bit counts in the table entries (P1-04's gate was closed at 1.4% only because the state machine dominated then; inside the fast loop that handling is now part of the 46.9%). The Adler-32 (6.15% of samples for zlib) would follow. Each of these is a few percent, so proving it needs the quiet machine and pinned governor named above.
 
 **Result:** phase 2: cleanflate / C zlib (Silesia, level 6, one-shot) = 66.9% raw, 68.8% zlib, 68.8% gzip (target 70%: NOT MET); streaming 64 KiB = 74.9% raw (target 60%: MET).
+
+### Operator re-run after merge (phase-2 final of record)
+
+The human operator re-ran the full `make bench` after the phase-2 merge, as
+the SPEC §8 manual check asked, and these are the phase-2 numbers of record
+(they supersede the in-flight P5-02 run, which had about 6% noise). JSON:
+`docs/perf/phase2-final-operator.json` (git head `e16ac6f`, clean tree; N=7;
+C zlib 1.3.2; AMD Ryzen 5 3400G; rustc 1.89.0). Conditions: the machine was
+otherwise idle but the CPU governor was `schedutil`, not pinned, and the load
+average was about 1.9, so treat single-point differences below a few percent
+as noise.
+
+**Targets (SPEC §4.1), Silesia level 6, cleanflate / C zlib:**
+
+| key | one-shot | target | streaming (64 KiB) | target |
+|---|---:|---|---:|---|
+| raw | 66.1% | NOT MET (-3.9) | 75.3% | MET |
+| zlib | 69.6% | NOT MET (-0.4, within noise) | 77.3% | MET |
+| gzip | 70.7% | MET | 75.4% | MET |
+
+**Elsewhere:** Silesia level 1 is the weakest Silesia level (63.7% raw,
+64.8% zlib, 63.1% gzip one-shot) and level 9 the strongest (68.1%, 70.7%,
+70.1%). Canterbury trails Silesia at every level: 55.0% to 69.1% one-shot and
+54.3% to 68.5% streaming, lowest for level 1 gzip. One-shot is slower than
+streaming on every Silesia row (by about 4 to 9 points of ratio) but not on
+Canterbury, where the two are within 1 point. These are the open items phase
+3 takes up.
+
+**Reading the table:** the bench's "min" column is the throughput of the
+fastest sample (the minimum time), which is why it is higher than the median.
+The ratio column always uses medians.
