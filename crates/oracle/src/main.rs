@@ -45,6 +45,7 @@ fn main() -> ExitCode {
             }
         },
         Some("perf-prep") => report(run_perf_prep(&args[2..]), "perf-prep"),
+        Some("bench-targets") => report(run_bench_targets(&args[2..]), "bench-targets"),
         Some("bench-md") => report(run_bench_md(&args[2..]), "bench-md"),
         Some("regress-add") => match oracle::regress::run_add(&args[2..]) {
             Ok(()) => ExitCode::SUCCESS,
@@ -317,6 +318,48 @@ fn load_baseline(path: Option<&str>) -> Result<Option<oracle::bench_json::BenchJ
         return Ok(None);
     }
     bench_compare::load_json(Path::new(path)).map(Some)
+}
+
+fn run_bench_targets(args: &[String]) -> Result<(), String> {
+    let mut path = None;
+    let mut baseline_path = None;
+    let mut noise_path = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args.get(i).map(String::as_str) {
+            Some("--baseline") => {
+                baseline_path = args.get(i + 1).cloned();
+                i += 2;
+            }
+            Some("--noise") => {
+                noise_path = args.get(i + 1).cloned();
+                i += 2;
+            }
+            Some(p) => {
+                path = Some(p.to_string());
+                i += 1;
+            }
+            None => break,
+        }
+    }
+    let path = path.ok_or("usage: oracle bench-targets JSON [--baseline PATH] [--noise PATH]")?;
+    let json = bench_compare::load_json(Path::new(&path))?;
+    let baseline = load_baseline(baseline_path.as_deref())?;
+    let noise_path = noise_path.or_else(|| {
+        bench_compare::default_noise_path(Path::new("."), &json, &json).map(|(p, phase2)| {
+            if phase2 {
+                println!("using phase-2 noise ({p})");
+            }
+            p
+        })
+    });
+    let noise = match &noise_path {
+        Some(p) => bench_compare::load_noise(Path::new(p))?,
+        None => None,
+    };
+    let reports = oracle::bench_targets::evaluate(&json, baseline.as_ref(), noise.as_ref());
+    print!("{}", oracle::bench_targets::render(&reports));
+    Ok(())
 }
 
 fn run_bench_md(args: &[String]) -> Result<(), String> {

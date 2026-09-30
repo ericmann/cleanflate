@@ -5,6 +5,7 @@ pub mod bench;
 pub mod bench_compare;
 pub mod bench_env;
 pub mod bench_json;
+pub mod bench_targets;
 pub mod conformance;
 pub mod ffi;
 pub mod generate;

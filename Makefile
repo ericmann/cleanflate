@@ -1,6 +1,6 @@
 .PHONY: regress-seed fmt-check lint test corpus corpus-full crate-checks cleanroom-selftest \
         tools-check design-check ci proptest-10k proptest-3k fastslow-full bomb heavy \
-        fuzz-check fuzz-smoke fuzz-long fuzz-divergences bench bench-quick bench-compare bench-noise bench-md bench-stats profile-prep profile flamegraph \
+        fuzz-check fuzz-smoke fuzz-long fuzz-divergences bench bench-quick bench-compare bench-noise bench-md bench-targets bench-stats profile-prep profile flamegraph \
         provenance-snapshot provenance-summary build-report hooks-install \
         sources-check conformance-full malformed fuzz-smoke-decoder fuzz-milestone
 
@@ -175,6 +175,10 @@ bench-compare:
 bench-noise:
 	@test -n "$(A)" -a -n "$(B)" -a -n "$(OUT)" || { echo "usage: make bench-noise A=run1.json B=run2.json OUT=docs/perf/noise.json"; exit 2; }
 	cargo run --release -q -p oracle -- bench-noise $(A) $(B) --out $(OUT)
+
+bench-targets:
+	@test -n "$(J)" || { echo "usage: make bench-targets J=results.json [BASELINE=path] [NOISE=path]"; exit 2; }
+	cargo run --release -q -p oracle -- bench-targets $(J) $(if $(BASELINE),--baseline $(BASELINE)) $(if $(NOISE),--noise $(NOISE))
 
 bench-md:
 	@test -n "$(J)" || { echo "usage: make bench-md J=results.json [FILES=1] [FILTER=prefix] [BASELINE=path]"; exit 2; }
