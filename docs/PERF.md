@@ -477,3 +477,24 @@ Gated tasks and the likely outcome, against the gate max(2%, 2x noise) = max(2%,
 
 The noise (6.1% aggregate) is large next to most of these shares: only H1, H2 and possibly H3/H6-CRC can clear twice the noise on their own.
 
+
+### M0 acceptance (P0-13)
+
+Commands run on the M0 head (`14ce067`): `make ci` (green, 1m40s), `make heavy` (proptest-10k for chunking and fastslow, bomb, conformance-full, fastslow-full: all green; fastslow-full 248.7 s), and `make bench BENCH_ID=P0-13 BENCH_OUT=docs/perf/P0-13.json` (12.5 min).
+
+Checklist with evidence:
+
+- [x] Baseline JSON and noise are committed: `docs/perf/baseline.json`, `baseline-rerun.json`, `noise.json`, `baseline-quick.json`, `baseline-quick-rerun.json`, `noise-quick.json` (Phase 2 section above).
+- [x] The differential runs in `make test`: `crates/oracle/tests/fastslow.rs::{fastslow_conformance_oneshot, fastslow_conformance_streaming, fastslow_malformed, fastslow_proptest}`, the fixtures in `crates/oracle/tests/regressions.rs::{regressions_all_paths, regressions_manifest_matches_files}`, and in cleanflate `tests/decode_path.rs` and `tests/huffman_table.rs::table_decode_equals_serial_for_all_buffer_states`.
+- [x] H1 to H6 each have a number and a verdict: see "Hypotheses (P0-12)" and "Cost ranking (P0-12)" above.
+- [x] The `stats` and `test-hooks` features are linted and tested by `make lint` and `make test`; the default build carries no counter code.
+
+`make bench-compare A=docs/perf/baseline.json B=docs/perf/P0-13.json`: **27 WIN, 0 LOSS, 9 NEUTRAL aggregates and 32 per-file REGRESSION lines, although no decoder code changed between the two runs** (both measure `a59e2e1`-equivalent decoder code: the only later commits are documentation, tooling and the tolerance fix in `bench-compare`). Silesia level 6 one-shot moved raw 62.3 to 66.2, zlib 61.3 to 63.7 and gzip 51.8 to 54.5 MiB/s. This is measurement drift, not a code effect, and it shows that the noise estimated from the single baseline pair (6.1% aggregate) understates run-to-run variation on this machine: the machine ran about 6% faster during the M0 run. Consequences for later tasks:
+
+- Do not treat a single WIN or REGRESSION verdict against `baseline.json` as proof. Confirm a claimed win by an interleaved before/after comparison in the same session, or with a fresh baseline pair taken just before the change.
+- Per-file REGRESSION lines from `bench-compare` are unreliable at this noise level. Treat them as prompts to re-measure, not as failures.
+- The M0 run, not `baseline.json`, is the better reference for absolute numbers taken late in the session; both are committed.
+
+Provenance: `make provenance-snapshot` was run. The log holds three denied commands from this phase, all mine and benign (two recursive `grep` at the repository root without `--exclude-dir=target`, and one `sed` whose regular expression contained a forbidden word as a path-like argument); each was re-run another way. No denied profiling command appears.
+
+Push: see the progress log for this task.
