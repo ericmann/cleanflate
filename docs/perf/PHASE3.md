@@ -1007,6 +1007,92 @@ The aggregate difference is within about one percent everywhere (largest: `cante
 | kennedy.xls | 1029744 | zlib | 1 | 240.9 | 248.8 | 1.033 |
 | kennedy.xls | 1029744 | zlib | 6 | 275.7 | 272.5 | 0.988 |
 
+### P3-05 (M3 acceptance)
+
+Gates run in order: `make ci` (pass), `make heavy` (pass), `make fuzz-milestone` (pass), then the full bench `docs/perf/phase3/P3-05.json`.
+
+M3 checklist:
+
+- [x] Reset differential passes: `crates/oracle/tests/reset.rs::reset_equals_fresh_conformance`, `reset_equals_fresh_options`, `reset_proptest`, `reset_repeated_same_result` (in `make ci`/`make test` and `make proptest-3k`), plus the unit tests `crates/cleanflate/src/tests/reset.rs::reset_preserves_path`, `reset_clears_sticky_error`, `reset_clears_trailing_and_headers`, `reset_stats_zeroed`.
+- [x] Reuse against fresh-object streaming per Canterbury file: see `### P3-04` (reuse / fresh within about 1% on every aggregate; per-file table there) and the P3-05 run, whose reuse aggregates are in `docs/perf/phase3/P3-05.json`.
+- [x] Per-stream setup tasks P3-01 and P3-02 were gated out (setup frames 2.9% to 3.2% and about 3.0% against gates near 4.8%); only the API (`reset`) and the bench mode were added, so no Canterbury throughput change is expected or claimed.
+- [x] `docs/perf/phase3/P3-05.json` is committed.
+
+Canterbury one-shot like-for-like ratio per file, with sizes (raw and gzip, levels 1 and 6), `phase3-start` against this run (the change is machine drift plus per-row noise of about 3% to 5%, since no decoder code changed):
+
+| file | bytes | framing | level | ratio at start | ratio now | change |
+|---|---:|---|---:|---:|---:|---:|
+| grammar.lsp | 3721 | gzip | 1 | 0.273 | 0.246 | -9.8% |
+| grammar.lsp | 3721 | gzip | 6 | 0.259 | 0.243 | -6.3% |
+| grammar.lsp | 3721 | raw | 1 | 0.339 | 0.321 | -5.1% |
+| grammar.lsp | 3721 | raw | 6 | 0.337 | 0.308 | -8.5% |
+| xargs.1 | 4227 | gzip | 1 | 0.281 | 0.282 | +0.4% |
+| xargs.1 | 4227 | gzip | 6 | 0.290 | 0.278 | -4.0% |
+| xargs.1 | 4227 | raw | 1 | 0.344 | 0.332 | -3.6% |
+| xargs.1 | 4227 | raw | 6 | 0.352 | 0.339 | -3.7% |
+| fields.c | 11150 | gzip | 1 | 0.363 | 0.362 | -0.4% |
+| fields.c | 11150 | gzip | 6 | 0.349 | 0.362 | +3.7% |
+| fields.c | 11150 | raw | 1 | 0.406 | 0.407 | +0.2% |
+| fields.c | 11150 | raw | 6 | 0.407 | 0.429 | +5.3% |
+| cp.html | 24603 | gzip | 1 | 0.434 | 0.475 | +9.4% |
+| cp.html | 24603 | gzip | 6 | 0.471 | 0.475 | +0.9% |
+| cp.html | 24603 | raw | 1 | 0.497 | 0.524 | +5.5% |
+| cp.html | 24603 | raw | 6 | 0.506 | 0.518 | +2.5% |
+| sum | 38240 | gzip | 1 | 0.473 | 0.508 | +7.3% |
+| sum | 38240 | gzip | 6 | 0.481 | 0.541 | +12.5% |
+| sum | 38240 | raw | 1 | 0.494 | 0.547 | +10.7% |
+| sum | 38240 | raw | 6 | 0.530 | 0.576 | +8.8% |
+| asyoulik.txt | 125179 | gzip | 1 | 0.506 | 0.521 | +2.8% |
+| asyoulik.txt | 125179 | gzip | 6 | 0.562 | 0.640 | +13.9% |
+| asyoulik.txt | 125179 | raw | 1 | 0.481 | 0.566 | +17.7% |
+| asyoulik.txt | 125179 | raw | 6 | 0.635 | 0.648 | +2.1% |
+| alice29.txt | 152089 | gzip | 1 | 0.525 | 0.558 | +6.2% |
+| alice29.txt | 152089 | gzip | 6 | 0.617 | 0.664 | +7.5% |
+| alice29.txt | 152089 | raw | 1 | 0.543 | 0.569 | +4.7% |
+| alice29.txt | 152089 | raw | 6 | 0.648 | 0.690 | +6.5% |
+| lcet10.txt | 426754 | gzip | 1 | 0.538 | 0.573 | +6.4% |
+| lcet10.txt | 426754 | gzip | 6 | 0.648 | 0.686 | +6.0% |
+| lcet10.txt | 426754 | raw | 1 | 0.546 | 0.577 | +5.9% |
+| lcet10.txt | 426754 | raw | 6 | 0.659 | 0.717 | +8.8% |
+| plrabn12.txt | 481861 | gzip | 1 | 0.486 | 0.535 | +10.0% |
+| plrabn12.txt | 481861 | gzip | 6 | 0.643 | 0.659 | +2.6% |
+| plrabn12.txt | 481861 | raw | 1 | 0.484 | 0.535 | +10.6% |
+| plrabn12.txt | 481861 | raw | 6 | 0.640 | 0.691 | +8.0% |
+| ptt5 | 513216 | gzip | 1 | 0.590 | 0.622 | +5.4% |
+| ptt5 | 513216 | gzip | 6 | 0.588 | 0.532 | -9.4% |
+| ptt5 | 513216 | raw | 1 | 0.635 | 0.649 | +2.3% |
+| ptt5 | 513216 | raw | 6 | 0.607 | 0.512 | -15.6% |
+| kennedy.xls | 1029744 | gzip | 1 | 0.519 | 0.582 | +12.2% |
+| kennedy.xls | 1029744 | gzip | 6 | 0.501 | 0.572 | +14.2% |
+| kennedy.xls | 1029744 | raw | 1 | 0.489 | 0.589 | +20.4% |
+| kennedy.xls | 1029744 | raw | 6 | 0.514 | 0.556 | +8.0% |
+
+Fuzz milestone:
+
+```
+fuzz-milestone: diff_oracle_roundtrip seconds=1828 execs=1361846 exit=0 artifacts=0
+fuzz-milestone: diff_fast_reference seconds=1828 execs=373554 exit=0 artifacts=0
+```
+
+`make bench-compare A=baselines/phase3-start.json B=phase3/P3-05.json` (noise `phase3-noise.json`): 12 WIN, 2 LOSS, 73 per-file REGRESSION lines. Against the phase-2 record (first rows; the full table is `make bench-compare A=docs/perf/baselines/phase2.json B=docs/perf/phase3/P3-05.json`):
+
+```
+| key | A MiB/s | B MiB/s | delta % | 2x noise % | verdict | vs phase-2 % | B ratio | ratio delta % | ratio verdict |
+|---|---:|---:|---:|---:|---|---:|---:|---:|---|
+| canterbury/gzip/l1/oneshot | 190.6 | 184.6 | -3.13 | 0.07 | LOSS | -3.13 | 0.560 | +1.85 | NEUTRAL |
+| canterbury/gzip/l1/streaming | 187.9 | 181.4 | -3.48 | 1.14 | LOSS | -3.48 | 0.534 | n/a (denominator changed) | n/a |
+| canterbury/gzip/l6/oneshot | 218.2 | 208.8 | -4.30 | 2.94 | LOSS | -4.30 | 0.611 | -2.14 | NEUTRAL |
+```
+
+Targets (`make bench-targets J=docs/perf/phase3/P3-05.json`), reported, not gates:
+
+- T1 (Silesia streaming >= 0.80x C zlib streaming): NOT MET; worst: silesia/gzip/l1/streaming ratio 0.582 (threshold >= 0.80)
+- T2 (cleanflate one-shot >= streaming, every row): NOT MET; worst: silesia/zlib/l9 one-shot / streaming 0.903 (threshold >= 1.00)
+- T3 (Canterbury >= 0.70x C zlib, every mode): NOT MET; worst: canterbury/gzip/l1/streaming ratio 0.534 (threshold >= 0.70)
+- T4 (zlib and gzip within 3% of raw throughput): NOT MET; worst: silesia/gzip/l6/reuse overhead 12.73% (threshold <= 3%)
+- T5 (Silesia level-6 one-shot >= 0.70x C zlib): NOT MET; worst: silesia/raw/l6/oneshot ratio 0.680 (threshold >= 0.70)
+- T6 (no row slower than the phase-2 baseline beyond noise): NOT MET; worst: canterbury/zlib/l9/streaming -7.83% vs baseline
+
 ## Targets
 Filled by P5-02 (acceptance tasks).
 
