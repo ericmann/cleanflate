@@ -14,7 +14,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P0-09 bench-compare, bench-noise, bench-md and `bench --stats`
 - [x] P0-10 Cleanflate-only profiling entry point and `make profile`
 - [x] P0-11 Baseline and noise measurement
-- [~] P0-12 Hypotheses H1–H6 and baseline profile
+- [x] P0-12 Hypotheses H1–H6 and baseline profile
 - [ ] P0-13 M0 acceptance and push
 - [ ] P1-01 Bulk bit refill with an exact give-back invariant
 - [ ] P1-02 Two-level lookup tables for every symbol
@@ -72,3 +72,6 @@ perf_prep.rs (2 tests), examples/profile_decode.rs (cleanflate+std only; verifie
 
 ### P0-11 — 8b15626
 Six JSONs in docs/perf/ (full pair 7 samples, quick pair 5 samples, both noise files), PERF.md ## Phase 2 (Method, Machine, Baseline, Noise, Targets). Baseline Silesia l6 one-shot ratios: raw 22.5%, zlib 24.0%, gzip 20.7%; streaming 23.4/24.9/22.2%. Noise: aggregate_max_pct 6.08% full, 6.52% quick -- EXCEEDS 5%, so a win must beat ~12-13% on the noisiest aggregates (Canterbury keys). Governor schedutil, load ~3 at start, 8 CPUs, Ryzen 5 3400G. Also fixed a P0-09 defect in a separate chore commit (FP epsilon in compare). Manual check: NOT VERIFIED (human): noise > 5%; try a pinned performance governor.
+
+### P0-12 — 7f982a5
+PERF.md: Baseline profile, Hypotheses, Cost ranking (docs/perf/P0-12-stats.json committed). Verdicts: H1 CONFIRMED (litlen 46.0% / dist 48.3% serial, 1.08 B/refill, decode 32% inclusive), H2 CONFIRMED (0.644 dispatches/output byte, step self 36%, State clone 7.5%), H3 CONFIRMED (window_bytes_written/output = 1.0, ~7-14%), H4 DISCARDED (0.48% overlap), H5 DISCARDED (0.6%, 2.99 builds/block, no fixed blocks), H6 PARTIAL (CRC ~12.7% gzip, Adler ~2%, gzip one-shot zero-fills an extra output-sized buffer: 514MB allocated vs 302MB). Likely negative gated tasks: P1-03, P4-02, probably P2-03; P1-04 undecided. Observation: P0-04's uniform-invalid rule adds ~4% in the serial walk (any() over counts) -- cheap to fix in P1-02.
