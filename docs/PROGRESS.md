@@ -29,7 +29,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P3-02 Overlapping matches by pattern doubling
 - [x] P3-03 One-shot output sizing from hints
 - [x] P3-04 M3 acceptance and push
-- [~] P4-01 CRC-32 several bytes at a time
+- [x] P4-01 CRC-32 several bytes at a time
 - [ ] P4-02 Adler-32 revisit (gated)
 - [ ] P4-03 Re-sweep tunables on the final code
 - [ ] P4-04 M4 acceptance and push
@@ -121,3 +121,6 @@ config: ONESHOT_GROWTH_FLOOR=32768, ONESHOT_INITIAL_RATIO=4, ONESHOT_MAX_PREALLO
 ### P3-04 — d1c9ac1
 make ci, make heavy (incl. bomb 3 tests, fastslow-full 189s) green; docs/perf/P3-04.json committed; PERF.md M3 acceptance. Silesia l6 one-shot: raw 190.6 (66.7% of C zlib), zlib 177.5 (69.6%), gzip 135.5 (53.4%) -> 70% target NOT MET (zlib 0.4 pt short). Streaming: raw 212.4 (74.3%), zlib 196.8 (77.2%) MET (60%), gzip 141.7 (55.8%) NOT MET. No LOSS vs baseline; vs P2-04 all WIN, 2 per-file REGRESSION (mr/ooffice zlib streaming) noted. Decompressor size 33688 (unchanged). Push: pushed to origin.
 Manual check: NOT VERIFIED (human): (1) GitHub Actions ci green. (2) Watch peak RSS of make bomb (/usr/bin/time -v) against a phase-1 checkout. (3) Review D-30/D-31 DESIGN entries.
+
+### P4-01 — 27ad6c7
+CRC32_SLICES=8 (config). checksum.rs: CRC32_TABLES static built by const fn (zero-byte-step recurrence, split_first_mut walking, no indexing), crc32_update_bytewise (tail + reference), fold via as_chunks::<8>. D-32 [perf] with GF(2) linearity derivation. Tests: 3 in tests/checksum.rs + oracle crc32_matches_oracle_long (1 MiB, random pieces). PT1: gzip aggregates WIN (silesia oneshot 120.2->154.3 +28.4%, streaming +28.3%, canterbury +36%/+42%); gzip overhead over raw 36.3% -> 4.6% (silesia oneshot), 46.5% -> 13.4% (canterbury); raw/zlib NEUTRAL (7 drift REGRESSION lines on raw/zlib keys whose code is untouched, noted). make test, proptest-3k pass. Interpretation: as_chunks (stable 1.88).
