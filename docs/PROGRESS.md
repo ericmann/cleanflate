@@ -34,7 +34,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P4-02 Branch-light bulk refill (gated)
 - [x] P4-03 Fast-loop bounds-check elision and inlined lookup
 - [x] P4-04 Multi-literal table entries (optional, measured)
-- [ ] P4-05 Re-tune table widths on the final loop
+- [x] P4-05 Re-tune table widths on the final loop
 - [ ] P4-06 M4 acceptance and push
 - [ ] P5-01 After-profiles and flamegraphs
 - [ ] P5-02 Final bench, PHASE3.md report and PERF.md phase-3 section
@@ -141,3 +141,6 @@ BIG WIN, kept. huffman.rs FastTable/FastDecoded/fast_table (fixed-size first lev
 
 ### P4-04 — 7dac8b3
 NEGATIVE RESULT (PT4). Pair entries implemented correctly (tests passed, stats matched) but LOSS: bench silesia l1 oneshot -18%, streaming -16%, gzip -16% (verdict LOSS incl. ratio); A/B -5.6..-9.2%. Reverted huffman.rs/fast_loop.rs and the huffman_multi tests; kept trace test fast_loop_pairs_same_trace_as_reference. Next free D stays D-37 (no entry written). Did not take perf annotate; gate judged on literal share 46.6%.
+
+### P4-05 — b218184
+Measured no change: LITLEN_TABLE_BITS stays 10 (11: -6%, 12: -4%, 9: within drift), DIST_TABLE_BITS stays 8 (7 within drift; 9 +0.4% overall but -1.5..-2.6% on l1 raw). Drift control default vs repeat: 4W/3L of 24. config.rs doc comments cite docs/perf/phase3/P4-05/*.json. ASSUMPTION keys unchanged.
