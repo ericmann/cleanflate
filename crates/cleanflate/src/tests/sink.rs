@@ -3,8 +3,12 @@ use crate::decode_path::DecodePath;
 use crate::error::Error;
 use crate::gzip::GzipDecoder;
 use crate::options::TrailingData;
-use crate::sink::{OutputSink, SliceSink};
+use crate::options::{Format, Options};
+use crate::sink::{OutputSink, SliceSink, VecSink};
+use crate::stream::{decompress_core_vec, decompress_with_path, grow_output, next_len};
 use crate::tests::bitwriter::BitWriter;
+use crate::tests::dynbuilder::{emit_dynamic_block, literal_cl_program, DynBlock, PayloadSym};
+use crate::tests::inflate_fixed::length_symbol_and_extra;
 use crate::tests::inflate_fixed::{emit_block_header, emit_end_of_block, emit_literal, emit_match};
 
 #[test]
@@ -107,4 +111,220 @@ fn gzip_second_member_history_isolated_in_one_call() {
             "{path:?}"
         );
     }
+}
+
+#[test]
+fn vec_sink_push_extend_copy_room() {
+    let mut v: Vec<u8> = Vec::with_capacity(8);
+    v.push(9); // earlier contents are not part of this call's output
+    let mut s = VecSink::new(&mut v, 5);
+    assert_eq!((s.written(), s.room()), (0, 5));
+    assert!(s.push(1));
+    assert_eq!(s.extend_from_slice(&[2, 3]), 2);
+    assert_eq!(s.copy_within_back(3, 3), 2, "room limits the copy");
+    assert_eq!((s.written(), s.room()), (5, 0));
+    assert!(!s.push(7));
+    assert_eq!(s.get_back(1), Some(2));
+    assert_eq!(s.get_back(5), Some(1));
+    assert_eq!(s.get_back(6), None, "reaches before this call's output");
+    assert_eq!(s.written_since(2), &[3, 1, 2]);
+    assert_eq!(s.copy_within_back(0, 1), 0);
+    assert_eq!(v, [9, 1, 2, 3, 1, 2]);
+    assert!(v.capacity() >= 6);
+}
+
+#[test]
+fn vec_sink_growth_follows_next_len_and_cap() {
+    for limit in [0u64, 1, 10_000, 70_000, 1 << 20] {
+        let first = next_len(0, limit);
+        let mut v: Vec<u8> = Vec::with_capacity(first);
+        let mut caps = vec![v.capacity()];
+        while grow_output(&mut v, limit) {
+            caps.push(v.capacity());
+            assert!(caps.len() < 64, "growth must terminate");
+        }
+        for pair in caps.windows(2) {
+            assert_eq!(pair[1], next_len(pair[0], limit), "limit {limit}");
+        }
+        assert!(
+            v.capacity() as u64 <= limit.max(first as u64),
+            "capacity {} past limit {limit}",
+            v.capacity()
+        );
+    }
+}
+
+fn stored_body(data: &[u8]) -> Vec<u8> {
+    let mut out = vec![0x01u8];
+    let len = data.len() as u16;
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(&(!len).to_le_bytes());
+    out.extend_from_slice(data);
+    out
+}
+
+fn vec_decode(
+    format: Format,
+    input: &[u8],
+    options: &Options,
+    path: DecodePath,
+) -> Result<crate::stream::Decoded, Error> {
+    decompress_core_vec(format, input, options, path).map(|c| c.decoded)
+}
+
+#[test]
+fn vec_sink_exact_limit_ok_one_over_errors() {
+    let n = 100usize;
+    let data: Vec<u8> = (0..n as u32).map(|i| (i * 7) as u8).collect();
+    let input = stored_body(&data);
+    for path in [DecodePath::Fast, DecodePath::Reference] {
+        let exact = Options {
+            max_output: n as u64,
+            ..Options::default()
+        };
+        let under = Options {
+            max_output: n as u64 - 1,
+            ..Options::default()
+        };
+        let slice_ok = decompress_with_path(Format::Raw, &input, &exact, path).expect("slice ok");
+        let vec_ok = vec_decode(Format::Raw, &input, &exact, path).expect("vec ok");
+        assert_eq!(slice_ok.data, data);
+        assert_eq!(vec_ok.data, data);
+        let want = Error::OutputLimitExceeded {
+            limit: n as u64 - 1,
+        };
+        assert_eq!(
+            decompress_with_path(Format::Raw, &input, &under, path).expect_err("slice over"),
+            want
+        );
+        assert_eq!(
+            vec_decode(Format::Raw, &input, &under, path).expect_err("vec over"),
+            want
+        );
+    }
+}
+
+fn fixed_with_match() -> (Vec<u8>, Vec<u8>) {
+    let mut w = BitWriter::new();
+    emit_block_header(&mut w, true, 0b01);
+    for &b in b"abcab" {
+        emit_literal(&mut w, b as u16);
+    }
+    emit_match(&mut w, 20, 3);
+    emit_match(&mut w, 258, 1);
+    emit_end_of_block(&mut w);
+    let mut expected = b"abcab".to_vec();
+    for (len, dist) in [(20usize, 3usize), (258, 1)] {
+        for _ in 0..len {
+            let b = expected[expected.len() - dist];
+            expected.push(b);
+        }
+    }
+    (w.finish(), expected)
+}
+
+fn dynamic_with_match() -> (Vec<u8>, Vec<u8>) {
+    let (lsym, _, _) = length_symbol_and_extra(4);
+    let mut litlen = vec![0u8; 260];
+    litlen[b'a' as usize] = 2;
+    litlen[256] = 2;
+    litlen[lsym as usize] = 1;
+    let dist = vec![1u8];
+    let mut all = litlen.clone();
+    all.extend_from_slice(&dist);
+    let block = DynBlock {
+        bfinal: true,
+        cl_program: literal_cl_program(&all),
+        litlen_lengths: litlen,
+        dist_lengths: dist,
+    };
+    let payload = [
+        PayloadSym::Literal(b'a'),
+        PayloadSym::Match { len: 4, dist: 1 },
+    ];
+    let mut w = BitWriter::new();
+    emit_dynamic_block(&mut w, &block, &payload);
+    (w.finish(), b"aaaaa".to_vec())
+}
+
+#[test]
+fn vec_sink_matches_slice_sink_hand_built() {
+    let header = [0x1fu8, 0x8b, 8, 0, 0, 0, 0, 0, 0, 255];
+    // C16: CRC-32 literals computed once with oracle::ffi::crc32.
+    let mut two_members = header.to_vec();
+    two_members.extend_from_slice(&stored_body(b"abc"));
+    two_members.extend_from_slice(&0x3524_41C2u32.to_le_bytes());
+    two_members.extend_from_slice(&3u32.to_le_bytes());
+    two_members.extend_from_slice(&header);
+    two_members.extend_from_slice(&stored_body(b"foo"));
+    two_members.extend_from_slice(&0x8C73_6521u32.to_le_bytes());
+    two_members.extend_from_slice(&3u32.to_le_bytes());
+
+    let (fixed, fixed_out) = fixed_with_match();
+    let (dynamic, dynamic_out) = dynamic_with_match();
+    let stored = stored_body(b"hello stored");
+    // Dictionary: a match reaching back into the preset window.
+    let mut dict_body = BitWriter::new();
+    emit_block_header(&mut dict_body, true, 0b01);
+    emit_match(&mut dict_body, 3, 3);
+    emit_end_of_block(&mut dict_body);
+    let dict_body = dict_body.finish();
+    let dict_options = Options {
+        dictionary: Some(b"xabc".to_vec()),
+        ..Options::default()
+    };
+
+    type Case = (&'static str, Format, Vec<u8>, Options, Vec<u8>);
+    let cases: Vec<Case> = vec![
+        ("fixed", Format::Raw, fixed, Options::default(), fixed_out),
+        (
+            "dynamic",
+            Format::Raw,
+            dynamic,
+            Options::default(),
+            dynamic_out,
+        ),
+        (
+            "stored",
+            Format::Raw,
+            stored,
+            Options::default(),
+            b"hello stored".to_vec(),
+        ),
+        (
+            "dictionary",
+            Format::Raw,
+            dict_body,
+            dict_options,
+            b"abc".to_vec(),
+        ),
+        (
+            "two members",
+            Format::Gzip,
+            two_members,
+            Options::default(),
+            b"abcfoo".to_vec(),
+        ),
+    ];
+    for (name, format, input, options, expected) in cases {
+        for path in [DecodePath::Fast, DecodePath::Reference] {
+            let slice = decompress_with_path(format, &input, &options, path).expect(name);
+            let vec = vec_decode(format, &input, &options, path).expect(name);
+            assert_eq!(slice.data, expected, "{name} slice {path:?}");
+            assert_eq!(vec.data, expected, "{name} vec {path:?}");
+            assert_eq!(vec.consumed, slice.consumed, "{name} consumed");
+            assert_eq!(vec.gzip_members, slice.gzip_members, "{name} headers");
+        }
+    }
+    // An error is the same on both sinks.
+    let bad = [0x07u8];
+    assert_eq!(
+        decompress_with_path(Format::Raw, &bad, &Options::default(), DecodePath::Fast)
+            .map(|d| d.data),
+        vec_decode(Format::Raw, &bad, &Options::default(), DecodePath::Fast).map(|d| d.data)
+    );
+    assert_eq!(
+        vec_decode(Format::Raw, &[], &Options::default(), DecodePath::Fast).map(|d| d.data),
+        Err(Error::Truncated)
+    );
 }

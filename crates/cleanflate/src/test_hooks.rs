@@ -17,6 +17,32 @@ pub fn decompress_with_path(
     crate::stream::decompress_with_path(format, input, options, path)
 }
 
+/// Which one-shot output path [`decompress_with_sink`] drives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OneShotSink {
+    /// Decode into a zero-filled buffer that grows on demand (the public
+    /// one-shot path today).
+    Slice,
+    /// Decode by appending to a `Vec` without zero-filling.
+    Vec,
+}
+
+/// One-shot decode through the chosen output sink and decode path.
+pub fn decompress_with_sink(
+    format: Format,
+    input: &[u8],
+    options: &Options,
+    path: DecodePath,
+    sink: OneShotSink,
+) -> Result<Decoded, Error> {
+    match sink {
+        OneShotSink::Slice => crate::stream::decompress_with_path(format, input, options, path),
+        OneShotSink::Vec => {
+            crate::stream::decompress_core_vec(format, input, options, path).map(|c| c.decoded)
+        }
+    }
+}
+
 /// Like [`Decompressor::new`], but decoding with `path`.
 pub fn decompressor_with_path(format: Format, options: Options, path: DecodePath) -> Decompressor {
     Decompressor::new_with_path(format, options, path)

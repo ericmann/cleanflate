@@ -128,3 +128,88 @@ impl OutputSink for SliceSink<'_> {
         self.buf.get(start..self.pos).unwrap_or(&[])
     }
 }
+
+/// An appending sink over a `Vec<u8>`: decoded bytes are written after the
+/// Vec's current contents without zero-filling. It never grows the Vec
+/// itself: its room is bounded by the Vec's capacity at construction (and by
+/// the caller's allowance), so every write that `room()` promised succeeds,
+/// and the one-shot driver decides when and how far to reserve more.
+#[cfg_attr(not(any(test, feature = "test-hooks")), allow(dead_code))]
+pub(crate) struct VecSink<'a> {
+    vec: &'a mut Vec<u8>,
+    /// The Vec's length when the sink was created.
+    start: usize,
+    /// The largest length the Vec may reach through this sink.
+    end: usize,
+}
+
+#[cfg_attr(not(any(test, feature = "test-hooks")), allow(dead_code))]
+impl<'a> VecSink<'a> {
+    /// A sink appending to `vec`, for at most `allowance` bytes and never
+    /// past the capacity `vec` has now.
+    pub(crate) fn new(vec: &'a mut Vec<u8>, allowance: usize) -> Self {
+        let start = vec.len();
+        let end = start.saturating_add(allowance).min(vec.capacity());
+        VecSink { vec, start, end }
+    }
+}
+
+impl OutputSink for VecSink<'_> {
+    #[inline]
+    fn written(&self) -> usize {
+        self.vec.len().saturating_sub(self.start)
+    }
+
+    #[inline]
+    fn room(&self) -> usize {
+        self.end.saturating_sub(self.vec.len())
+    }
+
+    #[inline]
+    fn push(&mut self, byte: u8) -> bool {
+        if self.vec.len() < self.end {
+            self.vec.push(byte);
+            true
+        } else {
+            false
+        }
+    }
+
+    #[inline]
+    fn extend_from_slice(&mut self, data: &[u8]) -> usize {
+        let n = data.len().min(self.room());
+        match data.get(..n) {
+            Some(src) => {
+                self.vec.extend_from_slice(src);
+                n
+            }
+            None => 0,
+        }
+    }
+
+    #[inline]
+    fn copy_within_back(&mut self, dist: usize, n: usize) -> usize {
+        if dist == 0 || dist > self.written() || n > dist {
+            return 0;
+        }
+        let n = n.min(self.room());
+        let src = self.vec.len() - dist;
+        self.vec.extend_from_within(src..src + n);
+        n
+    }
+
+    #[inline]
+    fn get_back(&self, dist: usize) -> Option<u8> {
+        if dist == 0 || dist > self.written() {
+            return None;
+        }
+        self.vec.get(self.vec.len() - dist).copied()
+    }
+
+    #[inline]
+    fn written_since(&self, start: usize) -> &[u8] {
+        self.vec
+            .get(self.start.saturating_add(start)..)
+            .unwrap_or(&[])
+    }
+}

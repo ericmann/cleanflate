@@ -9,7 +9,7 @@ use crate::error::Error;
 use crate::gzip::{GzipDecoder, GzipHeader};
 use crate::inflate::{InflateStatus, Inflater};
 use crate::options::{Format, Options, TrailingData};
-use crate::sink::{OutputSink, SliceSink};
+use crate::sink::{OutputSink, SliceSink, VecSink};
 use crate::zlib::ZlibDecoder;
 
 /// The format-specific decoder a [`Decompressor`] drives. All variants
@@ -217,23 +217,65 @@ impl Decompressor {
             return self.handle_post_done_input(input);
         }
 
+        let (allowance, limit_bound) = self.allowance(output.len());
+        let output_slice = output.get_mut(..allowance).unwrap_or(&mut []);
+        let mut sink = SliceSink::new(output_slice);
+        self.decompress_into(input, &mut sink, limit_bound)
+    }
+
+    /// [`Self::decompress`] appending to `out`, within the capacity `out`
+    /// has now: the room offered is `capacity - len`, exactly as a slice of
+    /// that length would be. The decoded bytes are appended without
+    /// zero-filling; the caller reserves more capacity when this reports
+    /// [`Status::OutputFull`].
+    #[cfg_attr(not(any(test, feature = "test-hooks")), allow(dead_code))]
+    pub(crate) fn decompress_vec(
+        &mut self,
+        input: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<Progress, Error> {
+        if let Some(e) = &self.error {
+            return Err(e.clone());
+        }
+
+        if self.backend.is_done() {
+            return self.handle_post_done_input(input);
+        }
+
+        let (allowance, limit_bound) = self.allowance(out.capacity().saturating_sub(out.len()));
+        let mut sink = VecSink::new(out, allowance);
+        self.decompress_into(input, &mut sink, limit_bound)
+    }
+
+    /// How much of the `offered` room this call may use, and whether the
+    /// output limit (not the caller's room) is what bounds it.
+    ///
+    /// The limit is what bounded this call -- not the caller's own
+    /// output room -- iff there was no allowance left at all, or the
+    /// allowance was strictly smaller than what the caller offered.
+    /// Comparing directly against `offered` (rather than the
+    /// already-clamped allowance) is what makes a zero-length offer
+    /// distinguishable from a zero-length *allowance*: the former is just
+    /// the caller asking for no bytes this call (resumable `OutputFull`),
+    /// the latter is the decompression-bomb guard actually having nothing
+    /// left to give.
+    fn allowance(&self, offered: usize) -> (usize, bool) {
         let already_out = self.backend.total_out();
         let remaining_allowance = self.options.max_output.saturating_sub(already_out);
-        // The limit is what bounded this call -- not the caller's own
-        // output slice -- iff there was no allowance left at all, or the
-        // allowance was strictly smaller than what the caller offered.
-        // Comparing directly against `output.len()` (rather than the
-        // already-clamped `allowance` below) is what makes a zero-length
-        // `output` slice distinguishable from a zero-length *allowance*:
-        // the former is just the caller asking for no bytes this call
-        // (resumable `OutputFull`), the latter is the decompression-bomb
-        // guard actually having nothing left to give.
-        let limit_bound = remaining_allowance == 0 || remaining_allowance < output.len() as u64;
-        let allowance = remaining_allowance.min(output.len() as u64) as usize;
-        let output_slice = output.get_mut(..allowance).unwrap_or(&mut []);
+        let limit_bound = remaining_allowance == 0 || remaining_allowance < offered as u64;
+        let allowance = remaining_allowance.min(offered as u64) as usize;
+        (allowance, limit_bound)
+    }
 
-        let mut sink = SliceSink::new(output_slice);
-        let step_result = self.backend.step_into(input, &mut sink);
+    /// The shared body of [`Self::decompress`] and [`Self::decompress_vec`]:
+    /// step the backend into `sink` and turn its status into progress.
+    fn decompress_into<S: OutputSink>(
+        &mut self,
+        input: &[u8],
+        sink: &mut S,
+        limit_bound: bool,
+    ) -> Result<Progress, Error> {
+        let step_result = self.backend.step_into(input, sink);
         let (consumed, produced, inflate_status) = match step_result {
             Ok(v) => v,
             Err(e) => {
@@ -435,10 +477,10 @@ pub fn decompress_with_stats(
 }
 
 /// What the shared one-shot implementation produces.
-struct Core {
-    decoded: Decoded,
+pub(crate) struct Core {
+    pub(crate) decoded: Decoded,
     #[cfg(feature = "stats")]
-    stats: crate::stats::Stats,
+    pub(crate) stats: crate::stats::Stats,
 }
 
 /// The one implementation behind every one-shot entry point.
@@ -511,6 +553,104 @@ fn decompress_core(
     }
 
     buf.truncate(filled);
+    finish_core(
+        decompressor,
+        buf,
+        in_pos,
+        #[cfg(feature = "stats")]
+        resizes,
+        #[cfg(feature = "stats")]
+        allocated,
+    )
+}
+
+/// Reserve the next step of the one-shot growth schedule on `buf`: its
+/// capacity goes to `next_len(capacity, limit)`, never past `limit`.
+/// `false` if the schedule has reached the limit or the reservation failed.
+#[cfg_attr(not(any(test, feature = "test-hooks")), allow(dead_code))]
+pub(crate) fn grow_output(buf: &mut Vec<u8>, limit: u64) -> bool {
+    let cap = buf.capacity();
+    let target = next_len(cap, limit);
+    if target <= cap || buf.try_reserve_exact(target - buf.len()).is_err() {
+        return false;
+    }
+    buf.capacity() > cap
+}
+
+/// [`decompress_core`] appending to a `Vec` instead of filling a
+/// zero-initialised buffer: same first size, same growth schedule (one
+/// `reserve_exact` step per `OutputFull`), same errors and results. The
+/// decoded bytes are appended; no byte is written twice.
+#[cfg_attr(not(any(test, feature = "test-hooks")), allow(dead_code))]
+pub(crate) fn decompress_core_vec(
+    format: Format,
+    input: &[u8],
+    options: &Options,
+    path: DecodePath,
+) -> Result<Core, Error> {
+    if input.is_empty() {
+        return Err(Error::Truncated);
+    }
+    #[cfg(feature = "stats")]
+    let mut resizes = 0u64;
+    #[cfg(feature = "stats")]
+    let mut allocated = 0u64;
+
+    let mut decompressor = Decompressor::new_with_path(format, options.clone(), path);
+    let first = next_len(0, options.max_output).max(initial_len(format, input, options.max_output));
+    let mut buf: Vec<u8> = Vec::with_capacity(first);
+    if first > 0 {
+        stat!(resizes, 1);
+        stat!(allocated, buf.capacity());
+    }
+    let mut in_pos = 0usize;
+
+    loop {
+        let remaining_input = input.get(in_pos..).unwrap_or(&[]);
+        let progress = decompressor.decompress_vec(remaining_input, &mut buf)?;
+        in_pos += progress.consumed;
+
+        match progress.status {
+            Status::Done => break,
+            Status::OutputFull => {
+                #[cfg(feature = "stats")]
+                let before = buf.capacity();
+                if !grow_output(&mut buf, options.max_output) {
+                    return Err(Error::OutputLimitExceeded {
+                        limit: options.max_output,
+                    });
+                }
+                stat!(resizes, 1);
+                stat!(allocated, buf.capacity() - before);
+            }
+            Status::NeedsInput => {
+                if progress.consumed == 0 {
+                    break;
+                }
+            }
+        }
+    }
+
+    finish_core(
+        decompressor,
+        buf,
+        in_pos,
+        #[cfg(feature = "stats")]
+        resizes,
+        #[cfg(feature = "stats")]
+        allocated,
+    )
+}
+
+/// The end of every one-shot decode: check the stream finished cleanly and
+/// package the result.
+fn finish_core(
+    mut decompressor: Decompressor,
+    buf: Vec<u8>,
+    in_pos: usize,
+    #[cfg(feature = "stats")] resizes: u64,
+    #[cfg(feature = "stats")] allocated: u64,
+) -> Result<Core, Error> {
     decompressor.finish()?;
     // `trailing_start()`, when set, is the exact offset where the member
     // stream ended -- gzip may have had to consume one more byte than

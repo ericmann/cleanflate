@@ -21,7 +21,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P2-03 CRC-32 slicing-by-16 against 8 (gated)
 - [x] P2-04 Wrapper per-call overhead in streaming (gated)
 - [x] P2-05 Output-sink abstraction in the decoder core (slice sink only)
-- [ ] P2-06 Vec sink and the sink differential
+- [~] P2-06 Vec sink and the sink differential
 - [ ] P2-07 One-shot decoding appends to a Vec: no zero-fill
 - [ ] P2-08 One-shot size-hint revisit (gated)
 - [ ] P2-09 M2 acceptance and push
