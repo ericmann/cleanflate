@@ -30,7 +30,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P3-03 `Decompressor::reset()` and the reset differential
 - [x] P3-04 Reuse bench case
 - [x] P3-05 M3 acceptance and push
-- [ ] P4-01 Assembly evidence tool for the fast loop
+- [x] P4-01 Assembly evidence tool for the fast loop
 - [ ] P4-02 Branch-light bulk refill (gated)
 - [ ] P4-03 Fast-loop bounds-check elision and inlined lookup
 - [ ] P4-04 Multi-literal table entries (optional, measured)
@@ -129,3 +129,6 @@ Mode::Reuse in bench (Fixture.reuse RefCell<Decompressor>), Aggregate.ratio/c_zl
 
 ### P3-05 — 817a650
 make ci, heavy, fuzz-milestone pass: diff_oracle_roundtrip seconds=1828 execs=1361846; diff_fast_reference seconds=1828 execs=373554; no artifacts. P3-05.json (full bench incl reuse) committed, pushed. No M3 technique changed throughput (P3-01/P3-02 gated out; reset API + reuse bench only); compare vs start: 12 WIN 2 LOSS 73 REGRESSION lines = drift. Manual check: NOT VERIFIED (human): ci green; review reset rustdoc/D-35; peak RSS of bomb vs start.
+
+### P4-01 — c062fc1
+tools/perf/asm_branches.py (+tests, fixture), make asm / asm-count (ASM_FUNCS, ASM_SRCS, ASM_OUT). KEY FINDING: fast loop is inlined into Inflater::step_into in the lib asm build (no fast_loop symbol); step_into 2259 instr / 167 cond branches / 0 panic calls; decode_table 182/22/0; copy_match_sink 241/24 with 2 panic calls (2 sites); src:fast_loop.rs 79 instr/11 branches/0 panic. So there are NO bounds-check panic sites in the hot loop: P4-03's elision premise is weak; measure branches/instructions instead. docs/perf/phase3/P4-01-asm.json committed.
