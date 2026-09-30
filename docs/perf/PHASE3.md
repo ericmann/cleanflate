@@ -768,6 +768,25 @@ Frames: `Adler32::update` (inlined as `adler_fold` inside `ZlibDecoder::step`). 
 
 Gate: max(2%, 2 x the quick noise of `silesia/zlib/l6/streaming`) = max(2%, 2 x 3.51%) = 7.02%. Both keys are below it (6.34% and 4.83%), so the task records a negative result and changes nothing. The margin on Silesia is small, and the microbench suggests where it comes from: production Adler-32 runs at about 3.0 GiB/s (P2-01), which at about 200 MiB/s of decode is roughly 6.5% of time. Even a batched loop that doubled Adler-32 speed would return about 3% of zlib decode time, below the 7% this machine's noise lets a bench prove, so a WIN verdict could not be shown. The zlib to raw gap (T4) is therefore left to the decode loop work (P4-02 to P4-04), which speeds every framing.
 
+### P2-03
+**Gate passed; change measured and reverted (PT4). `CRC32_SLICES` stays 8.**
+
+Gate (PT2), `make profile`: `Crc32::update` (with `crc32_update_sliced<8>` inlined) is 8.31% of samples in `silesia/rfc1952/l6/streaming` and 8.99% in `canterbury/rfc1952/l1/oneshot`, against gates of 5.14% (2 x 2.57%) and 4.84% (2 x 2.42%): both above, so the change was tried. Phase 2's whole-decode sweep found 16 slices no faster than 8 (`docs/perf/P4-03/CRC32_SLICES-16.json`, -0.9%).
+
+Microbench (`docs/perf/phase3/P2-03-checksum.json`, fresh run; noise from the two P2-01 runs):
+
+| size | sliced8 MiB/s | sliced16 MiB/s | gain | 2 x max row noise |
+|---:|---:|---:|---:|---:|
+| 4096 | 2002 | 2361 | +17.9% | 11.3% |
+| 65536 | 2000 | 2308 | +15.4% | 14.2% |
+| 1048576 | 1974 | 2240 | +13.5% | 10.4% |
+
+The gain exceeds twice the microbench noise at every size, so `CRC32_SLICES = 16` was set and measured. Bounded expectation: CRC-32 is about 8.3% of gzip decode and 16 slices make it about 14% faster, so at most 1.2% of decode time comes back, four times smaller than the 5.1% this machine's noise lets a bench prove.
+
+PT1 (`docs/perf/phase3/P2-03-before.json`, `P2-03.json`, bench-quick; hotspot share `Crc32::update` 8.31% before, re-profile not repeated after the revert): the JSON pair cannot judge the change. The before run saw the machine's load average climb from 2.9 to 8.4 (a shared desktop with a browser and a cluster service) and the after run started at 7.6, so unchanged raw keys show "WIN" deltas of up to +66%. On the targeted gzip keys the verdicts are NEUTRAL on `silesia/gzip/l6/streaming` (+4.5% throughput, ratio +2.5%, both inside 2 x noise) and a ratio LOSS on `canterbury/gzip/l1/streaming` (-3.7%); no targeted key has a clean WIN. The controlled check is five interleaved pairs of old and new `profile_decode` binaries on `silesia/rfc1952/l6/streaming` (MiB/s): before 160.2, 166.1, 165.0, 170.4, 165.8; after 169.4, 174.3, 170.8, 162.4, 169.6 (mean 165.5 to 169.3, +2.3%, four of five pairs faster), which is consistent with the bounded +1.2% and inside the pair-to-pair spread.
+
+PT4: neither a WIN verdict nor a named prerequisite of a later task, so the value is reverted to 8. The microbench numbers, the tests (`crc32_sliced_variants_match_bytewise` covers width 16) and the fixtures stay. Width 16 remains a one-line change if the checksum share grows after the M4 loop work shrinks everything else.
+
 ## Targets
 Filled by P5-02 (acceptance tasks).
 
