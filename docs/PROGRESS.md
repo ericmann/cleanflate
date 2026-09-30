@@ -33,7 +33,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P4-01 Assembly evidence tool for the fast loop
 - [x] P4-02 Branch-light bulk refill (gated)
 - [x] P4-03 Fast-loop bounds-check elision and inlined lookup
-- [ ] P4-04 Multi-literal table entries (optional, measured)
+- [x] P4-04 Multi-literal table entries (optional, measured)
 - [ ] P4-05 Re-tune table widths on the final loop
 - [ ] P4-06 M4 acceptance and push
 - [ ] P5-01 After-profiles and flamegraphs
@@ -138,3 +138,6 @@ NEGATIVE RESULT (PT4). refill_bulk already IS the word-read, branch-free refill 
 
 ### P4-03 — 161d00c
 BIG WIN, kept. huffman.rs FastTable/FastDecoded/fast_table (fixed-size first level, masked index), BitReader::bits() + inline attrs, fast_loop::run rewritten (one function, locals). silesia raw l1 streaming 129.3->170.1 MiB/s (+31.5%), every l1/l6 key +18..+31% WIN on throughput AND ratio verdicts; instructions 36.4G->25.8G. asm: decode_table symbol gone (inlined), panic sites 0. fastslow-full, bomb, proptest-3k, fuzz-smoke pass. DESIGN D-36. One per-file regression alice29 gzip l1 oneshot -6.1% (noise). Next free D = D-37. Note for P4-04/P4-05: loop is now a single `run` function; LITLEN_FIRST/DIST_FIRST are derived from config table bits (fast_table returns None for other widths).
+
+### P4-04 — 7dac8b3
+NEGATIVE RESULT (PT4). Pair entries implemented correctly (tests passed, stats matched) but LOSS: bench silesia l1 oneshot -18%, streaming -16%, gzip -16% (verdict LOSS incl. ratio); A/B -5.6..-9.2%. Reverted huffman.rs/fast_loop.rs and the huffman_multi tests; kept trace test fast_loop_pairs_same_trace_as_reference. Next free D stays D-37 (no entry written). Did not take perf annotate; gate judged on literal share 46.6%.
