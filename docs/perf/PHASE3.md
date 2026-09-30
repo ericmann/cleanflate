@@ -1190,6 +1190,26 @@ Measurement (`docs/perf/phase3/P4-04-before.json`, `P4-04.json`, bench-quick, ag
 
 Why it loses, from the design: with a dynamic level-1 code the literals that matter have codes of 4 to 9 bits, so a pair fits in 10 bits only for the most frequent few, and every lookup gains one more outcome (single, pair, sub-table, match) to branch on; the branch between "pair" and "single" is data-dependent and poorly predicted, costing more than the saved lookup, and the extra build pass adds to every block's table cost. The literal branch is already cheap after P4-03 (one inlined lookup, one store). SPEC's "keep the variant that wins" applies: the variant without pairs stays.
 
+### P4-05
+**Measured: no change. Both widths stay (`LITLEN_TABLE_BITS` 10, `DIST_TABLE_BITS` 8).** The fast loop's table views are sized by these constants (`LITLEN_FIRST`, `DIST_FIRST`), so each candidate was built and benchmarked as a whole: bench-quick per candidate (`docs/perf/phase3/P4-05/<KEY>-<value>.json`), the defaults first (`default.json`) and again at the end (`default-repeat.json`) as a drift control, each candidate compared against both with the quick noise file. Table of counts over the 24 non-reuse aggregates (throughput verdicts W = WIN, L = LOSS; ratio verdicts in the same way; mean throughput delta), and over the four level-1 raw keys:
+
+| candidate | vs | all keys | level-1 raw keys |
+|---|---|---|---|
+| `LITLEN_TABLE_BITS-9` | default | n=24 thr W1/L3 ratio W3/L4 mean -0.6% | n=4 thr W1/L0 ratio W1/L0 mean +0.6% |
+| `LITLEN_TABLE_BITS-9` | default-repeat | n=24 thr W3/L5 ratio W2/L5 mean -0.9% | n=4 thr W1/L1 ratio W1/L0 mean -0.5% |
+| `LITLEN_TABLE_BITS-11` | default | n=24 thr W0/L14 ratio W2/L8 mean -6.1% | n=4 thr W0/L1 ratio W1/L0 mean -5.1% |
+| `LITLEN_TABLE_BITS-11` | default-repeat | n=24 thr W0/L16 ratio W2/L10 mean -6.5% | n=4 thr W0/L3 ratio W1/L0 mean -6.2% |
+| `LITLEN_TABLE_BITS-12` | default | n=24 thr W0/L10 ratio W0/L12 mean -3.7% | n=4 thr W0/L1 ratio W0/L1 mean -2.6% |
+| `LITLEN_TABLE_BITS-12` | default-repeat | n=24 thr W0/L8 ratio W1/L13 mean -4.0% | n=4 thr W0/L2 ratio W0/L1 mean -3.6% |
+| `DIST_TABLE_BITS-7` | default | n=24 thr W2/L1 ratio W3/L2 mean -0.2% | n=4 thr W1/L0 ratio W1/L0 mean +0.5% |
+| `DIST_TABLE_BITS-7` | default-repeat | n=24 thr W1/L4 ratio W1/L3 mean -0.6% | n=4 thr W1/L1 ratio W0/L0 mean -0.6% |
+| `DIST_TABLE_BITS-9` | default | n=24 thr W5/L4 ratio W4/L3 mean +0.6% | n=4 thr W0/L1 ratio W1/L1 mean -1.5% |
+| `DIST_TABLE_BITS-9` | default-repeat | n=24 thr W5/L4 ratio W2/L5 mean +0.2% | n=4 thr W0/L1 ratio W0/L0 mean -2.6% |
+
+Drift control (default against default-repeat, same code): 4 WIN and 3 LOSS of 24 on throughput, mean +0.4%: the size of the noise floor for this comparison.
+
+Reading: 11 bits (6% slower on average, 14 to 16 LOSS of 24) and 12 bits (4% slower, 8 to 10 LOSS) are clearly worse, the larger first level costing more per table build and per cache line than it saves in second-level lookups. 9 bits (`LITLEN`) and 7 bits (`DIST`) are within the drift of the defaults (mean -0.9% to +0.6%, win and loss counts inside the control's). 9 bits for the distance table shows +0.2% to +0.6% overall but 1.5% to 2.6% slower on the level-1 raw keys the task targets. No candidate was a clean quick WIN on the level-1 raw keys, so the full-bench confirmation was not needed and no default changed; the doc comments in `config.rs` record these runs.
+
 ## Targets
 Filled by P5-02 (acceptance tasks).
 

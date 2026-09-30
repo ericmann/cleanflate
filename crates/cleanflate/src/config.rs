@@ -32,14 +32,20 @@ pub const DEFAULT_MAX_GZIP_HEADERS: usize = 1_024;
 /// it was kept rather than swapped for a difference too small to trust
 /// (see docs/PERF.md's Pass 2 numbers). Re-swept in phase 2 (P4-03,
 /// {9, 11, 12}, docs/perf/P4-03/LITLEN_TABLE_BITS-*.json): no candidate beat 10
-/// beyond the noise, so it was kept.
+/// beyond the noise, so it was kept. Re-swept in phase 3 on the final fast loop
+/// (P4-05, {9, 11, 12}, docs/perf/phase3/P4-05/LITLEN_TABLE_BITS-*.json
+/// against default.json and default-repeat.json): 11 and 12 were 4% to 6%
+/// slower on average, 9 was within the noise of 10; 10 was kept.
 pub(crate) const LITLEN_TABLE_BITS: u32 = 10;
 
 /// Bits of lookahead the distance table-driven decode path indexes on.
 /// Measured alongside `LITLEN_TABLE_BITS` in the same P4-09 sweep; kept
 /// for the same reason. Re-swept in phase 2 (P4-03, {7, 9, 10},
 /// docs/perf/P4-03/DIST_TABLE_BITS-*.json): every other candidate was 5% to
-/// 9% slower on raw, so 8 was kept.
+/// 9% slower on raw, so 8 was kept. Re-swept in phase 3 on the final fast loop
+/// (P4-05, {7, 9}, docs/perf/phase3/P4-05/DIST_TABLE_BITS-*.json): neither beat
+/// 8 beyond the noise (9 was 1.5% to 2.6% slower on the level-1 raw keys), so 8
+/// was kept.
 pub(crate) const DIST_TABLE_BITS: u32 = 8;
 
 /// Input bytes that must remain for one iteration of the fast decode loop
