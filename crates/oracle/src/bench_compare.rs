@@ -28,6 +28,10 @@ pub struct Noise {
     pub per_file: BTreeMap<String, f64>,
 }
 
+/// Rounding tolerance (percentage points) for threshold comparisons: a
+/// pair compared against its own noise sits exactly on the boundary.
+const EPS: f64 = 1e-6;
+
 /// The verdict on one aggregate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
@@ -156,8 +160,8 @@ pub fn compare(a: &BenchJson, b: &BenchJson, noise: Option<&Noise>) -> Result<Co
         let two = noise.map(|n| 2.0 * n.aggregate.get(key).copied().unwrap_or(n.aggregate_max_pct));
         let verdict = match two {
             None => Verdict::Unknown,
-            Some(t) if delta > t => Verdict::Win,
-            Some(t) if delta < -t => Verdict::Loss,
+            Some(t) if delta > t + EPS => Verdict::Win,
+            Some(t) if delta < -t - EPS => Verdict::Loss,
             Some(_) => Verdict::Neutral,
         };
         aggregates.push(AggLine {
@@ -188,7 +192,7 @@ pub fn compare(a: &BenchJson, b: &BenchJson, noise: Option<&Noise>) -> Result<Co
                 .copied()
                 .unwrap_or(n.aggregate_max_pct);
             let threshold = file_noise.max(agg_noise);
-            if delta < -threshold {
+            if delta < -threshold - EPS {
                 regressions.push(format!(
                     "REGRESSION {key}: {va:.1} -> {vb:.1} MiB/s ({delta:+.1}%, threshold -{threshold:.1}%)"
                 ));
@@ -454,6 +458,16 @@ mod tests {
         assert_eq!(regress(2.0, 5.0, 94.0), 1, "-6% beyond both");
         assert_eq!(regress(8.0, 5.0, 94.0), 0, "-6% within file noise 8%");
         assert_eq!(regress(8.0, 5.0, 91.0), 1);
+    }
+
+    #[test]
+    fn a_pair_is_neutral_against_its_own_noise() {
+        let a = json("quick", 100.0, &[("f", 100.0), ("g", 70.0)]);
+        let b = json("quick", 93.0, &[("f", 87.0), ("g", 77.0)]);
+        let n = noise_from(&a, &b, ["a", "b"]);
+        let c = compare(&a, &b, Some(&n)).expect("compares");
+        assert!(c.regressions.is_empty(), "{:?}", c.regressions);
+        assert_eq!(c.aggregates[0].verdict, Verdict::Neutral);
     }
 
     #[test]
