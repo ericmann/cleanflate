@@ -16,7 +16,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P0-11 Baseline and noise measurement
 - [x] P0-12 Hypotheses H1–H6 and baseline profile
 - [x] P0-13 M0 acceptance and push
-- [~] P1-01 Bulk bit refill with an exact give-back invariant
+- [x] P1-01 Bulk bit refill with an exact give-back invariant
 - [ ] P1-02 Two-level lookup tables for every symbol
 - [ ] P1-03 Per-block table reuse (gated)
 - [ ] P1-04 Length/distance payload in table entries (gated)
@@ -79,3 +79,6 @@ PERF.md: Baseline profile, Hypotheses, Cost ranking (docs/perf/P0-12-stats.json 
 ### P0-13 — 6800093
 make ci green; make heavy green (proptest-10k both, bomb, conformance-full, fastslow-full 248s); docs/perf/P0-13.json committed; provenance snapshot committed; PERF.md M0 acceptance section. bench-compare vs baseline: 27 WIN/0 LOSS/9 NEUTRAL + 32 per-file REGRESSION with NO decoder change => run-to-run drift exceeds the single-pair noise estimate; later tasks must re-measure interleaved rather than trust one verdict. Push: pushed build/2026-09-29-2 to origin.
 Manual check: NOT VERIFIED (human): (1) GitHub Actions ci run green on the pushed branch (now lints/tests features). (2) noise.json aggregate 6.08% > 3%: re-run baseline on a quiet machine with a fixed governor (SPEC 8). (3) run make flamegraph and sanity-check the P0-12 tables against the SVG. (4) provenance log denied entries: 3 mine this phase, benign (recursive grep x2, sed regex with forbidden word); none profiling.
+
+### P1-01 — 17ecd44
+BitReader::refill_bulk/give_back, Inflater::step now wraps step_inner with one exit helper (give_back(keep_bits) on OutputFull/Done; keep_bits set at the pending-literal OutputFull site), StoredLen gives back all whole bytes + defensive drain in StoredCopy, Fast peek_symbol bulk-refills when <15 bits. D-27 [perf] added. 6 tests in tests/bitreader_bulk.rs (mutation-checked). PT1: all 12 quick aggregates WIN (silesia l6 oneshot raw 51.1->79.3, zlib 49.7->75.5, gzip 45.3->57.8), no per-file REGRESSION. make test, proptest-3k, fastslow-full (209s), bomb pass. Interpretation: give-back applied on both paths (Reference returns 0).
