@@ -88,7 +88,7 @@ run_case() {
 }
 
 run_case case_perf_block_complete_passes pass "" <<'EOF'
-### D-90: [perf] Fast thing
+### D-30: [perf] Fast thing
 
 RFC: RFC 1951 S3.2.4
 Decision: x.
@@ -96,15 +96,15 @@ Measurement: 1 -> 2 MB/s.
 Rationale: general technique; not derived from any specific implementation.
 EOF
 
-run_case case_perf_missing_phrase_fails fail "D-91.*phrase" <<'EOF'
-### D-91: [perf] Fast thing
+run_case case_perf_missing_phrase_fails fail "D-31.*phrase" <<'EOF'
+### D-31: [perf] Fast thing
 
 RFC: RFC 1951 S3.2.4
 Measurement: 1 -> 2 MB/s.
 EOF
 
-run_case case_perf_missing_measurement_fails fail "D-92.*Measurement" <<'EOF'
-### D-92: [perf] Fast thing
+run_case case_perf_missing_measurement_fails fail "D-32.*Measurement" <<'EOF'
+### D-32: [perf] Fast thing
 
 RFC: RFC 1951 S3.2.4
 Rationale: general technique; not derived from any specific implementation.
@@ -116,6 +116,31 @@ run_case case_non_perf_block_unaffected pass "" <<'EOF'
 RFC: n/a (API)
 Decision: y.
 EOF
+
+run_case case_phase3_perf_without_profile_fails fail "D-34.*Profile:" <<'EOF2'
+### D-34: [perf] Fast thing
+
+RFC: RFC 1951 S3.2.4
+Measurement: 1 -> 2 MB/s.
+Rationale: general technique; not derived from any specific implementation.
+EOF2
+
+run_case case_phase3_perf_with_profile_passes pass "" <<'EOF2'
+### D-35: [perf] Fast thing
+
+RFC: RFC 1951 S3.2.4
+Profile: hotspot x, frame f 40% -> 20%, docs/perf/phase3-profile.md.
+Measurement: 1 -> 2 MB/s.
+Rationale: general technique; not derived from any specific implementation.
+EOF2
+
+run_case case_phase2_perf_without_profile_passes pass "" <<'EOF2'
+### D-33: [perf] Fast thing
+
+RFC: RFC 1951 S3.2.4
+Measurement: 1 -> 2 MB/s.
+Rationale: general technique; not derived from any specific implementation.
+EOF2
 
 if [ "$TOTAL_FAIL" -ne 0 ]; then
     exit 1

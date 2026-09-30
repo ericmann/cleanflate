@@ -23,6 +23,11 @@ needs a `Measurement:` line and the exact phrase "general technique; not
 derived from any specific implementation"; `make design-check` fails a
 `[perf]` block missing either.
 
+Phase-3 `[perf]` entries (D-34 onward) add a `Profile:` line naming the
+hotspot key, the frames and their share before and after, citing
+`docs/perf/phase3-profile.md` or a committed flamegraph; `make
+design-check` fails such a block without it.
+
 ## Decisions
 
 ### D-01: Error model
