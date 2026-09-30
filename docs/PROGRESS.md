@@ -13,7 +13,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P0-08 `oracle bench-targets`: T1–T6 verdicts from a bench JSON
 - [x] P0-09 Phase-3 starting baseline and noise
 - [x] P0-10 M0 acceptance and push
-- [ ] P1-01 Profile any key: per-key outputs, perf stat and saved flamegraphs
+- [x] P1-01 Profile any key: per-key outputs, perf stat and saved flamegraphs
 - [ ] P1-02 Before-profiles, flamegraphs and phase3-profile.md
 - [ ] P1-03 M1 acceptance and push
 - [ ] P2-01 Checksum microbenchmark (cleanflate only)
@@ -78,3 +78,6 @@ Baselines committed under docs/perf/baselines (phase3-start[-rerun], quick pair,
 ### P0-10 — 587b9ed
 make ci, make heavy, make fuzz-milestone all pass. fuzz: diff_oracle_roundtrip seconds=1826 execs=1205957 exit=0 artifacts=0; diff_fast_reference seconds=1826 execs=894969 exit=0 artifacts=0. P0-10.json committed (207/207 streaming rows). Compare vs phase3-start: 14 WIN/LOSS lines with no code change (drift). Provenance snapshot committed, pushed origin build/2026-09-30.
 Manual check: NOT VERIFIED (human): 1) GitHub Actions ci green on branch; 2) noise 8.2%/8.8% >3% -> rerun baseline pair on quiet machine, pinned governor; 3) spot-check Environment (compile_flags 0xa9, libz_sys_features default,libc,static,stock-zlib); 4) provenance log has no unexplained denials.
+
+### P1-01 — 5988e2c
+Makefile: PROFILE_KEY, per-key target/profile/<slug>/{perf.data,top.txt,top-children.txt,flamegraph.svg,stat.txt}, profile-stat, flamegraph-save TAG=, profile-required TAG=, STATS_* vars. tools/perf/check-flamegraph.sh + test. Interpretation: flamegraph uses --no-inline (default inline view strips crate paths so no cleanflate:: frames). profile_decode untouched (already 64 KiB windows). Verified profile/profile-stat/flamegraph-save smoke on this machine (perf works). Smoke svg deleted. Early profile note: silesia rfc1951 l1 streaming top self: fast_loop::run 38%, Huffman::decode_table 25%, crc32 13.5%, copy_match 10%.
