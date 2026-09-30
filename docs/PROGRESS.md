@@ -3,7 +3,7 @@ Branch: build/2026-09-30
 Started: 2026-09-30T14:32:48.581Z
 
 ## Tasks
-- [ ] P0-01 Phase-3 scaffolding: fuzz gates, quick-bench levels, baseline copy, report skeleton
+- [x] P0-01 Phase-3 scaffolding: fuzz gates, quick-bench levels, baseline copy, report skeleton
 - [ ] P0-02 design-check requires profile evidence in phase-3 [perf] entries
 - [ ] P0-03 Oracle FFI: C zlib build flags and bounded streaming inflate
 - [ ] P0-04 Bench schema 2: "best" replaces "min", every column documented
@@ -42,3 +42,10 @@ Started: 2026-09-30T14:32:48.581Z
 
 ## Log
 (one entry per task, appended by implement)
+
+### P0-01 — 8f52cbd
+Added fuzz-smoke-decoder, fuzz-milestone, bench-quick levels 1,6, tools-check perf tests, tools/perf/fuzz-milestone.sh + test, baselines/phase2.json, PHASE3.md skeleton, READMEs.
+fuzz-milestone 20s output:
+fuzz-milestone: diff_oracle_roundtrip seconds=40 execs=18406 exit=0 artifacts=0
+fuzz-milestone: diff_fast_reference seconds=40 execs=28203 exit=0 artifacts=0
+(wall 40s includes build time.)
