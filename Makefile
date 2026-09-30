@@ -2,7 +2,7 @@
         tools-check design-check ci proptest-10k proptest-3k fastslow-full bomb heavy \
         fuzz-check fuzz-smoke fuzz-long fuzz-divergences bench bench-quick bench-compare bench-noise bench-md bench-stats profile-prep profile flamegraph \
         provenance-snapshot provenance-summary build-report hooks-install \
-        sources-check conformance-full malformed
+        sources-check conformance-full malformed fuzz-smoke-decoder fuzz-milestone
 
 fmt-check:
 	cargo fmt --all -- --check
@@ -56,6 +56,15 @@ tools-check: sources-check
 			bash "$$t"; \
 		done; \
 	fi; \
+	if ls tools/perf/tests/*_test.sh >/dev/null 2>&1; then \
+		for t in tools/perf/tests/*_test.sh; do \
+			echo "== $$t =="; \
+			bash "$$t"; \
+		done; \
+	fi; \
+	if ls tools/perf/tests/test_*.py >/dev/null 2>&1; then \
+		python3 -m unittest discover -s tools/perf/tests -p 'test_*.py'; \
+	fi; \
 	if ls tools/git-hooks/tests/*_test.sh >/dev/null 2>&1; then \
 		for t in tools/git-hooks/tests/*_test.sh; do \
 			echo "== $$t =="; \
@@ -80,6 +89,13 @@ fuzz-smoke-%:
 	cargo +nightly fuzz run $* fuzz/corpus/$* fuzz/seeds/$* -- -max_total_time=$(FUZZ_SECONDS) -rss_limit_mb=2048
 
 fuzz-smoke: $(FUZZ_SMOKE_TARGETS)
+
+FUZZ_DECODER_TARGETS := never_panic_raw never_panic_rfc1950 never_panic_rfc1952 diff_fast_reference
+fuzz-smoke-decoder: $(addprefix fuzz-smoke-,$(FUZZ_DECODER_TARGETS))
+
+FUZZ_MILESTONE_SECONDS ?= 1800
+fuzz-milestone:
+	bash tools/perf/fuzz-milestone.sh $(FUZZ_MILESTONE_SECONDS) diff_oracle_roundtrip diff_fast_reference
 
 # Target-specific variable (not a recursive $(MAKE) call) so `make -n
 # fuzz-long` dry-runs all five 3600-second commands instead of make -n's
@@ -120,7 +136,7 @@ bench:
 bench-quick:
 	mkdir -p $(dir $(BENCH_OUT))
 	cargo run --release -q -p oracle -- bench --kind quick --subset quick --corpus silesia,canterbury \
-		--framings raw,zlib,gzip --levels 6 --modes oneshot,streaming --iters 5 \
+		--framings raw,zlib,gzip --levels 1,6 --modes oneshot,streaming --iters 5 \
 		--task $(BENCH_ID) --json $(BENCH_OUT)
 
 sources-check:

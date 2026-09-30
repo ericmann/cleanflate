@@ -37,3 +37,11 @@ Profiles must never include C zlib (SPEC 2.2). The flow is split so the profiled
 2. `make profile` builds `crates/cleanflate/examples/profile_decode.rs` (cleanflate and std only, debug info on), runs it under `perf record` and writes `target/profile/top.txt` (top symbols). `make flamegraph` writes `target/profile/flamegraph.svg` the same way.
 
 Variables: `PROFILE_CORPUS` (silesia), `PROFILE_FRAMING` (rfc1951), `PROFILE_LEVEL` (6), `PROFILE_ITERS` (3), `PROFILE_MODE` (oneshot), `PROFILE_PERF_FLAGS`. The first iteration verifies length and CRC-32 against the index. Outputs stay under `target/profile/` (gitignored); findings go into `docs/PERF.md` in words and numbers. Never run a profiler on `oracle bench` or any test binary; the guard denies it.
+
+## Phase 3 layout
+
+- `baselines/`: phase baselines (`phase2.json` is the phase-2 number of record); never hand-edited.
+- `phase3/`: every phase-3 JSON, named by task id; written only by the tools.
+- `flamegraphs/`: `<slug>-<before|after>.svg`, written only by `make flamegraph-save`.
+- `PHASE3.md`: the phase-3 performance report; every task appends a `### <ID>` entry.
+- `phase3-profile.md`: the phase-3 profile of the phase-2 decoder (P1-02).
