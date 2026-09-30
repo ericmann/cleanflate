@@ -27,7 +27,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P2-09 M2 acceptance and push
 - [x] P3-01 Per-block Huffman table reuse (gated)
 - [x] P3-02 Per-stream setup: reusable inflater, lazy window, no redundant fills (gated)
-- [~] P3-03 `Decompressor::reset()` and the reset differential
+- [x] P3-03 `Decompressor::reset()` and the reset differential
 - [ ] P3-04 Reuse bench case
 - [ ] P3-05 M3 acceptance and push
 - [ ] P4-01 Assembly evidence tool for the fast loop
@@ -120,3 +120,6 @@ GATED OUT. from_lengths 2.87% / 3.20% vs gates 4.84% / 4.71%; fixed_table_clones
 
 ### P3-02 — 78277d0
 GATED OUT. Setup frames: new_with_path 1.71%, resize 0.72%, Window::new 0.53% (upper bound ~3.0%, overlapping) vs gate 4.84%; 696 page faults / 3300 constructions. No code.
+
+### P3-03 — c94628e
+Decompressor::reset (public, doc example uses ?), Backend/Zlib/Gzip/Inflater/Window reset (window storage kept, history dropped via total=0). DESIGN D-35. trace_with in oracle common. Differential (oracle/tests/reset.rs) passes: conformance (41 s release; one scenario per entry + one-byte chunks for every 4th entry <= 64 KiB), options, proptest (both paths), repeated x100. verify (incl proptest-3k, fuzz-smoke) + fastslow-full pass. Next free D = D-36. reset_with not added (DESIGN explains).
