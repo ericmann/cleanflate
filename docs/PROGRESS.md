@@ -24,7 +24,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P2-06 Vec sink and the sink differential
 - [x] P2-07 One-shot decoding appends to a Vec: no zero-fill
 - [x] P2-08 One-shot size-hint revisit (gated)
-- [ ] P2-09 M2 acceptance and push
+- [x] P2-09 M2 acceptance and push
 - [ ] P3-01 Per-block Huffman table reuse (gated)
 - [ ] P3-02 Per-stream setup: reusable inflater, lazy window, no redundant fills (gated)
 - [ ] P3-03 `Decompressor::reset()` and the reset differential
@@ -111,3 +111,6 @@ NEGATIVE RESULT (PT4): switched public one-shot to decompress_core_vec, measured
 
 ### P2-08 — 4a0a212
 GATED OUT. No growth/realloc/copy frames; zero-fill resize<u8> 2.26% (Silesia), 0.57% (Canterbury), mostly first allocation; over-allocation bound ~0.7%/0.2% vs gates 2%/4.84%. No code. oneshot stats: 14 resizes/12 files, 1.49x alloc/output (Silesia).
+
+### P2-09 — f121b8d
+make ci, heavy (sinks_* full tier, bomb 3 tests), fuzz-milestone pass: diff_oracle_roundtrip seconds=1802 execs=1282261; diff_fast_reference seconds=1802 execs=391032; no artifacts. P2-09.json committed, pushed. T2 worst 0.884->0.902, T4 worst 12.63%->11.51% (NOT MET, noise-level: no M2 technique adopted). Compare vs phase3-start shows 22 WIN 0 LOSS 29 REGRESSION lines with no decoder change (drift). Manual check: NOT VERIFIED (human): ci green; peak RSS of bomb and one-shot Silesia vs start; review sink code/mutation-sample; checksum DESIGN (none added).
