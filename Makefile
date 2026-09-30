@@ -145,8 +145,8 @@ sources-check:
 provenance-snapshot:
 	bash tools/cleanroom/snapshot-log.sh
 
-# The last phase-1 commit: phase-2 summaries and reports cover PHASE_BASE..HEAD.
-PHASE_BASE ?= 599ca51
+# The phase-3 SPEC commit: phase-3 summaries and reports cover PHASE_BASE..HEAD.
+PHASE_BASE ?= cd4a472
 
 provenance-summary:
 	python3 tools/cleanroom/summarize.py --since-commit $(PHASE_BASE)
