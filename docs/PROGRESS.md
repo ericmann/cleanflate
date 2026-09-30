@@ -32,7 +32,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P4-01 CRC-32 several bytes at a time
 - [x] P4-02 Adler-32 revisit (gated)
 - [x] P4-03 Re-sweep tunables on the final code
-- [~] P4-04 M4 acceptance and push
+- [x] P4-04 M4 acceptance and push
 - [ ] P5-01 Phase-scoped provenance summary and build report
 - [ ] P5-02 Final PERF.md phase-2 report and DESIGN audit
 - [ ] P5-03 Provenance, build report and hand-off push
@@ -130,3 +130,7 @@ GATED OUT (negative result), no code change. rfc1950 profile: Adler update 6.15%
 
 ### P4-03 — bd4f2be
 Swept LITLEN_TABLE_BITS {9,10,11,12}, DIST_TABLE_BITS {7,8,9,10}, FAST_LOOP_MIN_INPUT {8,16,32}, FAST_LOOP_MIN_OUTPUT {258,320,512}, CRC32_SLICES {4,8,16}, ONESHOT_INITIAL_RATIO {2,4,8} with bench-quick (20 runs + default-repeat), JSONs in docs/perf/P4-03/. NO default changed: real effects only DIST_TABLE_BITS !=8 slower (-5..-9% raw) and CRC32_SLICES 4 slower (-11% gzip); everything else inside drift (up to ~10% between runs; e.g. both MIN_INPUT candidates showed +9% vs a slow default outlier; repeat default run restores parity). config.rs doc comments (comments only) cite the sweep; PERF.md '### Tunables (P4-03)'. Safety bounds not swept (stated). make lint/test/proptest-3k pass.
+
+### P4-04 — cbd2c10
+make ci and make heavy green (fastslow-full 177s); docs/perf/P4-04.json committed; PERF.md M4 acceptance. Silesia l6 one-shot: raw 189.8 (66.7% of C zlib), zlib 174.8 (68.3%), gzip 176.2 (68.9%) => 70% primary target NOT MET; streaming 74.5/76.5/74.1% => 60% target MET; stretch 90% NOT MET. Overhead vs raw one-shot: zlib 1.7%->8.5% (Adler share grew as rest got faster), gzip 20.2%->7.7%. vs baseline: no LOSS/REGRESSION; vs P3-04: 15 WIN (gzip), 9 LOSS + 74 per-file REGRESSION on raw/zlib keys with unchanged code = drift, recorded. Push: pushed to origin.
+Manual check: NOT VERIFIED (human): (1) GitHub Actions ci green. (2) Review the CRC derivation in DESIGN D-32. (3) Confirm config.rs citations point at committed JSONs (docs/perf/P4-03/).
