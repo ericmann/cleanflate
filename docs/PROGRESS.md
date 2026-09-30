@@ -36,7 +36,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P5-01 Phase-scoped provenance summary and build report
 - [x] P5-02 Final PERF.md phase-2 report and DESIGN audit
 - [x] P5-03 Provenance, build report and hand-off push
-- [ ] R1-01 Pin the pending-literal give-back and keep the Reference path exact-fill
+- [x] R1-01 Pin the pending-literal give-back and keep the Reference path exact-fill
 - [ ] R1-02 Fast-loop error equivalence for an incomplete distance table's unused code
 
 ## Log
@@ -146,3 +146,6 @@ docs/perf/P5-02.json committed; PERF.md '### Final (P5-02)' with targets table, 
 ### P5-03 — dfa5d50
 make ci and make heavy green; make provenance-snapshot/provenance-summary/build-report regenerated for the phase-2 range (599ca51..HEAD; BUILD_REPORT shows the phase-2 result line); human-interventions.md: one dated sentence (none recorded in the flight). Push: pushed to origin.
 Manual check: NOT VERIFIED (human): (1) Run the final make bench on a quiet machine with a fixed governor (SPEC 8), record conditions, compare with docs/perf/P5-02.json. (2) Run make fuzz-long or the nightly workflow for all six targets and triage make fuzz-divergences. (3) Confirm GitHub Actions ci is green. (4) Review the PERF.md result line and the negative results. (5) After review and merge into feature/perf (and on to main), tag v0.2.0-cleanroom. (6) Complete provenance/human-interventions.md.
+
+### R1-01 — 0b0ab82
+Added pending_literal_bits_kept_at_output_full (bitreader_bulk.rs) and reference_path_never_gives_back (stats.rs, stats feature). Added debug_assert Reference => k==0 at step exit; fixed stale docs in bitreader.rs and huffman.rs. Mutant keep_bits=len.min(7) killed (manually applied: both tests fail). verify green incl. proptest-3k. Interpretation: none.
