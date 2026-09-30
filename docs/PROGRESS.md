@@ -19,7 +19,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P1-01 Bulk bit refill with an exact give-back invariant
 - [x] P1-02 Two-level lookup tables for every symbol
 - [x] P1-03 Per-block table reuse (gated)
-- [~] P1-04 Length/distance payload in table entries (gated)
+- [x] P1-04 Length/distance payload in table entries (gated)
 - [ ] P1-05 M1 acceptance and push
 - [ ] P2-01 Fast literal/length/distance decode loop
 - [ ] P2-02 Differential fuzz target: fast vs reference
@@ -88,3 +88,6 @@ huffman.rs: packed u32 Entry (Invalid/Symbol/Sub), two-level build_table, total 
 
 ### P1-03 — ff08378
 GATED OUT (negative result), no code change. PERF.md '### P1-03 (gated, negative result)': from_lengths 1.29% inclusive (build_table 0.72%, alloc 0.43%), 2.99 builds/block, 0 fixed-table clones on Silesia l6 => ~1.7% < max(2%, 2x noise). The 9.45% clone frame is State clone (P2-03), not tables.
+
+### P1-04 — 8e8a235
+GATED OUT (negative result), no code change. Profile by source line (perf report --sort srcline on the cleanflate-only profile): LenExtra arm 0.63% + DistExtra arm 0.73% = 1.4% < 2%; whole bitreader.rs ~5.5% upper bound. Real cost is dispatch (`match &self.state` 16.5%) and State clone (9.5+5.6%), for P2-01/P2-03. Interpretation: srcline attribution used instead of annotate output.
