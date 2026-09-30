@@ -26,7 +26,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P2-08 One-shot size-hint revisit (gated)
 - [x] P2-09 M2 acceptance and push
 - [x] P3-01 Per-block Huffman table reuse (gated)
-- [ ] P3-02 Per-stream setup: reusable inflater, lazy window, no redundant fills (gated)
+- [x] P3-02 Per-stream setup: reusable inflater, lazy window, no redundant fills (gated)
 - [ ] P3-03 `Decompressor::reset()` and the reset differential
 - [ ] P3-04 Reuse bench case
 - [ ] P3-05 M3 acceptance and push
@@ -117,3 +117,6 @@ make ci, heavy (sinks_* full tier, bomb 3 tests), fuzz-milestone pass: diff_orac
 
 ### P3-01 — 7c91003
 GATED OUT. from_lengths 2.87% / 3.20% vs gates 4.84% / 4.71%; fixed_table_clones 0 (no fixed blocks in Canterbury); table entry computation dominates, allocation small. No code.
+
+### P3-02 — 78277d0
+GATED OUT. Setup frames: new_with_path 1.71%, resize 0.72%, Window::new 0.53% (upper bound ~3.0%, overlapping) vs gate 4.84%; 696 page faults / 3300 constructions. No code.
