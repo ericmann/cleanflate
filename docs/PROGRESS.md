@@ -9,7 +9,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P0-04 Bench schema 2: "best" replaces "min", every column documented
 - [x] P0-05 C zlib streaming rows and like-for-like ratios
 - [x] P0-06 Environment capture in every bench run
-- [ ] P0-07 Reports: delta vs the phase-2 baseline, drift-corrected verdicts, per-file sizes
+- [x] P0-07 Reports: delta vs the phase-2 baseline, drift-corrected verdicts, per-file sizes
 - [ ] P0-08 `oracle bench-targets`: T1–T6 verdicts from a bench JSON
 - [ ] P0-09 Phase-3 starting baseline and noise
 - [ ] P0-10 M0 acceptance and push
@@ -65,3 +65,6 @@ Imp::CZlibOneShot/CZlibStreaming, sample_order(), Aggregate.c_zlib_mode (serde d
 ### P0-06 — 4427b9b
 bench_env.rs (new): CargoProfile, CZlibInfo, render_environment, metadata parsing. Machine gained cores/os/kernel/loadavg_end (Machine: Default); BenchJson gained cargo_profile, c_zlib (serde default). cargo metadata uses --offline --filter-platform <host>. Environment block from bench-quick P0-06:
 cpu_model: AMD Ryzen 5 3400G; cores 8; governor schedutil; os Pop!_OS 24.04 LTS; kernel 7.1.5-76070105-generic; rustc 1.89.0; profile release; debug_assertions false; release_profile: debug = "line-tables-only"; build_env none; c_zlib_version 1.3.2; c_zlib_compile_flags 0xa9; libz_sys_version 1.1.29; libz_sys_features default,libc,static,stock-zlib.
+
+### P0-07 — 5668fd5
+bench_compare: compare_with_baseline, render_md_with_baseline (old fns kept as wrappers), RatioDelta, Noise.ratio_aggregate(+_max_pct, serde default), default_noise_path(root,a,b)->Option<(path,phase2?)>. main: --baseline for bench-compare/bench-md, load_baseline prints "baseline missing: path". Makefile passes FILES/FILTER/BASELINE. Interpretation: ratio verdict UNKNOWN if noise file lacks ratio noise. Verified: make bench-compare A=docs/perf/P5-02.json B=docs/perf/baselines/phase2.json prints new columns.
