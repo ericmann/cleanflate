@@ -800,3 +800,42 @@ How to read this table. Consecutive runs on this machine drift by up to about 10
 - `ONESHOT_INITIAL_RATIO` (2, 8 against 4): every difference is inside or below drift, with the streaming keys moving as much as the one-shot ones; the allocation counters of P3-03 do not favour either; keep 4.
 
 Not swept, because they are safety bounds and not performance tunables: `DEFAULT_MAX_OUTPUT`, `DEFAULT_MAX_GZIP_FIELD`, `DEFAULT_MAX_GZIP_HEADERS`, `ONESHOT_GROWTH_FLOOR` and `ONESHOT_MAX_PREALLOC`.
+
+### M4 acceptance (P4-04)
+
+Commands run on the M4 head: `make ci` (green), `make heavy` (proptest-10k for chunking and fastslow, bomb, conformance-full, fastslow-full: all green; fastslow-full 177.0 s), and `make bench BENCH_ID=P4-04 BENCH_OUT=docs/perf/P4-04.json` (`docs/perf/P4-04.json` is committed). Wall times: `make ci` 4m04s, `make heavy` 6m41s; the full bench took about 8 minutes.
+
+Silesia level 6, median MiB/s (C zlib is the same-run one-shot median, the denominator for both tables):
+
+One-shot (`decompress_with`):
+
+| framing | baseline | M3 (P3-04) | M4 | gain vs baseline | C zlib (M4 run) | cleanflate / C zlib |
+|---|---:|---:|---:|---:|---:|---:|
+| raw | 62.3 | 190.6 | 189.8 | +204.7% | 284.4 | 66.7% |
+| zlib | 61.3 | 177.5 | 174.8 | +185.4% | 255.9 | 68.3% |
+| gzip | 51.8 | 135.5 | 176.2 | +240.1% | 255.9 | 68.9% |
+
+Streaming (`Decompressor`, 64 KiB windows):
+
+| framing | baseline | M3 (P3-04) | M4 | gain vs baseline | C zlib (M4 run) | cleanflate / C zlib |
+|---|---:|---:|---:|---:|---:|---:|
+| raw | 65.0 | 212.4 | 211.9 | +226.1% | 284.4 | 74.5% |
+| zlib | 63.7 | 196.8 | 195.7 | +207.1% | 255.9 | 76.5% |
+| gzip | 55.7 | 141.7 | 189.5 | +240.1% | 255.9 | 74.1% |
+
+Framing overhead relative to raw (raw / framing - 1 of the medians, so 0% means the checksum is free):
+
+| framing | mode | baseline | M4 |
+|---|---|---:|---:|
+| zlib vs raw | one-shot | 1.7% | 8.5% |
+| gzip vs raw | one-shot | 20.2% | 7.7% |
+| zlib vs raw | streaming | 1.9% | 8.3% |
+| gzip vs raw | streaming | 16.6% | 11.8% |
+
+The gzip overhead fell (the CRC-32 of P4-01), and the zlib overhead is now larger in relative terms only because everything else got about three times faster while the Adler-32 (6.15% of samples in the zlib profile, P4-02) did not change.
+
+Against the SPEC section 4.1 targets (recorded, not blocking): **primary target, one-shot at least 70% of C zlib for raw, zlib and gzip: NOT MET** (66.7%, 68.3% and 68.9%; zlib and gzip are within about two points). **Streaming at least 60%: MET** for all three (74.5%, 76.5% and 74.1%). **Stretch, one-shot at least 90%: NOT MET.** The noise of this machine (single-pair aggregate noise 6.1%, drift of about 10% between runs) is larger than the remaining gap to 70%, so a further gain would have to be demonstrated on a quiet machine with a pinned governor.
+
+`make bench-compare` against `baseline.json`: no LOSS and no per-file REGRESSION line. Against `P3-04.json`: 15 WIN (the gzip keys, from P4-01), and 9 LOSS on raw and zlib aggregates whose code did not change since M3 (for example canterbury raw level 1 one-shot -5.1%, silesia raw level 9 one-shot -2.7%), plus 74 per-file REGRESSION lines (31 Canterbury, 43 Silesia). The verdict on those keys is run-to-run drift (single-pair noise file; the same swings appear on keys of code that did not change), recorded as findings; the comparison that matters for the "no per-file regression" rule, against the phase-2 baseline, is clean.
+
+Tunables: every tunable's doc comment in `config.rs` cites its sweep (`docs/perf/P4-03/`, all committed) and the outcome (kept, with the measurement), and the safety bounds say that they were not swept. The CRC-32 derivation is in DESIGN D-32.
