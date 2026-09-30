@@ -26,7 +26,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P2-03 Copyable state in the slow path (gated)
 - [x] P2-04 M2 acceptance and push
 - [x] P3-01 Output as match history; window carried only across calls
-- [~] P3-02 Overlapping matches by pattern doubling
+- [x] P3-02 Overlapping matches by pattern doubling
 - [ ] P3-03 One-shot output sizing from hints
 - [ ] P3-04 M3 acceptance and push
 - [ ] P4-01 CRC-32 several bytes at a time
@@ -111,3 +111,6 @@ Manual check: NOT VERIFIED (human): (1) GitHub Actions ci green. (2) Run make fu
 
 ### P3-01 — 03480a4
 Window now append/read_back/history_available/copy_match(path, output, cur, dist, n) (slice copies on Fast; Reference byte-by-byte via output or get_back); step wrapper appends output[..out_pos] to the window exactly once on every return (step_inner returns (pos,out_pos,Result) via closure wrap); literals/stored copy write only to output; fast loop takes &Window. D-30 [perf]. tests/history.rs (5 tests, incl. Decompressor size <= 33688+1024; pre-change size was 33688 default/34080 stats); window/fastpath/decode_path tests rewritten to the new API. PT1: all 12 aggregates WIN (silesia l6 oneshot raw 133.4->160.6, zlib 122.1->151.1, gzip 87.9->108.2); 3 per-file REGRESSION lines (canterbury xargs.1 gzip, silesia sao gzip streaming) recorded as findings. window_bytes_written/output: 1.0 -> 0.019 oneshot, 0.50 streaming. make test, proptest-3k, fastslow-full (189s), bomb pass. Interpretation: exit append on every return incl. Err; stat counts bytes actually copied.
+
+### P3-02 — 41de696
+NEGATIVE RESULT, code reverted per PT4. Doubling implemented in Window::copy_match_slices (dist==1 fill; k doubling from dist) and validated by 2 new tests (pattern_doubling_matches_model_exhaustive, pattern_doubling_straddling_window, both kept, pass on the P3-01 chunk copy). Two bench-quick runs vs before: run1 6 WIN/6 NEUTRAL, run2 1 WIN/1 LOSS/10 NEUTRAL (silesia raw oneshot 158.3->171.2->162.6) => not reliable, H4 predicted <1% (overlap 0.48% of matches). JSONs committed: P3-02-before/P3-02/P3-02-rerun. No DESIGN entry (no technique kept). PERF.md '### P3-02 (negative result, code reverted)'.
