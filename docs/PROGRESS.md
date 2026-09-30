@@ -7,7 +7,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P0-02 design-check requires profile evidence in phase-3 [perf] entries
 - [x] P0-03 Oracle FFI: C zlib build flags and bounded streaming inflate
 - [x] P0-04 Bench schema 2: "best" replaces "min", every column documented
-- [ ] P0-05 C zlib streaming rows and like-for-like ratios
+- [x] P0-05 C zlib streaming rows and like-for-like ratios
 - [ ] P0-06 Environment capture in every bench run
 - [ ] P0-07 Reports: delta vs the phase-2 baseline, drift-corrected verdicts, per-file sizes
 - [ ] P0-08 `oracle bench-targets`: T1–T6 verdicts from a bench JSON
@@ -58,3 +58,6 @@ ffi.rs: zlib_compile_flags() (sys::zlibCompileFlags exported by libz-sys, no ext
 
 ### P0-04 — 02a9aec
 Schema 2 (bench_json::SCHEMA=2), BenchJson::parse accepts 1|2 (aliases for min_*), load_json uses it. best_ns / cleanflate_mib_s_best / c_zlib_mib_s_best. TABLE_FOOTER printed under stdout table. README Schema 2 section. Interpretation: min_sample_ms kept; noise JSON schema stays 1. Note: guard blocks bash commands containing 'zlib' words (c_zlib) in args; use script files.
+
+### P0-05 — 53239b7
+Imp::CZlibOneShot/CZlibStreaming, sample_order(), Aggregate.c_zlib_mode (serde default oneshot), ratio like-for-like, render_md per-file table uses same-mode C zlib row (fallback oneshot). bench-quick P0-05 ran 87s: 96 cleanflate streaming rows all have a C zlib streaming row; e.g. canterbury/raw/l6/streaming 248.2 vs 405.1 MiB/s ratio 0.613. Bash note: `sleep` >~100s blocked; use until-loop with timeout.
