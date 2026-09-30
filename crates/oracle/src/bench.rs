@@ -525,7 +525,7 @@ pub fn run(args: &BenchArgs, corpora_root: &Path) -> Result<BenchOutcome, String
                             bytes: original.len(),
                             reps: reps.get(k).copied().unwrap_or(1),
                             median_ns: median(s),
-                            min_ns: minimum(s),
+                            best_ns: minimum(s),
                         });
                     }
                     eprintln!(
@@ -544,7 +544,7 @@ pub fn run(args: &BenchArgs, corpora_root: &Path) -> Result<BenchOutcome, String
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let json = BenchJson {
-        schema: 1,
+        schema: crate::bench_json::SCHEMA,
         kind: args.kind.name().to_string(),
         task: args.task.clone(),
         git_head: command_output("git", &["rev-parse", "HEAD"]),
@@ -809,16 +809,16 @@ pub fn aggregates_of(results: &[ResultRow]) -> Vec<Aggregate> {
             rows.iter().map(|r| f(r) / 1e9).collect()
         };
         let cf_med = aggregate_mib_s(total, &secs(&cf, |r| r.median_ns));
-        let cf_min = aggregate_mib_s(total, &secs(&cf, |r| r.min_ns));
+        let cf_best = aggregate_mib_s(total, &secs(&cf, |r| r.best_ns));
         let cz_med = aggregate_mib_s(total, &secs(&cz, |r| r.median_ns));
-        let cz_min = aggregate_mib_s(total, &secs(&cz, |r| r.min_ns));
+        let cz_best = aggregate_mib_s(total, &secs(&cz, |r| r.best_ns));
         out.push(Aggregate {
             key: format!("{corpus}/{framing}/l{level}/{mode}"),
             total_bytes: total as u64,
             cleanflate_mib_s_median: cf_med,
-            cleanflate_mib_s_min: cf_min,
+            cleanflate_mib_s_best: cf_best,
             c_zlib_mib_s_median: cz_med,
-            c_zlib_mib_s_min: cz_min,
+            c_zlib_mib_s_best: cz_best,
             ratio: if cz_med > 0.0 {
                 cf_med / cz_med
             } else {
@@ -829,6 +829,9 @@ pub fn aggregates_of(results: &[ResultRow]) -> Vec<Aggregate> {
     out
 }
 
+/// Two-line definition footer printed under the stdout table.
+pub const TABLE_FOOTER: &str = "median: throughput from the median per-decode time of the samples; best: throughput of the fastest sample. Aggregates: total bytes / sum of per-file times.\nratio: cleanflate median / C zlib median.\n";
+
 /// A markdown table of the aggregates.
 pub fn render_markdown(json: &BenchJson) -> String {
     let mut out = String::new();
@@ -836,18 +839,20 @@ pub fn render_markdown(json: &BenchJson) -> String {
         "Bench {} ({}), C zlib {}, iters {}\n\n",
         json.task, json.kind, json.c_zlib_version, json.iters
     ));
-    out.push_str("| key | cleanflate MiB/s (median) | cleanflate MiB/s (min) | C zlib MiB/s (median) | ratio |\n");
+    out.push_str("| key | cleanflate MiB/s (median) | cleanflate MiB/s (best) | C zlib MiB/s (median) | ratio |\n");
     out.push_str("|---|---:|---:|---:|---:|\n");
     for a in &json.aggregates {
         out.push_str(&format!(
             "| {} | {:.1} | {:.1} | {:.1} | {:.3} |\n",
             a.key,
             a.cleanflate_mib_s_median,
-            a.cleanflate_mib_s_min,
+            a.cleanflate_mib_s_best,
             a.c_zlib_mib_s_median,
             a.ratio
         ));
     }
+    out.push('\n');
+    out.push_str(TABLE_FOOTER);
     out
 }
 
@@ -890,7 +895,7 @@ mod tests {
     }
 
     #[test]
-    fn median_and_min_odd_even() {
+    fn median_and_best_odd_even() {
         assert_eq!(median(&[3.0, 1.0, 2.0]), 2.0);
         assert_eq!(median(&[4.0, 1.0, 3.0, 2.0]), 2.5);
         assert_eq!(median(&[]), 0.0);
@@ -914,7 +919,7 @@ mod tests {
             bytes,
             reps: 1,
             median_ns: ns,
-            min_ns: ns / 2.0,
+            best_ns: ns / 2.0,
         };
         let rows = vec![
             row("a", "cleanflate", "oneshot", 2 * mib, 1e9),
@@ -926,7 +931,7 @@ mod tests {
         assert_eq!(aggs.len(), 1);
         assert_eq!(aggs[0].key, "c/raw/l6/oneshot");
         assert!((aggs[0].cleanflate_mib_s_median - 4.0).abs() < 1e-9);
-        assert!((aggs[0].cleanflate_mib_s_min - 8.0).abs() < 1e-9);
+        assert!((aggs[0].cleanflate_mib_s_best - 8.0).abs() < 1e-9);
         assert!((aggs[0].c_zlib_mib_s_median - 8.0).abs() < 1e-9);
         assert!((aggs[0].ratio - 0.5).abs() < 1e-9);
     }

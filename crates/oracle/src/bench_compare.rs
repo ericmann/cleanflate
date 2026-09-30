@@ -290,14 +290,14 @@ pub fn render_md(j: &BenchJson, files: bool, filter: Option<&str>) -> String {
         j.c_zlib_version,
         j.iters
     ));
-    out.push_str("| key | cleanflate MiB/s (median) | cleanflate MiB/s (min) | C zlib MiB/s (median) | ratio |\n");
+    out.push_str("| key | cleanflate MiB/s (median) | cleanflate MiB/s (best) | C zlib MiB/s (median) | ratio |\n");
     out.push_str("|---|---:|---:|---:|---:|\n");
     for a in j.aggregates.iter().filter(|a| keep(&a.key)) {
         out.push_str(&format!(
             "| {} | {:.1} | {:.1} | {:.1} | {:.3} |\n",
             a.key,
             a.cleanflate_mib_s_median,
-            a.cleanflate_mib_s_min,
+            a.cleanflate_mib_s_best,
             a.c_zlib_mib_s_median,
             a.ratio
         ));
@@ -340,7 +340,7 @@ pub fn default_noise_path(a: &BenchJson, b: &BenchJson) -> Option<&'static str> 
 pub fn load_json(path: &Path) -> Result<BenchJson, String> {
     let text =
         std::fs::read_to_string(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
-    serde_json::from_str(&text).map_err(|e| format!("parsing {}: {e}", path.display()))
+    BenchJson::parse(&text).map_err(|e| format!("parsing {}: {e}", path.display()))
 }
 
 /// Load a noise file, or `None` if it does not exist.
@@ -361,7 +361,7 @@ mod tests {
     fn json(kind: &str, agg: f64, files: &[(&str, f64)]) -> BenchJson {
         let mib = 1024.0 * 1024.0;
         BenchJson {
-            schema: 1,
+            schema: crate::bench_json::SCHEMA,
             kind: kind.into(),
             task: "t".into(),
             git_head: "0123456789abcdef".into(),
@@ -390,16 +390,16 @@ mod tests {
                     bytes: mib as usize,
                     reps: 1,
                     median_ns: 1e9 / mibs,
-                    min_ns: 1e9 / mibs,
+                    best_ns: 1e9 / mibs,
                 })
                 .collect(),
             aggregates: vec![Aggregate {
                 key: "c/raw/l6/oneshot".into(),
                 total_bytes: 1,
                 cleanflate_mib_s_median: agg,
-                cleanflate_mib_s_min: agg,
+                cleanflate_mib_s_best: agg,
                 c_zlib_mib_s_median: 100.0,
-                c_zlib_mib_s_min: 100.0,
+                c_zlib_mib_s_best: 100.0,
                 ratio: agg / 100.0,
             }],
             stats: Vec::new(),
@@ -489,6 +489,27 @@ mod tests {
         b.stats_build = true;
         assert!(compare(&a, &b, None).is_err());
         assert!(compare(&b, &a, None).is_err());
+    }
+
+    #[test]
+    fn no_min_in_rendered_headers() {
+        let j = json("quick", 100.0, &[("f", 100.0)]);
+        let table_lines = |s: &str| -> Vec<String> {
+            s.lines()
+                .filter(|l| l.starts_with('|'))
+                .map(str::to_string)
+                .collect()
+        };
+        let md = render_md(&j, true, None);
+        let cmp = render_comparison(&compare(&j, &j, None).expect("compares"));
+        let stdout = crate::bench::render_markdown(&j);
+        for text in [&md, &cmp, &stdout] {
+            for l in table_lines(text) {
+                assert!(!l.to_lowercase().contains("min"), "{l}");
+            }
+        }
+        assert!(md.contains("(best)"));
+        assert!(stdout.contains("best:"));
     }
 
     #[test]

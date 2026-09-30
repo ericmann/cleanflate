@@ -2,9 +2,33 @@
 
 This directory holds bench JSON files named by task id. They are written only by `oracle bench` and `oracle bench-noise` and are never hand-edited. The schema is added by P0-08.
 
-## Schema 1
+## Schema 2
 
-Written by `oracle bench --json PATH` (the `make bench` and `make bench-quick` targets, with `BENCH_ID` naming the task and the file). Never hand-edited.
+Written by `oracle bench --json PATH` (the `make bench` and `make bench-quick` targets, with `BENCH_ID` naming the task and the file). Never hand-edited. The loader reads schema 1 (old `min_*` names accepted as aliases) and 2, and rejects any other value.
+
+Definitions:
+
+- median: throughput from the median per-decode time of the N samples.
+- best: throughput of the fastest sample (minimum time).
+- aggregate median/best: total bytes / sum of per-file median/best times.
+- ratio: cleanflate median / C zlib median.
+
+Top-level fields: `schema` (2), `kind` (`full|quick|custom`), `task`, `git_head`, `git_dirty`, `timestamp` (UTC), `machine` (`uname`, `cpu_model`, `governor`, `loadavg`, `rustc`), `c_zlib_version`, `iters` (timed samples per measurement), `min_sample_ms` (each sample lasts at least this long), `stats_build`, `results[]`, `aggregates[]`, and `stats[]` (only `--stats` runs).
+
+`results[]` row fields: `corpus`, `file`, `framing` (`raw|zlib|gzip`), `level`, `mode` (`oneshot|streaming`), `impl` (`cleanflate|c_zlib`), `bytes` (uncompressed), `reps` (decodes per sample), `median_ns` (median ns per decode), `best_ns` (fastest sample, ns per decode). C zlib is timed one-shot only.
+
+`aggregates[]` fields: `key` (`<corpus>/<framing>/l<level>/<mode>`), `total_bytes`, `cleanflate_mib_s_median`, `cleanflate_mib_s_best`, `c_zlib_mib_s_median`, `c_zlib_mib_s_best`, `ratio`. The C zlib figures are the one-shot denominator for both modes.
+
+Output columns:
+
+- `bench` stdout table: `key`, `cleanflate MiB/s (median)`, `cleanflate MiB/s (best)`, `C zlib MiB/s (median)`, `ratio`, followed by a two-line footer with the definitions above.
+- `bench-md` (`J=`) aggregates table: the same five columns; with `--files`, a second table `file key`, `cleanflate MiB/s`, `C zlib MiB/s`, `ratio` (median-based).
+- `bench-compare`: `key`, `A MiB/s`, `B MiB/s` (cleanflate median), `delta %`, `2x noise %` (twice the recorded noise, `-` when unknown), `verdict` (`WIN|LOSS|NEUTRAL|UNKNOWN`), then per-file `REGRESSION` lines.
+- `bench-noise`: writes a JSON of noise percentages (median-based), no table.
+
+## Schema 1 (read-only compatibility)
+
+Written by phase-2 builds of `oracle bench --json PATH` (the `make bench` and `make bench-quick` targets, with `BENCH_ID` naming the task and the file). Never hand-edited.
 
 Top-level fields:
 
@@ -17,8 +41,8 @@ Top-level fields:
 - `c_zlib_version`: the linked C zlib.
 - `iters`: timed samples per measurement. `min_sample_ms`: each sample lasts at least this long.
 - `stats_build`: whether cleanflate was built with the `stats` feature.
-- `results[]`: one row per (corpus, file, framing, level, mode, impl): `corpus`, `file`, `framing` (`raw|zlib|gzip`), `level`, `mode` (`oneshot|streaming`), `impl` (`cleanflate|c_zlib`), `bytes` (uncompressed), `reps` (decodes per sample), `median_ns` and `min_ns` (per decode). C zlib is timed one-shot only.
-- `aggregates[]`: one per (corpus, framing, level, cleanflate mode), `key` = `<corpus>/<framing>/l<level>/<mode>`: `total_bytes`, `cleanflate_mib_s_median` (total bytes over the sum of per-file medians), `cleanflate_mib_s_min` (over the sum of minimums), `c_zlib_mib_s_median`, `c_zlib_mib_s_min`, `ratio` (cleanflate median over C zlib median). The C zlib figures are the one-shot denominator for both modes.
+- `results[]`: one row per (corpus, file, framing, level, mode, impl): `corpus`, `file`, `framing` (`raw|zlib|gzip`), `level`, `mode` (`oneshot|streaming`), `impl` (`cleanflate|c_zlib`), `bytes` (uncompressed), `reps` (decodes per sample), `median_ns` and `min_ns` (now `best_ns`) (per decode). C zlib is timed one-shot only.
+- `aggregates[]`: one per (corpus, framing, level, cleanflate mode), `key` = `<corpus>/<framing>/l<level>/<mode>`: `total_bytes`, `cleanflate_mib_s_median` (total bytes over the sum of per-file medians), `cleanflate_mib_s_min` (now `..._best`) (over the sum of minimums), `c_zlib_mib_s_median`, `c_zlib_mib_s_min` (now `..._best`), `ratio` (cleanflate median over C zlib median). The C zlib figures are the one-shot denominator for both modes.
 
 Method: each file is compressed once with the oracle (Default strategy, windowBits 15, memLevel 8). After a verified warm-up decode, each implementation runs in interleaved samples, so drift hits all of them alike.
 
