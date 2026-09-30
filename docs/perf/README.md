@@ -62,9 +62,18 @@ Method: each file is compressed once with the oracle (Default strategy, windowBi
 Profiles must never include C zlib (SPEC 2.2). The flow is split so the profiled process cannot execute it:
 
 1. `make profile-prep` runs `oracle perf-prep`, which uses C zlib to compress a corpus into `testdata/perf-inputs/<corpus>/<rfc195x>-l<level>/` with an `index.tsv` (`file`, `compressed_len`, `original_len`, `original_crc32`). This step is never profiled and is skipped when the directory is already complete.
-2. `make profile` builds `crates/cleanflate/examples/profile_decode.rs` (cleanflate and std only, debug info on), runs it under `perf record` and writes `target/profile/top.txt` (top symbols). `make flamegraph` writes `target/profile/flamegraph.svg` the same way.
+2. `crates/cleanflate/examples/profile_decode.rs` (cleanflate and std only, debug info on) is the only profiled program. Its streaming mode uses 64 KiB input chunks and 64 KiB output windows, exactly like the bench.
 
-Variables: `PROFILE_CORPUS` (silesia), `PROFILE_FRAMING` (rfc1951), `PROFILE_LEVEL` (6), `PROFILE_ITERS` (3), `PROFILE_MODE` (oneshot), `PROFILE_PERF_FLAGS`. The first iteration verifies length and CRC-32 against the index. Outputs stay under `target/profile/` (gitignored); findings go into `docs/PERF.md` in words and numbers. Never run a profiler on `oracle bench` or any test binary; the guard denies it.
+Selecting a key: `PROFILE_KEY=<corpus>/<framing>/l<level>/<mode>` (framing `raw|zlib|gzip|rfc1951|rfc1950|rfc1952`, mode `oneshot|streaming`), or the variables `PROFILE_CORPUS` (silesia), `PROFILE_FRAMING` (rfc1951), `PROFILE_LEVEL` (6), `PROFILE_MODE` (oneshot), plus `PROFILE_ITERS` (3) and `PROFILE_PERF_FLAGS`. Outputs go to `target/profile/<corpus>-<rfc>-l<level>-<mode>/` (gitignored):
+
+- `make profile`: `perf.data`, `top.txt` (self time) and `top-children.txt` (inclusive, `--children`).
+- `make profile-stat`: `stat.txt` from `perf stat` (task-clock, page-faults, cycles, instructions, branches and branch-misses in user mode; an event the machine lacks prints `<not supported>`).
+- `make flamegraph`: `flamegraph.svg`, made with `--no-inline` so frames carry their crate path (`cleanflate::...`).
+- `make flamegraph-save TAG=<tag>`: runs the flamegraph, checks it with `tools/perf/check-flamegraph.sh` (needs a `cleanflate::` frame and no frame of any other decompressor process), and copies it to `docs/perf/flamegraphs/<slug>-<tag>.svg`.
+- `make profile-required TAG=<tag>`: `profile`, `profile-stat` and `flamegraph-save` for the three SPEC 4.3 keys (`silesia/rfc1951/l1/oneshot`, `silesia/rfc1951/l1/streaming`, `canterbury/rfc1952/l1/oneshot`; Canterbury uses 300 iterations for enough samples).
+- `make bench-stats` takes `STATS_CORPUS` (silesia), `STATS_LEVELS` (6) and `STATS_MODES` (oneshot,streaming).
+
+The first iteration verifies length and CRC-32 against the index. Findings go into `docs/perf/phase3-profile.md` and `docs/PERF.md` in words and numbers. Never run a profiler on `oracle bench` or any test binary; the guard denies it.
 
 ## Phase 3 layout
 

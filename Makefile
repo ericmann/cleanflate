@@ -1,6 +1,6 @@
 .PHONY: regress-seed fmt-check lint test corpus corpus-full crate-checks cleanroom-selftest \
         tools-check design-check ci proptest-10k proptest-3k fastslow-full bomb heavy \
-        fuzz-check fuzz-smoke fuzz-long fuzz-divergences bench bench-quick bench-compare bench-noise bench-md bench-targets bench-stats profile-prep profile flamegraph \
+        fuzz-check fuzz-smoke fuzz-long fuzz-divergences bench bench-quick bench-compare bench-noise bench-md bench-targets bench-stats profile-prep profile-build profile profile-stat flamegraph flamegraph-save profile-required tag-required \
         provenance-snapshot provenance-summary build-report hooks-install \
         sources-check conformance-full malformed fuzz-smoke-decoder fuzz-milestone
 
@@ -184,10 +184,14 @@ bench-md:
 	@test -n "$(J)" || { echo "usage: make bench-md J=results.json [FILES=1] [FILTER=prefix] [BASELINE=path]"; exit 2; }
 	cargo run --release -q -p oracle -- bench-md $(J) $(if $(FILES),--files) $(if $(FILTER),--filter $(FILTER)) $(if $(BASELINE),--baseline $(BASELINE))
 
+STATS_CORPUS ?= silesia
+STATS_LEVELS ?= 6
+STATS_MODES ?= oneshot,streaming
+
 bench-stats:
 	mkdir -p $(dir $(BENCH_OUT))
-	cargo run --release -q -p oracle --features stats -- bench --stats --iters 0 --kind custom --corpus silesia \
-		--framings raw,zlib,gzip --levels 6 --modes oneshot,streaming --task $(BENCH_ID) --json $(BENCH_OUT)
+	cargo run --release -q -p oracle --features stats -- bench --stats --iters 0 --kind custom --corpus $(STATS_CORPUS) \
+		--framings raw,zlib,gzip --levels $(STATS_LEVELS) --modes $(STATS_MODES) --task $(BENCH_ID) --json $(BENCH_OUT)
 
 PROFILE_CORPUS ?= silesia
 PROFILE_FRAMING ?= rfc1951
@@ -195,20 +199,54 @@ PROFILE_LEVEL ?= 6
 PROFILE_ITERS ?= 3
 PROFILE_MODE ?= oneshot
 PROFILE_PERF_FLAGS ?= --call-graph dwarf -F 499
+# PROFILE_KEY=<corpus>/<framing>/l<level>/<mode> overrides the four variables above.
+PROFILE_KEY ?=
+ifneq ($(PROFILE_KEY),)
+_pk := $(subst /, ,$(PROFILE_KEY))
+_pf := $(word 2,$(_pk))
+PROFILE_CORPUS := $(word 1,$(_pk))
+PROFILE_FRAMING := $(if $(filter raw rfc1951,$(_pf)),rfc1951,$(if $(filter zlib rfc1950,$(_pf)),rfc1950,$(if $(filter gzip rfc1952,$(_pf)),rfc1952,$(_pf))))
+PROFILE_LEVEL := $(patsubst l%,%,$(word 3,$(_pk)))
+PROFILE_MODE := $(word 4,$(_pk))
+endif
+PROFILE_SLUG := $(PROFILE_CORPUS)-$(PROFILE_FRAMING)-l$(PROFILE_LEVEL)-$(PROFILE_MODE)
+PROFILE_OUT := target/profile/$(PROFILE_SLUG)
 PROFILE_DIR := testdata/perf-inputs/$(PROFILE_CORPUS)/$(PROFILE_FRAMING)-l$(PROFILE_LEVEL)
 PROFILE_ARGS = --dir $(PROFILE_DIR) --format $(PROFILE_FRAMING) --iters $(PROFILE_ITERS) --mode $(PROFILE_MODE)
+PROFILE_BIN := target/release/examples/profile_decode
 
 profile-prep:
 	cargo run --release -q -p oracle -- perf-prep --corpus $(PROFILE_CORPUS) --framing $(PROFILE_FRAMING) --level $(PROFILE_LEVEL) --out testdata/perf-inputs
 
-profile: profile-prep
+profile-build:
 	CARGO_PROFILE_RELEASE_DEBUG=true cargo build --release -p cleanflate --example profile_decode
-	mkdir -p target/profile
-	perf record $(PROFILE_PERF_FLAGS) -o target/profile/perf.data target/release/examples/profile_decode $(PROFILE_ARGS)
-	perf report -i target/profile/perf.data --stdio --no-children -g none --sort symbol --percent-limit 0.5 > target/profile/top.txt
-	head -n 60 target/profile/top.txt
+
+profile: profile-prep profile-build
+	mkdir -p $(PROFILE_OUT)
+	perf record $(PROFILE_PERF_FLAGS) -o $(PROFILE_OUT)/perf.data $(PROFILE_BIN) $(PROFILE_ARGS)
+	perf report -i $(PROFILE_OUT)/perf.data --stdio --no-children -g none --sort symbol --percent-limit 0.5 > $(PROFILE_OUT)/top.txt
+	perf report -i $(PROFILE_OUT)/perf.data --stdio --children -g none --sort symbol --percent-limit 0.5 > $(PROFILE_OUT)/top-children.txt
+	head -n 60 $(PROFILE_OUT)/top.txt
+
+profile-stat: profile-prep profile-build
+	mkdir -p $(PROFILE_OUT)
+	perf stat -e task-clock,page-faults,cycles:u,instructions:u,branches:u,branch-misses:u -o $(PROFILE_OUT)/stat.txt $(PROFILE_BIN) $(PROFILE_ARGS)
+	cat $(PROFILE_OUT)/stat.txt
 
 flamegraph: profile-prep
-	mkdir -p target/profile
-	CARGO_PROFILE_RELEASE_DEBUG=true cargo flamegraph -p cleanflate --example profile_decode -o target/profile/flamegraph.svg -- $(PROFILE_ARGS)
-	@if [ -f perf.data ]; then mv -f perf.data target/profile/flamegraph-perf.data; fi
+	mkdir -p $(PROFILE_OUT)
+	CARGO_PROFILE_RELEASE_DEBUG=true cargo flamegraph --no-inline -p cleanflate --example profile_decode -o $(PROFILE_OUT)/flamegraph.svg -- $(PROFILE_ARGS)
+	@if [ -f perf.data ]; then mv -f perf.data $(PROFILE_OUT)/flamegraph-perf.data; fi
+
+tag-required:
+	@test -n "$(TAG)" || { echo "TAG is required, e.g. make flamegraph-save PROFILE_KEY=... TAG=before"; exit 2; }
+
+flamegraph-save: tag-required flamegraph
+	bash tools/perf/check-flamegraph.sh $(PROFILE_OUT)/flamegraph.svg
+	cp $(PROFILE_OUT)/flamegraph.svg docs/perf/flamegraphs/$(PROFILE_SLUG)-$(TAG).svg
+
+# The three SPEC 4.3 keys: profile, perf stat and a saved, checked flamegraph each.
+profile-required: tag-required
+	$(MAKE) profile profile-stat flamegraph-save PROFILE_KEY=silesia/rfc1951/l1/oneshot PROFILE_ITERS=3 TAG=$(TAG)
+	$(MAKE) profile profile-stat flamegraph-save PROFILE_KEY=silesia/rfc1951/l1/streaming PROFILE_ITERS=3 TAG=$(TAG)
+	$(MAKE) profile profile-stat flamegraph-save PROFILE_KEY=canterbury/rfc1952/l1/oneshot PROFILE_ITERS=300 TAG=$(TAG)

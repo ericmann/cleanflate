@@ -1,0 +1,1 @@
+<svg xmlns="http://www.w3.org/2000/svg"><g><title>all (100 samples, 100%)</title></g><g><title>profile_decode::main (99 samples, 99%)</title></g><g><title>__memmove_avx_unaligned_erms (10 samples, 10%)</title></g></svg>
