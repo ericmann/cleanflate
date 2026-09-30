@@ -843,6 +843,18 @@ PT1 (`docs/perf/phase3/P2-07-before.json`, `P2-07.json`, bench-quick): the JSON 
 
 The one-shot keys the switch was meant to help are within run-to-run spread (-2.3% to +3.0% on Silesia, both signs on Canterbury), with Silesia level 1 slightly negative and level 6 slightly positive; none is a WIN, and the quick-bench verdicts on the one-shot keys are LOSS or NEUTRAL except `silesia/zlib/l6/oneshot`. PT4 therefore reverts the switch. The zero-fill is not where the one-shot gap to streaming (T2) lives on this machine; that gap is the fresh-allocation faults, which M3's buffer reuse can address.
 
+### P2-08
+**Negative result (gated out, PT2). No code change.**
+
+Current one-shot path: the slice driver (P2-07's switch was reverted). Fresh `make profile` runs and the P1-02 stats counters:
+
+| key | growth, realloc and copy frames | `resize<u8>` (zero-fill of the output buffer), inclusive | `oneshot_resizes` | `oneshot_bytes_allocated` / output |
+|---|---|---:|---:|---:|
+| `silesia/rfc1951/l1/oneshot` | none in the profile | 2.26% | 14 for 12 files | 316,146,272 / 211,938,580 = 1.49x |
+| `canterbury/rfc1952/l1/oneshot` | none in the profile | 0.57% | 13 for 11 files | 4,753,344 / 2,810,784 = 1.69x |
+
+There is no growth cost to revisit: about one allocation per file means the ratio estimate is close enough that growth steps are rare, and no reallocation or copy frame reaches the profile's display floor. What is visible is the zero-fill `resize<u8>` of the output buffer, and that is mostly the first allocation (14 resizes for 12 files), which no hint can avoid (P2-07 showed that removing the zero-fill does not change throughput or page faults either). Re-choosing `ONESHOT_INITIAL_RATIO` could only trim the over-allocation: the buffer is 1.49x the output on Silesia, so at most a third of the 2.26% zero-fill (about 0.7%) and a third of 0.57% on Canterbury are attributable to the excess. That is below the gate, max(2%, 2 x the quick noise of the key) = 2% for `silesia/raw/l1/oneshot` (noise 0.91%) and 4.84% for `canterbury/gzip/l1/oneshot` (noise 2.42%), and far below what this machine can measure. No candidate ratio was run; `ONESHOT_INITIAL_RATIO`, `ONESHOT_GROWTH_FLOOR` and D-31/D-33 stay as they are.
+
 ## Targets
 Filled by P5-02 (acceptance tasks).
 
