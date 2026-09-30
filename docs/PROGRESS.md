@@ -32,7 +32,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P3-05 M3 acceptance and push
 - [x] P4-01 Assembly evidence tool for the fast loop
 - [x] P4-02 Branch-light bulk refill (gated)
-- [~] P4-03 Fast-loop bounds-check elision and inlined lookup
+- [x] P4-03 Fast-loop bounds-check elision and inlined lookup
 - [ ] P4-04 Multi-literal table entries (optional, measured)
 - [ ] P4-05 Re-tune table widths on the final loop
 - [ ] P4-06 M4 acceptance and push
@@ -135,3 +135,6 @@ tools/perf/asm_branches.py (+tests, fixture), make asm / asm-count (ASM_FUNCS, A
 
 ### P4-02 — 02d83fe
 NEGATIVE RESULT (PT4). refill_bulk already IS the word-read, branch-free refill (D-27). Tried first_chunk/masked-shift spelling: asm cond branches identical (167 step_into, 39 bitreader.rs), bench NEUTRAL (+0.15%/+1.2%), A/B flat. Reverted; tests refill_word_path_all_counts/refill_never_exceeds_63_bits kept. make asm fixed to copy newest .s when cargo finds build fresh. Gate passed (6.10% > 2% on oneshot key).
+
+### P4-03 — 161d00c
+BIG WIN, kept. huffman.rs FastTable/FastDecoded/fast_table (fixed-size first level, masked index), BitReader::bits() + inline attrs, fast_loop::run rewritten (one function, locals). silesia raw l1 streaming 129.3->170.1 MiB/s (+31.5%), every l1/l6 key +18..+31% WIN on throughput AND ratio verdicts; instructions 36.4G->25.8G. asm: decode_table symbol gone (inlined), panic sites 0. fastslow-full, bomb, proptest-3k, fuzz-smoke pass. DESIGN D-36. One per-file regression alice29 gzip l1 oneshot -6.1% (noise). Next free D = D-37. Note for P4-04/P4-05: loop is now a single `run` function; LITLEN_FIRST/DIST_FIRST are derived from config table bits (fast_table returns None for other widths).
