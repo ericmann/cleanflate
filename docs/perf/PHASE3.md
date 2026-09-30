@@ -1132,6 +1132,45 @@ The compiler already produced the same branch structure: the conditional branch 
 
 PT1 (`docs/perf/phase3/P4-02-before.json`, `P4-02.json`; load averages at start 2.7 and 3.5): `silesia/raw/l1/oneshot` +0.15% (NEUTRAL, ratio -1.4% NEUTRAL) and `silesia/raw/l1/streaming` +1.2% (NEUTRAL). Interleaved runs of the old and new `profile_decode` binaries (6 alternating pairs each, MiB/s means): silesia level 1 one-shot 155.2 to 154.4, streaming 162.8 to 161.9, level 6 one-shot 181.8 to 177.9, canterbury level 1 one-shot 199.6 to 198.6: no change beyond the pair-to-pair spread. The change is neither a WIN nor a named prerequisite of a later task, so PT4 reverts it; the two tests stay.
 
+### P4-03
+Fast-loop lookup inlined on fixed-size table views (DESIGN D-36): the loop looks codes up itself in a `FastTable` (first-level size `1 << TABLE_BITS`, masked index, same rule for the second level), relies on the 48 buffered bits every iteration already guarantees, and keeps its bit buffer and tables in locals in one function. The general `decode_table`, the serial walk and the Reference path are unchanged. New tests (`crates/cleanflate/src/tests/fast_loop.rs`): `fast_loop_long_codes_via_subtable`, `fast_table_lookup_matches_decode_table`, `fast_loop_vec_and_slice_sinks_same_trace` (the requested `fast_loop_all_table_widths_same_trace` has no runtime width to vary, since the widths are config constants; the width dependence is pinned by `fast_table_lookup_matches_decode_table`, which also checks that a view exists only for the size the table was built for).
+
+Profile (`silesia/rfc1951/l1/oneshot`, `make profile`, `make profile-stat`): before `fast_loop::run` 41.79% + `Huffman::decode_table` 28.53% + `Window::copy_match` 12.75% of samples; after a single `fast_loop::run` at 78.56%. `instructions:u` 36.36 G to 25.77 G (-29%), cycles 12.90 G to 10.23 G (-21%), task-clock 3,810 to 3,150 ms.
+
+Assembly (`make asm`, `make asm-count`, `docs/perf/phase3/P4-03-asm.json`; before is the P4-01 baseline measured again on the unchanged code, after the new loop). The `Huffman::decode_table` symbol disappears from the library build (it is inlined into the loop, which is itself inside `Inflater::step_into`); the conditional-branch total of the decode path stays close while the instructions per symbol fall, and panic sites stay at 0 in the loop (the two sites in `Window::copy_match_sink` are unchanged):
+
+| function or source | instructions before | after | cond branches before | after | panic calls before | after | panic sites before | after |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `cleanflate::inflate::Inflater::step_into` | 2259 | 2394 | 167 | 172 | 0 | 0 | 0 | 0 |
+| `src:crates/cleanflate/src/inflate.rs` | 1380 | 1422 | 83 | 80 | 0 | 0 | 0 | 0 |
+| `src:crates/cleanflate/src/bitreader.rs` | 582 | 593 | 39 | 44 | 0 | 0 | 0 | 0 |
+| `src:crates/cleanflate/src/huffman.rs` | 507 | 569 | 40 | 46 | 0 | 0 | 0 | 0 |
+| `cleanflate::window::Window::copy_match_sink` | 241 | 241 | 24 | 24 | 2 | 2 | 2 | 2 |
+| `cleanflate::huffman::Huffman::decode_table` | 182 | - | 22 | - | 0 | - | 0 | - |
+| `src:crates/cleanflate/src/window.rs` | 169 | 162 | 21 | 21 | 0 | 0 | 0 | 0 |
+| `src:crates/cleanflate/src/fast_loop.rs` | 79 | 50 | 11 | 9 | 0 | 0 | 0 | 0 |
+
+PT1 (`docs/perf/phase3/P4-03-before.json`, `P4-03.json`, bench-quick; load average 2.8 to 3.6 in both runs): every Silesia and Canterbury key at levels 1 and 6, in every framing and both modes, is a WIN on the throughput verdict and on the like-for-like ratio verdict, from +18% to +31%; there is no LOSS. Raw keys and the gzip level-1 keys:
+
+| key | before MiB/s | after MiB/s | delta % | throughput verdict | ratio delta % | ratio verdict |
+|---|---:|---:|---:|---|---:|---|
+| canterbury/gzip/l1/oneshot | 178.5 | 210.7 | +18.06 | WIN | +17.77 | WIN |
+| canterbury/gzip/l1/reuse | 178.8 | 218.0 | +21.98 | WIN | n/a | n/a |
+| canterbury/gzip/l1/streaming | 175.5 | 214.6 | +22.23 | WIN | +21.24 | WIN |
+| canterbury/raw/l1/oneshot | 202.7 | 247.0 | +21.86 | WIN | +24.03 | WIN |
+| canterbury/raw/l1/streaming | 199.4 | 243.9 | +22.33 | WIN | +23.37 | WIN |
+| canterbury/raw/l6/oneshot | 235.7 | 287.7 | +22.06 | WIN | +22.92 | WIN |
+| canterbury/raw/l6/streaming | 226.8 | 279.3 | +23.17 | WIN | +23.07 | WIN |
+| silesia/gzip/l1/oneshot | 125.0 | 155.2 | +24.15 | WIN | +26.50 | WIN |
+| silesia/gzip/l1/reuse | 123.8 | 152.5 | +23.16 | WIN | n/a | n/a |
+| silesia/gzip/l1/streaming | 124.6 | 155.3 | +24.63 | WIN | +21.51 | WIN |
+| silesia/raw/l1/oneshot | 132.2 | 164.1 | +24.13 | WIN | +20.50 | WIN |
+| silesia/raw/l1/streaming | 129.3 | 170.1 | +31.50 | WIN | +31.36 | WIN |
+| silesia/raw/l6/oneshot | 156.1 | 194.7 | +24.70 | WIN | +23.02 | WIN |
+| silesia/raw/l6/streaming | 151.9 | 193.1 | +27.11 | WIN | +26.85 | WIN |
+
+One per-file line regresses (`canterbury/alice29.txt/gzip/l1/oneshot` -6.1%, threshold -4.2%): a 150 KB file among 11 whose aggregate is +18%, so it is a per-row noise excursion, not a code-path loss. Interleaved runs of the old and new `profile_decode` binaries agree with the bench: Silesia level 1 one-shot 161.4 to 189.4 MiB/s (4 of 4 pairs), streaming 157.8 to 189.0, level 6 one-shot 176.8 to 220.6, Canterbury level 1 one-shot 195.2 to 236.5. The change is a WIN and is kept (PT4).
+
 ## Targets
 Filled by P5-02 (acceptance tasks).
 

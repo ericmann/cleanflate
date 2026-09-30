@@ -1069,3 +1069,39 @@ decompressor that was driven to each interesting state (untouched, one call
 in, finished, errored, truncated, at the output limit) and then reset, and
 requires the same calls, output, `finish` result and counters as a fresh
 decompressor, across formats, options, dictionaries and both decode paths.
+
+### D-36: [perf] Fast-loop lookup in the loop, on fixed-size table views
+
+RFC: RFC 1951 S3.2.2, S3.2.5, S3.2.6
+Decision: On the Fast path the decode loop no longer calls the general table
+decode (`Huffman::decode_table`) for each symbol. It looks the next code up
+itself in a fixed-size view of the table's first level (`FastTable`, built
+once per loop entry from `LITLEN_TABLE_BITS`/`DIST_TABLE_BITS`'s table sizes):
+the first-level index is the low bits of the bit buffer masked to the table's
+power-of-two length, a second-level entry is followed by the same masked-index
+rule, and the result is a symbol and its code length, or "invalid". The lookup
+relies on what each loop iteration already guarantees, that at least 48 bits
+are buffered (a code is at most 15 bits), so it has no "need more bits" case,
+and the loop keeps its bit buffer, input position and the two views in locals
+for the whole run (the loop and its lookups are one function, so the
+compiler holds them in registers). A table with no lookup level of exactly
+that size makes the loop hand over to the state machine instead. The general
+decode and the bit-serial walk are unchanged and remain the Reference path
+and the state machine's decoder; a unit test checks the loop's lookup against
+the general decode on literal/length and distance tables with second-level
+codes and invalid prefixes.
+Rationale: The profile of the level-1 streams showed the loop spending 42% of
+its samples in the loop body and another 29% in `decode_table`, a separate
+function called once or twice per symbol that takes the bit reader by
+reference and returns a three-way result the caller immediately takes apart.
+A call per symbol forces the buffered bits through memory and adds the
+argument and result handling, and the "enough bits?" comparisons it repeats
+were already settled by the loop's margin. Doing the lookup in the loop, with
+indices the compiler can see are in range, removes the call, the repeated
+checks and the memory traffic. The assembly evidence (`make asm-count`) shows
+no bounds-check panic sites in the loop before or after, so the gain is not
+from elided panics but from fewer instructions per symbol (`instructions:u`
+36.4 G to 25.8 G, cycles 12.9 G to 10.2 G on Silesia level 1 one-shot).
+Provenance: general technique; not derived from any specific implementation.
+Profile: `silesia/rfc1951/l1/oneshot`: `fast_loop::run` 41.79% + `Huffman::decode_table` 28.53% + `Window::copy_match` 12.75% = 83.07% of samples before (docs/perf/phase3-profile.md); `fast_loop::run` 78.56% after (the lookup and the match copy are inlined into it), and the whole decode 3,810 -> 3,150 ms of task-clock.
+Measurement: docs/perf/phase3/P4-03.json against docs/perf/phase3/P4-03-before.json (bench-quick): every one-shot and streaming key at levels 1 and 6 is a WIN on both throughput and the like-for-like ratio, +18% to +31% (Silesia raw level 1 streaming 129.3 -> 170.1 MiB/s, +31.5%; Silesia raw level 1 one-shot 132.2 -> 164.1, +24.1%; Silesia raw level 6 one-shot 156.1 -> 194.7, +24.7%); interleaved old/new binaries agree (Silesia level 1 one-shot 161.4 -> 189.4 MiB/s). Assembly: docs/perf/phase3/P4-03-asm.json.

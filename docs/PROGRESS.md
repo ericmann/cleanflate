@@ -32,7 +32,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P3-05 M3 acceptance and push
 - [x] P4-01 Assembly evidence tool for the fast loop
 - [x] P4-02 Branch-light bulk refill (gated)
-- [ ] P4-03 Fast-loop bounds-check elision and inlined lookup
+- [~] P4-03 Fast-loop bounds-check elision and inlined lookup
 - [ ] P4-04 Multi-literal table entries (optional, measured)
 - [ ] P4-05 Re-tune table widths on the final loop
 - [ ] P4-06 M4 acceptance and push

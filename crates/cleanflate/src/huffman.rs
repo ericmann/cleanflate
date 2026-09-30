@@ -52,6 +52,68 @@ impl Entry {
     }
 }
 
+/// Entries in the first level of a literal/length table (the fixed-size view
+/// the fast loop indexes).
+pub(crate) const LITLEN_FIRST: usize = 1 << LITLEN_TABLE_BITS;
+
+/// Entries in the first level of a distance table.
+pub(crate) const DIST_FIRST: usize = 1 << DIST_TABLE_BITS;
+
+/// What the fast loop's lookup found.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum FastDecoded {
+    /// A code of `len` bits decodes `symbol`.
+    Symbol {
+        /// The decoded symbol.
+        symbol: u16,
+        /// The code's length in bits.
+        len: u32,
+    },
+    /// No code has this prefix.
+    Invalid,
+}
+
+/// A table seen through a fixed-size first level of `N` entries (a power of
+/// two), for the fast loop: the first-level index is `bits & (N - 1)`, so
+/// the lookup needs no bounds check, and the loop's guarantee of at least 15
+/// buffered bits (the longest code) means it never asks for more bits.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FastTable<'a, const N: usize> {
+    first: &'a [Entry; N],
+    all: &'a [Entry],
+}
+
+impl<const N: usize> FastTable<'_, N> {
+    /// Look up the code at the low end of `bits` (the bit buffer; bits
+    /// beyond those buffered are zero). Requires at least 15 buffered bits,
+    /// which every iteration of the fast loop has.
+    #[inline(always)]
+    pub(crate) fn lookup(&self, bits: u64) -> FastDecoded {
+        let first = self
+            .first
+            .get((bits as usize) & (N - 1))
+            .copied()
+            .unwrap_or(Entry::INVALID);
+        let entry = if first.kind() == KIND_SUB {
+            let extra = ((bits >> N.trailing_zeros()) as usize) & ((1usize << first.len()) - 1);
+            self.all
+                .get(first.payload() as usize + extra)
+                .copied()
+                .unwrap_or(Entry::INVALID)
+        } else {
+            first
+        };
+        if entry.kind() == KIND_SYMBOL {
+            FastDecoded::Symbol {
+                symbol: entry.payload() as u16,
+                len: entry.len(),
+            }
+        } else {
+            FastDecoded::Invalid
+        }
+    }
+}
+
 /// A canonical Huffman decode table: how many codes exist at each length
 /// (`counts[len]`, `len` 1..=15), and which symbols they decode to,
 /// ordered by (length, symbol value) as RFC 1951 S3.2.2's canonical rule
@@ -305,6 +367,20 @@ impl Huffman {
             _ => Decoded::NeedMoreBits,
         };
         (decoded, true)
+    }
+
+    /// The table as a fixed-size first level of `N` entries for the fast
+    /// loop, or `None` if its first level is not exactly `N` entries (a
+    /// table without lookup levels, or one built for another width).
+    pub(crate) fn fast_table<const N: usize>(&self) -> Option<FastTable<'_, N>> {
+        if !N.is_power_of_two() || self.table_bits == 0 || 1usize << self.table_bits != N {
+            return None;
+        }
+        let first = self.table.first_chunk::<N>()?;
+        Some(FastTable {
+            first,
+            all: &self.table,
+        })
     }
 
     /// Number of lookup-table entries this table allocated.
