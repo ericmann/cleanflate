@@ -35,7 +35,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P4-03 Fast-loop bounds-check elision and inlined lookup
 - [x] P4-04 Multi-literal table entries (optional, measured)
 - [x] P4-05 Re-tune table widths on the final loop
-- [ ] P4-06 M4 acceptance and push
+- [x] P4-06 M4 acceptance and push
 - [ ] P5-01 After-profiles and flamegraphs
 - [ ] P5-02 Final bench, PHASE3.md report and PERF.md phase-3 section
 - [ ] P5-03 Provenance, build report and hand-off push
@@ -144,3 +144,6 @@ NEGATIVE RESULT (PT4). Pair entries implemented correctly (tests passed, stats m
 
 ### P4-05 — b218184
 Measured no change: LITLEN_TABLE_BITS stays 10 (11: -6%, 12: -4%, 9: within drift), DIST_TABLE_BITS stays 8 (7 within drift; 9 +0.4% overall but -1.5..-2.6% on l1 raw). Drift control default vs repeat: 4W/3L of 24. config.rs doc comments cite docs/perf/phase3/P4-05/*.json. ASSUMPTION keys unchanged.
+
+### P4-06 — f5f4c85
+make ci, heavy, fuzz-milestone pass: diff_oracle_roundtrip seconds=1802 execs=1504454; diff_fast_reference seconds=1802 execs=395074; no artifacts. P4-06.json + P4-06-asm.json committed, pushed. Level-1 vs M3: 12/12 WIN (throughput and ratio): M4 criterion MET. Compare vs phase3-start: 36 WIN 0 LOSS 5 REGRESSION lines. Manual check: NOT VERIFIED (human): ci green; review fast loop by hand + mutation-sample; review D-36 wording.
