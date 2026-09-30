@@ -229,3 +229,68 @@ fn decompressor_size_not_grown() {
         std::mem::size_of::<crate::Decompressor>()
     );
 }
+
+/// Both paths against the model for one case; returns nothing, asserts.
+fn check_case(window: &Window, all: &[u8], prefix: &[u8], dist: usize, len: usize, room: usize) {
+    let out_pos = prefix.len();
+    let mut history = all.to_vec();
+    history.extend_from_slice(prefix);
+    let n = len.min(room);
+    let expected = model_copy(&history, dist, n);
+    for path in [DecodePath::Fast, DecodePath::Reference] {
+        let mut out = vec![0u8; out_pos + room];
+        out[..out_pos].copy_from_slice(prefix);
+        let written = window.copy_match(path, &mut out, out_pos, dist, len);
+        assert_eq!(
+            written, n,
+            "{path:?} dist {dist} len {len} out_pos {out_pos} room {room}"
+        );
+        assert_eq!(
+            &out[out_pos..out_pos + n],
+            &expected[..],
+            "{path:?} dist {dist} len {len} out_pos {out_pos} room {room}"
+        );
+    }
+}
+
+#[test]
+fn pattern_doubling_matches_model_exhaustive() {
+    // A window of 200 bytes, so that at `out_pos` 0 the whole pattern
+    // source lies in the window.
+    let all = seeded_bytes(0x5EED, 200);
+    let mut window = Window::new();
+    window.append(&all);
+    for dist in 1..=64usize {
+        for out_pos in [0usize, dist, 1000] {
+            let prefix = seeded_bytes(0xF00 + out_pos as u64, out_pos);
+            for len in 3..=258usize {
+                for room in [1usize, 13, len] {
+                    check_case(&window, &all, &prefix, dist, len, room);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn pattern_doubling_straddling_window() {
+    // A wrapped 32 KiB window, and outputs shorter than the distance, so a
+    // pattern starts in the window and continues into the output.
+    let all = seeded_bytes(0xABCDEF, 40_000);
+    let mut window = Window::new();
+    window.append(&all);
+    for dist in [2usize, 5, 40, 300, 1000, 4097, 32768] {
+        let mut out_positions = vec![0usize, 1, dist / 2];
+        if dist > 1 {
+            out_positions.push(dist - 1);
+        }
+        for out_pos in out_positions {
+            let prefix = seeded_bytes(0x123 + out_pos as u64, out_pos);
+            for len in [3usize, 4, 100, 257, 258] {
+                for room in [1usize, 13, len] {
+                    check_case(&window, &all, &prefix, dist, len, room);
+                }
+            }
+        }
+    }
+}

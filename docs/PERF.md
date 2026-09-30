@@ -668,3 +668,16 @@ Output as match history; window carried only across calls (D-30). `make bench-qu
 | canterbury/gzip/l6/oneshot | 120.8 | 141.1 | +16.8 | 6.0 | WIN |
 
 All twelve aggregates are WIN. Three per-file REGRESSION lines were printed (canterbury xargs.1 gzip one-shot and streaming, -4.8% and -5.2% on a 4 KiB file; silesia sao gzip streaming, -10.5%). They are findings, not failures: the aggregates for the same keys are WINs, the per-file thresholds for these keys are 1.1% to 3.0% and rest on a single noise pair, and no other framing of the same files regressed. `make bench-stats` confirms the mechanism: `window_bytes_written / output_bytes` (bytes actually copied into the ring per output byte) fell from 1.000 (every byte written twice, one at a time) to 0.019 for one-shot decoding (large output slices: at most 32 KiB per call) and 0.50 for 64 KiB streaming windows (32 KiB of each 64 KiB window), all as slice copies at call exits.
+
+### P3-02 (negative result, code reverted)
+
+Overlapping matches by pattern doubling (copy the growing repeated pattern in doubling steps, with `fill` for distance 1) was implemented in `Window::copy_match`, tested against an independent model, and measured twice against the M3 code (`docs/perf/P3-02-before.json`; after: `docs/perf/P3-02.json` and a repeat `docs/perf/P3-02-rerun.json`, both taken with the doubling code). Silesia level 6 one-shot medians:
+
+| key | before MiB/s | run 1 | verdict | run 2 | verdict |
+|---|---:|---:|---|---:|---|
+| silesia/raw/l6/oneshot | 158.3 | 171.2 | WIN (+8.1%) | 162.6 | NEUTRAL (+2.7%) |
+| silesia/zlib/l6/oneshot | 142.9 | 158.6 | NEUTRAL (+11.0%) | 156.0 | NEUTRAL (+9.2%) |
+| silesia/gzip/l6/oneshot | 108.0 | 111.1 | WIN (+2.9%) | 106.5 | NEUTRAL (-1.4%) |
+| silesia/gzip/l6/streaming | 121.4 | 123.8 | NEUTRAL (+2.0%) | 117.3 | LOSS (-3.3%) |
+
+Run 1 gave 6 WIN and 6 NEUTRAL aggregates, run 2 gave 1 WIN, 1 LOSS and 10 NEUTRAL, and the per-file REGRESSION lines fell on different files each time. The effect is inside the run-to-run variation, as the M0 profile predicted: only 0.48% of matches have a distance smaller than their length (H4, DISCARDED). Under PT4 a change that is not a WIN and not the prerequisite of a later task is reverted: **the code was reverted; the tests (`tests/history.rs::pattern_doubling_matches_model_exhaustive`, `pattern_doubling_straddling_window`) were kept and pass against the slice-chunk copy of P3-01, so the overlap semantics remain covered.** No DESIGN entry was written because no technique was kept. The per-file table, the doubling derivation (a copy from `k` back with `k` a multiple of the distance keeps the period) and both JSONs are the record.
