@@ -15,7 +15,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P0-10 M0 acceptance and push
 - [x] P1-01 Profile any key: per-key outputs, perf stat and saved flamegraphs
 - [x] P1-02 Before-profiles, flamegraphs and phase3-profile.md
-- [ ] P1-03 M1 acceptance and push
+- [x] P1-03 M1 acceptance and push
 - [ ] P2-01 Checksum microbenchmark (cleanflate only)
 - [ ] P2-02 Adler-32 over a bound-derived unrolled batch (gated)
 - [ ] P2-03 CRC-32 slicing-by-16 against 8 (gated)
@@ -84,3 +84,6 @@ Makefile: PROFILE_KEY, per-key target/profile/<slug>/{perf.data,top.txt,top-chil
 
 ### P1-02 — 1089aab
 phase3-profile.md + 3 before SVGs + P1-02-stats.json committed. Verdicts: P1 ADJUSTED (zero-fill+fresh-page faults, 14 resizes/12 files; not growth), P2 ADJUSTED (setup ~7% Canterbury vs ~2% Silesia, table build per byte equal), P3 ADJUSTED (level1 literals 46.6% of symbols vs l6 60.8%; loop is symbol-count heavy), P4 CONFIRMED (Crc32::update 9.6% gzip, ZlibDecoder::step 5.1%). fast_loop::run+Huffman::decode_table (out-of-line) = 70% self at l1. Likely gates: above: P4-03,P4-04,P2-03,P4-02; below: P2-02,P3-01,P3-02,P2-04,P2-08; P2-07 at the gate. CR6 note: guard denied `perf report ... --sort dso` (outside make profile); not worked around. PHASE3.md: append later task-log entries before the exact line "## Targets".
+
+### P1-03 — 6aa0edf
+make ci/heavy/fuzz-milestone pass. fuzz: diff_oracle_roundtrip seconds=1801 execs=1383630 exit=0 artifacts=0; diff_fast_reference seconds=1801 execs=525087 exit=0 artifacts=0. P1-03.json committed, provenance snapshot, pushed. IMPORTANT: compare vs phase3-start with NO code change shows 9 WIN, 11 LOSS, 65 per-file REGRESSION lines: the two-run noise pair underestimates cross-session drift on this machine. Later tasks should take before and after back to back (same session) and read ratio verdicts. Manual check: NOT VERIFIED (human): ci green; open before SVGs and sanity check phase3-profile.md tables; SVGs only cleanflate/std/libc frames.
