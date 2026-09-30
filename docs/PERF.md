@@ -567,3 +567,24 @@ Share of samples by state arm of `Inflater::step` (source lines of `inflate.rs`)
 | `derive(Clone)` of `State` and `self.state.clone()` | 9.5% + 5.6% |
 
 The extra-bit reads themselves go through `BitReader::take`; the whole of `bitreader.rs` (fills, takes, peeks and consumes, including the bulk refill) is about 5.5% of samples, so even attributing all of it to length and distance extras would not be the target of this task. The base and extra-bit table handling that P1-04 would move into the table entries is 0.63% + 0.73% = 1.4% of samples: **below the 2% floor and far below twice the noise. Negative result: no code was changed.** The cost that matters is the dispatch and the per-iteration `State` clone (about 31% together), which the fast loop (P2-01) and the copyable state (P2-03) address; the fast loop will read the length and distance tables directly, so no payload-in-entry step is needed first.
+
+### M1 acceptance (P1-05)
+
+Commands run on the M1 head: `make ci` (green, 1m36s), `make heavy` (proptest-10k for chunking and fastslow, bomb, conformance-full, fastslow-full: all green; fastslow-full 209 s), `make bench-stats BENCH_ID=P1-05 BENCH_OUT=docs/perf/P1-05-stats.json`, and `make bench BENCH_ID=P1-05 BENCH_OUT=docs/perf/P1-05.json` (10.0 min). `docs/perf/P1-05.json` and `docs/perf/P1-05-stats.json` are committed.
+
+**Table-decode share (SPEC M1: >= 99%): MET.** On Silesia level 6, literal/length symbols 100.000% and distance symbols 100.000% are resolved by table lookup for raw, zlib and gzip framing (baseline: 54.0% and 51.7%). Bytes per refill 6.21 (baseline 1.08).
+
+Aggregate gain against the M0 baseline (Silesia, level 6, median MiB/s; C zlib is the same-run one-shot median):
+
+| key | baseline | M1 | gain | C zlib (M1 run) | cleanflate / C zlib |
+|---|---:|---:|---:|---:|---:|
+| silesia/raw/l6/oneshot | 62.3 | 98.9 | +58.7% | 277.0 | 35.7% |
+| silesia/raw/l6/streaming | 65.0 | 107.8 | +66.0% | 277.0 | 38.9% |
+| silesia/zlib/l6/oneshot | 61.3 | 94.5 | +54.3% | 249.5 | 37.9% |
+| silesia/zlib/l6/streaming | 63.7 | 102.4 | +60.7% | 249.5 | 41.1% |
+| silesia/gzip/l6/oneshot | 51.8 | 75.3 | +45.3% | 249.2 | 30.2% |
+| silesia/gzip/l6/streaming | 55.7 | 82.0 | +47.2% | 249.2 | 32.9% |
+
+`make bench-compare` of the M1 run against `baseline.json` reports WIN on every Silesia level-6 aggregate and no per-file REGRESSION line; against `P0-13.json` (which was itself about 6% faster than the baseline through drift, see M0) the gains are +38% to +54% and again no REGRESSION. The gain comes almost entirely from P1-01 (bulk refill, D-27); P1-02 (D-28) was NEUTRAL alone and is kept as the prerequisite of the fast loop; P1-03 and P1-04 were gated out with negative results (see their sections). The M1 numbers do not yet reach the primary target (70% of C zlib) or the streaming target (60%): they are recorded here for the M4 acceptance.
+
+Correctness gates: `make ci`, `make heavy` (10k-case chunking and fast-vs-reference proptests, full-tier conformance and differential, bomb) all pass; no regression fixture was needed.
