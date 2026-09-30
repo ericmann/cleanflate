@@ -14,6 +14,7 @@ use crate::error::Error;
 #[cfg(feature = "stats")]
 use crate::huffman::TableKind;
 use crate::huffman::{Decoded, Huffman};
+use crate::sink::OutputSink;
 #[cfg(feature = "stats")]
 use crate::stats::Stats;
 use crate::tables::{DIST_BASE, DIST_EXTRA, END_OF_BLOCK, LENGTH_BASE, LENGTH_EXTRA};
@@ -51,37 +52,37 @@ pub(crate) struct FastCtx<'a> {
     pub stats: &'a mut Stats,
 }
 
-/// Run the loop. The bit buffer and the positions live in locals and are
-/// written back on every exit.
-pub(crate) fn run(
+/// Run the loop. The bit buffer and the input position live in locals and
+/// are written back on every exit. `out_base` is the sink offset where the
+/// caller's own output starts: a match reaches back only into the window
+/// and the sink's bytes since `base`.
+pub(crate) fn run<S: OutputSink>(
     ctx: &mut FastCtx,
     input: &[u8],
     pos: &mut usize,
-    output: &mut [u8],
-    out_pos: &mut usize,
+    sink: &mut S,
+    out_base: usize,
 ) -> FastExit {
     let mut br = ctx.br.clone();
     let mut p = *pos;
-    let mut o = *out_pos;
-    let exit = run_loop(ctx, &mut br, input, &mut p, output, &mut o);
+    let exit = run_loop(ctx, &mut br, input, &mut p, sink, out_base);
     *ctx.br = br;
     *pos = p;
-    *out_pos = o;
     exit
 }
 
-fn run_loop(
+fn run_loop<S: OutputSink>(
     ctx: &mut FastCtx,
     br: &mut BitReader,
     input: &[u8],
     pos: &mut usize,
-    output: &mut [u8],
-    out_pos: &mut usize,
+    sink: &mut S,
+    out_base: usize,
 ) -> FastExit {
     stat!(ctx.stats.fast_loop_entries, 1);
     loop {
         if input.len().saturating_sub(*pos) < FAST_LOOP_MIN_INPUT
-            || output.len().saturating_sub(*out_pos) < FAST_LOOP_MIN_OUTPUT
+            || sink.room() < FAST_LOOP_MIN_OUTPUT
         {
             return FastExit::Margin;
         }
@@ -107,11 +108,7 @@ fn run_loop(
             #[cfg(feature = "stats")]
             crate::stats::count_decode(ctx.stats, TableKind::LitLen, via_table);
             stat!(ctx.stats.literals, 1);
-            let byte = symbol as u8;
-            if let Some(slot) = output.get_mut(*out_pos) {
-                *slot = byte;
-            }
-            *out_pos += 1;
+            sink.push(symbol as u8);
         } else if symbol == END_OF_BLOCK {
             br.consume(len);
             #[cfg(feature = "stats")]
@@ -151,7 +148,10 @@ fn run_loop(
             let dextra = br.peek(dextra_bits);
             br.consume(dextra_bits);
             let distance = (dbase as u32).saturating_add(dextra);
-            let available = ctx.window.history_available(*out_pos) as u64;
+            let available = ctx
+                .window
+                .history_available(sink.written().saturating_sub(out_base))
+                as u64;
             if distance as u64 > available {
                 return FastExit::Error(Error::InvalidDistance {
                     distance,
@@ -160,14 +160,13 @@ fn run_loop(
             }
             #[cfg(feature = "stats")]
             crate::stats::record_match(ctx.stats, u32::from(length), distance);
-            let written = ctx.window.copy_match(
+            let written = ctx.window.copy_match_sink(
                 DecodePath::Fast,
-                output,
-                *out_pos,
+                sink,
+                out_base,
                 distance as usize,
                 length as usize,
             );
-            *out_pos += written;
             if written < length as usize {
                 return FastExit::Copy {
                     remaining: length.saturating_sub(written as u16),

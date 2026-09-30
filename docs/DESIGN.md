@@ -1010,3 +1010,31 @@ to 18 * 1032 = 18,576 bytes up front, while any stream large enough to
 really produce 64 MiB still gets the full hint. Output, limits and errors
 are unchanged: the hint only sizes the first allocation (D-31), and
 growth on `OutputFull` covers any hint that is too small.
+
+### D-34: Output sinks for the decoder core
+
+RFC: RFC 1951 S3.2.5
+Decision: Every output write of the decoder core, and every look-back at
+the bytes written in the current call, goes through a crate-private
+`OutputSink` trait (`written`, `room`, `push`, `extend_from_slice`,
+`copy_within_back`, `get_back`, `written_since`). The state machine, the
+fast loop, the window copy and the zlib and gzip wrappers are generic over
+the sink and monomorphised, and `Decompressor::decompress` wraps its
+allowance-trimmed output slice in a `SliceSink`, which behaves exactly as
+writing into that slice did. History semantics are unchanged: a match reaches
+back into the window (as it stood when the call began) followed by the bytes
+the sink received since the decoder's own output began, so a gzip member that
+starts in the middle of a call still sees only its own bytes. The window is
+refreshed once per call from `written_since` (D-30), the D-27 bit-reader exits
+are untouched, and the fast and reference paths differ only in how a match is
+copied (slices against byte by byte).
+Rationale: One decoder core has to serve a caller-supplied slice today and a
+growable buffer later (the one-shot path), without a second copy of the
+state machine that would have to be kept in step with it. A trait with
+generic, inlined methods gives that with no dynamic dispatch, and funnelling
+every write and back-reference through five small operations is what makes the
+second sink a separate, testable addition. This step is a pure refactor with
+only the slice sink: decoded output, errors, `consumed` and `produced`, the
+streaming contract and `size_of::<Decompressor>()` are unchanged. Test-only
+slice-shaped wrappers (`step`, `copy_match`) keep the existing unit tests
+meaningful without widening the production API.

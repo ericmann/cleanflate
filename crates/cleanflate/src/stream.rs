@@ -9,6 +9,7 @@ use crate::error::Error;
 use crate::gzip::{GzipDecoder, GzipHeader};
 use crate::inflate::{InflateStatus, Inflater};
 use crate::options::{Format, Options, TrailingData};
+use crate::sink::{OutputSink, SliceSink};
 use crate::zlib::ZlibDecoder;
 
 /// The format-specific decoder a [`Decompressor`] drives. All variants
@@ -24,15 +25,15 @@ enum Backend {
 }
 
 impl Backend {
-    fn step(
+    fn step_into<S: OutputSink>(
         &mut self,
         input: &[u8],
-        output: &mut [u8],
+        sink: &mut S,
     ) -> Result<(usize, usize, InflateStatus), Error> {
         match self {
-            Backend::Raw(i) => i.step(input, output),
-            Backend::Zlib(z) => z.step(input, output),
-            Backend::Gzip(g) => g.step(input, output),
+            Backend::Raw(i) => i.step_into(input, sink),
+            Backend::Zlib(z) => z.step_into(input, sink),
+            Backend::Gzip(g) => g.step_into(input, sink),
         }
     }
 
@@ -231,7 +232,8 @@ impl Decompressor {
         let allowance = remaining_allowance.min(output.len() as u64) as usize;
         let output_slice = output.get_mut(..allowance).unwrap_or(&mut []);
 
-        let step_result = self.backend.step(input, output_slice);
+        let mut sink = SliceSink::new(output_slice);
+        let step_result = self.backend.step_into(input, &mut sink);
         let (consumed, produced, inflate_status) = match step_result {
             Ok(v) => v,
             Err(e) => {

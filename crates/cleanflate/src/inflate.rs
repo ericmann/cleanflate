@@ -8,6 +8,7 @@ use crate::decode_path::DecodePath;
 use crate::error::{Error, HuffmanError};
 use crate::fast_loop::{self, FastCtx, FastExit};
 use crate::huffman::{Decoded, Huffman, TableKind};
+use crate::sink::OutputSink;
 #[cfg(feature = "stats")]
 use crate::stats::Stats;
 use crate::tables::{
@@ -255,24 +256,29 @@ impl Inflater {
         }
     }
 
-    /// Advance the state machine as far as `input` and `output` allow.
-    /// Returns `(consumed, produced, status)`: bytes read from `input`,
-    /// bytes written to `output`, and what stopped this call.
+    /// Advance the state machine as far as `input` and the sink's room
+    /// allow. Returns `(consumed, produced, status)`: bytes read from
+    /// `input`, bytes written to the sink, and what stopped this call.
+    ///
+    /// The decoder's own output is what the sink receives from its current
+    /// length on (`base`); bytes the sink held before are not history for
+    /// this stream.
     ///
     /// Every non-`NeedsInput` return goes through the one exit below, which
     /// gives whole unneeded bytes back to the input so the bit buffer holds
     /// exactly what the exact-fill reader would hold (DESIGN: bulk refill).
-    pub(crate) fn step(
+    pub(crate) fn step_into<S: OutputSink>(
         &mut self,
         input: &[u8],
-        output: &mut [u8],
+        sink: &mut S,
     ) -> Result<(usize, usize, InflateStatus), Error> {
         self.keep_bits = 0;
-        let (mut pos, out_pos, result) = self.step_inner(input, output);
+        let base = sink.written();
+        let (mut pos, out_pos, result) = self.step_inner(input, sink, base);
         // Every return refreshes the window from this call's output,
-        // exactly once (DESIGN.md D-30): within a call the output slice is
-        // the match history, and only this tail must survive the call.
-        self.window.append(output.get(..out_pos).unwrap_or(&[]));
+        // exactly once (DESIGN.md D-30): within a call the sink is the
+        // match history, and only this tail must survive the call.
+        self.window.append(sink.written_since(base));
         let status = result?;
         if status != InflateStatus::NeedsInput {
             let k = self.br.give_back(self.keep_bits);
@@ -286,13 +292,14 @@ impl Inflater {
         Ok((pos, out_pos, status))
     }
 
-    /// The state machine proper; see [`Self::step`]. Returns the input and
+    /// The state machine proper; see [`Self::step_into`]. Returns the input and
     /// output positions reached together with the outcome, on every path,
     /// so the caller can refresh the window even after an error.
-    fn step_inner(
+    fn step_inner<S: OutputSink>(
         &mut self,
         input: &[u8],
-        output: &mut [u8],
+        sink: &mut S,
+        out_base: usize,
     ) -> (usize, usize, Result<InflateStatus, Error>) {
         if let State::Failed(e) = &self.state {
             return (0, 0, Err(e.clone()));
@@ -300,15 +307,14 @@ impl Inflater {
         stat!(self.stats.step_calls, 1);
 
         let mut pos = 0usize;
-        let mut out_pos = 0usize;
         // After the fast loop stops on a margin, one state-machine dispatch
         // runs before it is tried again, so every pass makes progress.
         let mut skip_fast = false;
 
-        let result = (|| -> Result<(usize, usize, InflateStatus), Error> {
+        let result = (|| -> Result<(usize, InflateStatus), Error> {
             loop {
                 match &self.state {
-                    State::Done => return Ok((pos, out_pos, InflateStatus::Done)),
+                    State::Done => return Ok((pos, InflateStatus::Done)),
                     State::Failed(e) => return Err(e.clone()),
                     _ => {}
                 }
@@ -317,9 +323,9 @@ impl Inflater {
                     && self.path == DecodePath::Fast
                     && matches!(self.state, State::LitLen)
                     && input.len().saturating_sub(pos) >= FAST_LOOP_MIN_INPUT
-                    && output.len().saturating_sub(out_pos) >= FAST_LOOP_MIN_OUTPUT
+                    && sink.room() >= FAST_LOOP_MIN_OUTPUT
                 {
-                    let before = out_pos;
+                    let before = sink.written();
                     let mut ctx = FastCtx {
                         litlen: &self.litlen_table,
                         dist: &self.dist_table,
@@ -328,8 +334,8 @@ impl Inflater {
                         #[cfg(feature = "stats")]
                         stats: &mut self.stats,
                     };
-                    let exit = fast_loop::run(&mut ctx, input, &mut pos, output, &mut out_pos);
-                    self.total_out += (out_pos - before) as u64;
+                    let exit = fast_loop::run(&mut ctx, input, &mut pos, sink, out_base);
+                    self.total_out += (sink.written() - before) as u64;
                     match exit {
                         FastExit::Margin => skip_fast = true,
                         FastExit::EndOfBlock => self.state = self.next_block_state(),
@@ -348,7 +354,7 @@ impl Inflater {
 
                 match self.state.clone() {
                     State::BlockHeader => match self.br.take(input, &mut pos, 3) {
-                        None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
+                        None => return Ok((pos, InflateStatus::NeedsInput)),
                         Some(bits) => {
                             self.bfinal = (bits & 1) != 0;
                             let btype = (bits >> 1) & 0b11;
@@ -386,7 +392,7 @@ impl Inflater {
                     State::StoredLen => {
                         self.br.align_to_byte();
                         match self.br.take(input, &mut pos, 32) {
-                            None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
+                            None => return Ok((pos, InflateStatus::NeedsInput)),
                             Some(v) => {
                                 let len = (v & 0xFFFF) as u16;
                                 let nlen = ((v >> 16) & 0xFFFF) as u16;
@@ -415,18 +421,15 @@ impl Inflater {
                             self.state = self.next_block_state();
                             continue;
                         }
-                        if out_pos >= output.len() {
-                            return Ok((pos, out_pos, InflateStatus::OutputFull));
+                        if sink.room() == 0 {
+                            return Ok((pos, InflateStatus::OutputFull));
                         }
                         if self.br.available() >= 8 {
                             // Defensive: StoredLen hands every whole byte back, so
                             // this cannot happen; drain rather than skip payload.
                             debug_assert!(false, "whole bytes still buffered in a stored block");
                             if let Some(byte) = self.br.take(input, &mut pos, 8) {
-                                if let Some(slot) = output.get_mut(out_pos) {
-                                    *slot = byte as u8;
-                                }
-                                out_pos += 1;
+                                sink.push(byte as u8);
                                 self.total_out += 1;
                                 self.state = State::StoredCopy {
                                     remaining: remaining - 1,
@@ -435,32 +438,29 @@ impl Inflater {
                             }
                         }
                         if pos >= input.len() {
-                            return Ok((pos, out_pos, InflateStatus::NeedsInput));
+                            return Ok((pos, InflateStatus::NeedsInput));
                         }
 
                         let available_in = (input.len() - pos) as u32;
-                        let available_out = (output.len() - out_pos) as u32;
+                        let available_out = sink.room().min(u32::MAX as usize) as u32;
                         let n = remaining.min(available_in).min(available_out) as usize;
 
-                        // One slice copy: the output is the history, and the
-                        // window is refreshed from it when `step` returns.
-                        if let (Some(dst), Some(src)) = (
-                            output.get_mut(out_pos..out_pos + n),
-                            input.get(pos..pos + n),
-                        ) {
-                            dst.copy_from_slice(src);
+                        // One slice copy: the sink is the history, and the
+                        // window is refreshed from it when `step_into`
+                        // returns.
+                        if let Some(src) = input.get(pos..pos + n) {
+                            sink.extend_from_slice(src);
                         }
 
                         stat!(self.stats.stored_bytes, n);
                         pos += n;
-                        out_pos += n;
                         self.total_out += n as u64;
                         self.state = State::StoredCopy {
                             remaining: remaining - n as u32,
                         };
                     }
                     State::DynHeader => match self.br.take(input, &mut pos, 14) {
-                        None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
+                        None => return Ok((pos, InflateStatus::NeedsInput)),
                         Some(v) => {
                             let hlit_field = v & 0x1F;
                             let hdist_field = (v >> 5) & 0x1F;
@@ -499,7 +499,7 @@ impl Inflater {
                             continue;
                         }
                         match self.br.take(input, &mut pos, 3) {
-                            None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
+                            None => return Ok((pos, InflateStatus::NeedsInput)),
                             Some(v) => {
                                 let sym = *CODE_LENGTH_ORDER.get(i).unwrap_or(&0);
                                 if let Some(slot) = self.dyn_cl_lengths.get_mut(sym as usize) {
@@ -569,7 +569,7 @@ impl Inflater {
                             input,
                             &mut pos,
                         ) {
-                            None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
+                            None => return Ok((pos, InflateStatus::NeedsInput)),
                             Some(o) => o,
                         };
                         match outcome {
@@ -628,7 +628,7 @@ impl Inflater {
                             _ => 0,
                         };
                         match self.br.take(input, &mut pos, extra_bits) {
-                            None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
+                            None => return Ok((pos, InflateStatus::NeedsInput)),
                             Some(extra) => {
                                 let (count, value): (usize, u8) = match sym {
                                     16 => (3 + extra as usize, self.dyn_prev_len),
@@ -659,7 +659,7 @@ impl Inflater {
                             input,
                             &mut pos,
                         ) {
-                            None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
+                            None => return Ok((pos, InflateStatus::NeedsInput)),
                             Some(o) => o,
                         };
                         match outcome {
@@ -679,19 +679,15 @@ impl Inflater {
                                     // write the byte) once we know there is
                                     // room, so a retry re-decodes the same
                                     // (still-buffered) bits for free.
-                                    if out_pos >= output.len() {
+                                    if sink.room() == 0 {
                                         self.keep_bits = len;
-                                        return Ok((pos, out_pos, InflateStatus::OutputFull));
+                                        return Ok((pos, InflateStatus::OutputFull));
                                     }
                                     self.br.consume(len);
                                     #[cfg(feature = "stats")]
                                     self.count_decode(TableKind::LitLen, via_table);
                                     stat!(self.stats.literals, 1);
-                                    let byte = symbol as u8;
-                                    if let Some(slot) = output.get_mut(out_pos) {
-                                        *slot = byte;
-                                    }
-                                    out_pos += 1;
+                                    sink.push(symbol as u8);
                                     self.total_out += 1;
                                 } else if symbol == END_OF_BLOCK {
                                     self.br.consume(len);
@@ -721,7 +717,7 @@ impl Inflater {
                         let extra_bits = *LENGTH_EXTRA.get(idx).unwrap_or(&0) as u32;
                         let base = *LENGTH_BASE.get(idx).unwrap_or(&0);
                         match self.br.take(input, &mut pos, extra_bits) {
-                            None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
+                            None => return Ok((pos, InflateStatus::NeedsInput)),
                             Some(extra) => {
                                 let len = base.saturating_add(extra as u16);
                                 self.state = State::Dist { len };
@@ -736,7 +732,7 @@ impl Inflater {
                             input,
                             &mut pos,
                         ) {
-                            None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
+                            None => return Ok((pos, InflateStatus::NeedsInput)),
                             Some(o) => o,
                         };
                         match outcome {
@@ -770,10 +766,13 @@ impl Inflater {
                         let extra_bits = *DIST_EXTRA.get(idx).unwrap_or(&0) as u32;
                         let base = *DIST_BASE.get(idx).unwrap_or(&0);
                         match self.br.take(input, &mut pos, extra_bits) {
-                            None => return Ok((pos, out_pos, InflateStatus::NeedsInput)),
+                            None => return Ok((pos, InflateStatus::NeedsInput)),
                             Some(extra) => {
                                 let distance = (base as u32).saturating_add(extra);
-                                let available = self.window.history_available(out_pos) as u64;
+                                let available = self
+                                    .window
+                                    .history_available(sink.written().saturating_sub(out_base))
+                                    as u64;
                                 if distance as u64 > available {
                                     let e = Error::InvalidDistance {
                                         distance,
@@ -800,17 +799,16 @@ impl Inflater {
                             self.state = State::LitLen;
                             continue;
                         }
-                        if out_pos >= output.len() {
-                            return Ok((pos, out_pos, InflateStatus::OutputFull));
+                        if sink.room() == 0 {
+                            return Ok((pos, InflateStatus::OutputFull));
                         }
-                        let written = self.window.copy_match(
+                        let written = self.window.copy_match_sink(
                             self.path,
-                            output,
-                            out_pos,
+                            sink,
+                            out_base,
                             dist as usize,
                             remaining as usize,
                         );
-                        out_pos += written;
                         self.total_out += written as u64;
                         let new_remaining = remaining.saturating_sub(written as u16);
                         self.state = State::Copy {
@@ -822,7 +820,7 @@ impl Inflater {
                             // entering Copy and only grows more available as
                             // bytes are pushed. Treat as needing more output
                             // room to avoid spinning.
-                            return Ok((pos, out_pos, InflateStatus::OutputFull));
+                            return Ok((pos, InflateStatus::OutputFull));
                         }
                     }
                     // Done/Failed are handled by the check at the top of this
@@ -832,8 +830,9 @@ impl Inflater {
                 }
             }
         })();
+        let out_pos = sink.written().saturating_sub(out_base);
         match result {
-            Ok((p, o, status)) => (p, o, Ok(status)),
+            Ok((p, status)) => (p, out_pos, Ok(status)),
             Err(e) => (pos, out_pos, Err(e)),
         }
     }

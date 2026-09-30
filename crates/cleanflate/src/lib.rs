@@ -105,6 +105,7 @@ pub mod gzip;
 mod huffman;
 mod inflate;
 mod options;
+mod sink;
 mod stream;
 mod tables;
 #[cfg(feature = "test-hooks")]

@@ -801,6 +801,24 @@ Named frames: wrapper `step` time excluding its inlined checksum frames (inclusi
 
 Gate: max(2%, 2 x quick noise of the key); the floor alone is 2%, and every key is under it by a wide margin. The wrapper's own work (header and trailer state, output bookkeeping, the per-call state handling) is unmeasurable beyond the checksum it calls, and `Inflater::step` underneath is 0.7% to 1.2% inclusive. Pattern 4's gap in streaming mode is therefore checksum cost (see P2-02 and P2-03), not per-call wrapper overhead, and no code changes.
 
+### P2-05
+Output-sink abstraction (`sink.rs`: `OutputSink`, `SliceSink`; DESIGN D-34): the state machine, fast loop, window copy and both wrappers write through a generic, monomorphised sink; only the slice sink exists. Pure refactor; test-only slice-shaped wrappers (`Inflater::step`, `ZlibDecoder::step`, `GzipDecoder::step`, `Window::copy_match`) keep the existing unit tests unchanged, and the production entry points are `step_into` and `copy_match_sink`.
+
+PT1 (prerequisite of P2-06 and P2-07, so the bar is NEUTRAL or WIN). Hotspot key `silesia/rfc1951/l1/oneshot`, `make profile`: before, `fast_loop::run` 41.79% + `Huffman::decode_table` 28.53% + `Window::copy_match` 12.75% = 83.07% of samples; after, `fast_loop::run_loop` 51.76% (the match copy is now inlined into it) + `decode_table` 30.79% = 82.55%. The hot functions and their combined share are unchanged.
+
+bench-quick (`docs/perf/phase3/P2-05-before.json`, `P2-05.json`; load average at start 3.08 and 4.75, a shared desktop): most keys are NEUTRAL; the LOSS lines are scattered over raw, zlib and gzip keys alike (for example raw is -3.3% and zlib -9.5% on `silesia/*/l6/streaming`) and follow the load, not a code path. The controlled check is interleaved runs of the old and new `profile_decode` binaries (MiB/s, means over 5 to 6 alternating pairs):
+
+| key | before | after | change | after faster in |
+|---|---:|---:|---:|---:|
+| silesia/rfc1951 l1 oneshot (2 passes) | 150.9 | 152.0 | +0.7% | 3 of 5 |
+| silesia/rfc1951 l1 streaming | 161.1 | 163.5 | +1.5% | 4 of 5 |
+| silesia/rfc1952 l6 streaming | 157.7 | 166.2 | +5.4% | 5 of 5 |
+| canterbury/rfc1951 l1 oneshot (200 passes) | 185.9 | 195.4 | +5.1% | 5 of 5 |
+| silesia/rfc1950 l6 streaming | 164.7 | 171.5 | +4.1% | 4 of 6 |
+| silesia/rfc1950 l6 oneshot | 164.0 | 170.3 | +3.8% | 6 of 6 |
+
+No key is slower on average and every key is at least as fast in most pairs, so the refactor is NEUTRAL (the small positive means are within run-to-run spread) and stays as the prerequisite of P2-06. `make fastslow-full` and `make bomb` pass; `size_of::<Decompressor>()` is unchanged (`decompressor_size_not_grown` passes).
+
 ## Targets
 Filled by P5-02 (acceptance tasks).
 
