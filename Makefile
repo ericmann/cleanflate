@@ -71,7 +71,7 @@ fuzz-check:
 
 FUZZ_SECONDS ?= 60
 FUZZ_TARGETS := never_panic_raw never_panic_rfc1950 never_panic_rfc1952 \
-                 diff_oracle_roundtrip diff_oracle_arbitrary
+                 diff_oracle_roundtrip diff_oracle_arbitrary diff_fast_reference
 FUZZ_SMOKE_TARGETS := $(addprefix fuzz-smoke-,$(FUZZ_TARGETS))
 
 fuzz-smoke-%:

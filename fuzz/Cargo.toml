@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-cleanflate = { path = "../crates/cleanflate" }
+cleanflate = { path = "../crates/cleanflate", features = ["test-hooks"] }
 oracle = { path = "../crates/oracle" }
 
 [workspace]
@@ -46,6 +46,13 @@ bench = false
 [[bin]]
 name = "diff_oracle_arbitrary"
 path = "fuzz_targets/diff_oracle_arbitrary.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "diff_fast_reference"
+path = "fuzz_targets/diff_fast_reference.rs"
 test = false
 doc = false
 bench = false
