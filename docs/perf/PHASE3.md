@@ -897,6 +897,18 @@ Targets (`make bench-targets J=docs/perf/phase3/P2-09.json`), reported, not gate
 - T5 (Silesia level-6 one-shot >= 0.70x C zlib): NOT MET; worst: silesia/raw/l6/oneshot ratio 0.663 (threshold >= 0.70)
 - T6 (no row slower than the phase-2 baseline beyond noise): NOT MET; worst: canterbury/zlib/l9/streaming -5.15% vs baseline
 
+### P3-01
+**Negative result (gated out, PT2). No code change.**
+
+Named frames: `Huffman::from_lengths` (with `build_table` and the allocator frames under it), table clones. Fresh `make profile` runs, inclusive shares from `top-children.txt`, and the bench-stats counters for Canterbury level 1 (P1-02):
+
+| key | `from_lengths` inclusive | of which `build_table` | allocator frames | gate (2 x quick noise of the key) |
+|---|---:|---:|---:|---:|
+| `canterbury/rfc1952/l1/oneshot` | 2.87% | 1.64% | under 0.6% (`resize<u8>` 0.53%) | 4.84% (noise 2.42%) |
+| `canterbury/rfc1951/l1/streaming` | 3.20% | 1.77% | 0.85% (`from_elem` of a zeroed buffer) | 4.71% (noise 2.35%) |
+
+Counters: 38 dynamic blocks, 0 fixed blocks, 114 table builds (3 per block) and `fixed_table_clones` 0 over the 11 Canterbury files, in every framing and mode. There are no fixed blocks to stop cloning for, and rebuilding the dynamic tables in place would save only the allocation part of `from_lengths`: the computation of the table entries (56,058 entries for 2.8 MB of output) remains, and that computation is most of the 2.9% to 3.2%. Both keys are under the gate, so the task records a negative result and leaves `Huffman::from_lengths` and the block-table storage unchanged.
+
 ## Targets
 Filled by P5-02 (acceptance tasks).
 
