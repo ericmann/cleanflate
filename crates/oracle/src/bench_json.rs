@@ -60,8 +60,8 @@ pub struct ResultRow {
     pub best_ns: f64,
 }
 
-fn default_c_zlib_mode() -> String {
-    "oneshot".to_string()
+fn default_c_zlib_mode() -> Option<String> {
+    Some("oneshot".to_string())
 }
 
 /// One aggregate over the files of a (corpus, framing, level, mode).
@@ -83,10 +83,16 @@ pub struct Aggregate {
     pub c_zlib_mib_s_best: f64,
     /// The mode of the C zlib rows used as the denominator (`oneshot` or
     /// `streaming`); schema-1 files lack it and default to `oneshot`.
+    /// `null` for `reuse` aggregates, which have no C zlib denominator.
     #[serde(default = "default_c_zlib_mode")]
-    pub c_zlib_mode: String,
-    /// cleanflate median MiB/s / C zlib median MiB/s of the same mode.
-    pub ratio: f64,
+    pub c_zlib_mode: Option<String>,
+    /// cleanflate median MiB/s / C zlib median MiB/s of the same mode;
+    /// `null` when there is no like-for-like C zlib denominator (`reuse`).
+    pub ratio: Option<f64>,
+    /// For `reuse` aggregates: reuse median / fresh-object streaming
+    /// median of the same key, when both modes ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vs_fresh_streaming: Option<f64>,
 }
 
 /// Raw `stats` counters of one (file, framing, level, mode), or the
@@ -231,8 +237,9 @@ mod tests {
                 cleanflate_mib_s_best: 2.0,
                 c_zlib_mib_s_median: 3.0,
                 c_zlib_mib_s_best: 4.0,
-                c_zlib_mode: "oneshot".into(),
-                ratio: 0.5,
+                c_zlib_mode: Some("oneshot".into()),
+                ratio: Some(0.5),
+                vs_fresh_streaming: None,
             }],
             stats: Vec::new(),
         }

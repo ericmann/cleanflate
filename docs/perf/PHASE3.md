@@ -916,6 +916,97 @@ Named frames on `canterbury/rfc1952/l1/oneshot` (fresh `make profile`, 300 passe
 
 Gate: max(2%, 2 x the quick noise of `canterbury/gzip/l1/oneshot`) = 4.84%. The named frames are below it, so the task records a negative result: no `Inflater::reset`, no lazy window and no skipped table fill were tried. The 696 page faults (none per file) show that allocation of these structures is already not faulting fresh pages on every stream. `Decompressor::reset` (P3-03) is still built for its API value and for the reuse bench mode (P3-04), which measures the reuse case directly.
 
+### P3-04
+Reuse bench mode: one `Decompressor` per (file, framing, level), `reset()` before every decode, the same 64 KiB streaming loop and scratch buffer as `streaming`. Cleanflate only: `ratio` and `c_zlib_mode` are `null` for reuse aggregates (there is no like-for-like C zlib reuse row; `inflateReset` is not a permitted FFI signature), and each carries `vs_fresh_streaming` (reuse median over streaming median of the same key). `profile_decode --mode reuse` and `PROFILE_KEY=.../reuse` profile the same loop (`make profile PROFILE_KEY=canterbury/rfc1952/l1/reuse PROFILE_ITERS=50` writes its `top.txt`; `fast_loop::run_loop` 45.3% self and `decode_table` 24.4%, `Crc32::update` 6% in that profile).
+
+Run: `docs/perf/phase3/P3-04.json` (bench-quick). Aggregates, reuse against fresh-object streaming:
+
+| key | reuse MiB/s (median) | vs fresh streaming |
+|---|---:|---:|
+| silesia/raw/l1/reuse | 149.9 | 1.015 |
+| silesia/raw/l6/reuse | 174.6 | 0.996 |
+| silesia/zlib/l1/reuse | 143.4 | 1.006 |
+| silesia/zlib/l6/reuse | 162.5 | 0.994 |
+| silesia/gzip/l1/reuse | 135.9 | 0.990 |
+| silesia/gzip/l6/reuse | 149.7 | 0.993 |
+| canterbury/raw/l1/reuse | 201.1 | 1.008 |
+| canterbury/raw/l6/reuse | 242.3 | 1.000 |
+| canterbury/zlib/l1/reuse | 178.3 | 1.006 |
+| canterbury/zlib/l6/reuse | 217.1 | 1.008 |
+| canterbury/gzip/l1/reuse | 169.7 | 1.007 |
+| canterbury/gzip/l6/reuse | 199.3 | 1.039 |
+
+The aggregate difference is within about one percent everywhere (largest: `canterbury/gzip/l6`, +3.9%), which matches the gated-out setup tasks (P3-01, P3-02): with one decompressor reused, the fixed per-stream setup of a fresh object is not measurable. Canterbury per file, with sizes (per-file medians; differences below the noise of a per-file row, about 3% to 5% on this machine, are not meaningful):
+
+| file | bytes | framing | level | fresh streaming MiB/s | reuse MiB/s | reuse / fresh |
+|---|---:|---|---:|---:|---:|---:|
+| grammar.lsp | 3721 | gzip | 1 | 66.9 | 86.3 | 1.291 |
+| grammar.lsp | 3721 | gzip | 6 | 72.3 | 93.8 | 1.297 |
+| grammar.lsp | 3721 | raw | 1 | 81.8 | 116.1 | 1.420 |
+| grammar.lsp | 3721 | raw | 6 | 90.6 | 133.2 | 1.469 |
+| grammar.lsp | 3721 | zlib | 1 | 83.2 | 109.9 | 1.320 |
+| grammar.lsp | 3721 | zlib | 6 | 88.8 | 126.7 | 1.427 |
+| xargs.1 | 4227 | gzip | 1 | 68.2 | 87.7 | 1.286 |
+| xargs.1 | 4227 | gzip | 6 | 67.0 | 82.5 | 1.231 |
+| xargs.1 | 4227 | raw | 1 | 82.2 | 109.1 | 1.326 |
+| xargs.1 | 4227 | raw | 6 | 75.7 | 111.1 | 1.466 |
+| xargs.1 | 4227 | zlib | 1 | 81.1 | 107.6 | 1.327 |
+| xargs.1 | 4227 | zlib | 6 | 82.4 | 113.1 | 1.372 |
+| fields.c | 11150 | gzip | 1 | 96.3 | 110.1 | 1.143 |
+| fields.c | 11150 | gzip | 6 | 113.8 | 134.9 | 1.186 |
+| fields.c | 11150 | raw | 1 | 115.0 | 139.8 | 1.215 |
+| fields.c | 11150 | raw | 6 | 148.8 | 180.5 | 1.213 |
+| fields.c | 11150 | zlib | 1 | 116.6 | 141.0 | 1.210 |
+| fields.c | 11150 | zlib | 6 | 154.0 | 188.7 | 1.225 |
+| cp.html | 24603 | gzip | 1 | 141.6 | 149.3 | 1.054 |
+| cp.html | 24603 | gzip | 6 | 123.3 | 128.1 | 1.039 |
+| cp.html | 24603 | raw | 1 | 160.1 | 175.4 | 1.095 |
+| cp.html | 24603 | raw | 6 | 178.4 | 195.4 | 1.095 |
+| cp.html | 24603 | zlib | 1 | 133.3 | 152.1 | 1.141 |
+| cp.html | 24603 | zlib | 6 | 168.9 | 186.4 | 1.104 |
+| sum | 38240 | gzip | 1 | 135.2 | 133.6 | 0.987 |
+| sum | 38240 | gzip | 6 | 130.7 | 147.2 | 1.126 |
+| sum | 38240 | raw | 1 | 131.3 | 137.1 | 1.044 |
+| sum | 38240 | raw | 6 | 183.8 | 195.4 | 1.063 |
+| sum | 38240 | zlib | 1 | 146.3 | 151.7 | 1.037 |
+| sum | 38240 | zlib | 6 | 141.9 | 151.6 | 1.068 |
+| asyoulik.txt | 125179 | gzip | 1 | 110.0 | 109.7 | 0.997 |
+| asyoulik.txt | 125179 | gzip | 6 | 162.2 | 165.8 | 1.022 |
+| asyoulik.txt | 125179 | raw | 1 | 142.5 | 142.0 | 0.997 |
+| asyoulik.txt | 125179 | raw | 6 | 175.8 | 165.9 | 0.944 |
+| asyoulik.txt | 125179 | zlib | 1 | 112.1 | 112.7 | 1.006 |
+| asyoulik.txt | 125179 | zlib | 6 | 146.4 | 170.7 | 1.166 |
+| alice29.txt | 152089 | gzip | 1 | 115.4 | 116.5 | 1.010 |
+| alice29.txt | 152089 | gzip | 6 | 145.5 | 162.2 | 1.115 |
+| alice29.txt | 152089 | raw | 1 | 153.1 | 151.5 | 0.990 |
+| alice29.txt | 152089 | raw | 6 | 195.0 | 199.7 | 1.024 |
+| alice29.txt | 152089 | zlib | 1 | 138.7 | 120.6 | 0.869 |
+| alice29.txt | 152089 | zlib | 6 | 152.8 | 151.1 | 0.989 |
+| lcet10.txt | 426754 | gzip | 1 | 123.3 | 135.9 | 1.102 |
+| lcet10.txt | 426754 | gzip | 6 | 135.8 | 159.5 | 1.174 |
+| lcet10.txt | 426754 | raw | 1 | 165.9 | 164.9 | 0.994 |
+| lcet10.txt | 426754 | raw | 6 | 209.0 | 209.1 | 1.000 |
+| lcet10.txt | 426754 | zlib | 1 | 124.8 | 124.9 | 1.001 |
+| lcet10.txt | 426754 | zlib | 6 | 193.7 | 192.1 | 0.992 |
+| plrabn12.txt | 481861 | gzip | 1 | 122.7 | 128.0 | 1.043 |
+| plrabn12.txt | 481861 | gzip | 6 | 158.5 | 158.2 | 0.998 |
+| plrabn12.txt | 481861 | raw | 1 | 131.4 | 131.4 | 1.001 |
+| plrabn12.txt | 481861 | raw | 6 | 171.7 | 176.5 | 1.028 |
+| plrabn12.txt | 481861 | zlib | 1 | 130.6 | 129.1 | 0.989 |
+| plrabn12.txt | 481861 | zlib | 6 | 165.7 | 164.8 | 0.995 |
+| ptt5 | 513216 | gzip | 1 | 327.3 | 335.9 | 1.026 |
+| ptt5 | 513216 | gzip | 6 | 272.3 | 264.8 | 0.973 |
+| ptt5 | 513216 | raw | 1 | 398.6 | 395.9 | 0.993 |
+| ptt5 | 513216 | raw | 6 | 314.9 | 315.4 | 1.002 |
+| ptt5 | 513216 | zlib | 1 | 317.0 | 333.6 | 1.052 |
+| ptt5 | 513216 | zlib | 6 | 290.5 | 289.5 | 0.996 |
+| kennedy.xls | 1029744 | gzip | 1 | 224.8 | 204.4 | 0.909 |
+| kennedy.xls | 1029744 | gzip | 6 | 253.0 | 249.6 | 0.987 |
+| kennedy.xls | 1029744 | raw | 1 | 254.0 | 259.5 | 1.022 |
+| kennedy.xls | 1029744 | raw | 6 | 331.0 | 318.0 | 0.961 |
+| kennedy.xls | 1029744 | zlib | 1 | 240.9 | 248.8 | 1.033 |
+| kennedy.xls | 1029744 | zlib | 6 | 275.7 | 272.5 | 0.988 |
+
 ## Targets
 Filled by P5-02 (acceptance tasks).
 

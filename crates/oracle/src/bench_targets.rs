@@ -59,14 +59,16 @@ fn ratio_target(
         if !select(&k) {
             continue;
         }
-        if a.c_zlib_mode != k.mode {
+        let Some(ratio) = a.ratio else { continue };
+        if a.c_zlib_mode.as_deref() != Some(k.mode) {
             info.push(format!(
                 "{}: n/a (not like for like: denominator is C zlib {})",
-                a.key, a.c_zlib_mode
+                a.key,
+                a.c_zlib_mode.as_deref().unwrap_or("none")
             ));
             continue;
         }
-        checked.push((a, a.ratio));
+        checked.push((a, ratio));
     }
     let failing: Vec<String> = checked
         .iter()
@@ -341,8 +343,9 @@ mod tests {
             cleanflate_mib_s_best: median,
             c_zlib_mib_s_median: 100.0,
             c_zlib_mib_s_best: 100.0,
-            c_zlib_mode: zmode.into(),
-            ratio,
+            c_zlib_mode: Some(zmode.into()),
+            ratio: Some(ratio),
+            vs_fresh_streaming: None,
         }
     }
 

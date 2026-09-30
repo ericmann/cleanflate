@@ -95,6 +95,8 @@ pub enum RatioDelta {
     Pct(f64),
     /// A and B divided by different C zlib modes; no comparison.
     DenominatorChanged,
+    /// The key has no C zlib ratio (the `reuse` mode).
+    NotApplicable,
 }
 
 /// The result of comparing two bench files.
@@ -138,7 +140,7 @@ fn aggregate_throughput(j: &BenchJson) -> BTreeMap<String, f64> {
 fn aggregate_ratios(j: &BenchJson) -> BTreeMap<String, f64> {
     j.aggregates
         .iter()
-        .map(|a| (a.key.clone(), a.ratio))
+        .filter_map(|a| a.ratio.map(|r| (a.key.clone(), r)))
         .collect()
 }
 
@@ -224,14 +226,18 @@ pub fn compare_with_baseline(
             .filter(|v| **v > 0.0)
             .map(|v| (vb - v) / v * 100.0);
         let (ga, gb) = (agg_a.get(key.as_str()), agg_b.get(key.as_str()));
-        let b_ratio = gb.map_or(f64::NAN, |g| g.ratio);
+        let b_ratio = gb.and_then(|g| g.ratio).unwrap_or(f64::NAN);
         let (ratio_delta, ratio_verdict) = match (ga, gb) {
             (Some(x), Some(y)) if x.c_zlib_mode != y.c_zlib_mode => {
                 (RatioDelta::DenominatorChanged, Verdict::Unknown)
             }
+            (Some(x), Some(y)) if x.ratio.is_none() || y.ratio.is_none() => {
+                (RatioDelta::NotApplicable, Verdict::Unknown)
+            }
             (Some(x), Some(y)) => {
-                let d = if x.ratio > 0.0 {
-                    (y.ratio / x.ratio - 1.0) * 100.0
+                let (xr, yr) = (x.ratio.unwrap_or(0.0), y.ratio.unwrap_or(0.0));
+                let d = if xr > 0.0 {
+                    (yr / xr - 1.0) * 100.0
                 } else {
                     0.0
                 };
@@ -338,6 +344,7 @@ pub fn render_comparison(c: &Comparison) -> String {
             RatioDelta::DenominatorChanged => {
                 ("n/a (denominator changed)".to_string(), "n/a".to_string())
             }
+            RatioDelta::NotApplicable => ("n/a".to_string(), "n/a".to_string()),
         };
         out.push_str(&format!(
             "| {} | {:.1} | {:.1} | {:+.2} | {} | {} | {} | {:.3} | {} | {} |\n",
@@ -412,16 +419,17 @@ pub fn render_md_with_baseline(
         j.iters
     ));
     let base_agg = baseline.map(aggregate_throughput).unwrap_or_default();
-    out.push_str("| key | cleanflate MiB/s (median) | cleanflate MiB/s (best) | C zlib MiB/s (median, same mode) | ratio (like for like) | vs phase-2 % |\n");
-    out.push_str("|---|---:|---:|---:|---:|---:|\n");
+    out.push_str("| key | cleanflate MiB/s (median) | cleanflate MiB/s (best) | C zlib MiB/s (median, same mode) | ratio (like for like) | vs fresh streaming | vs phase-2 % |\n");
+    out.push_str("|---|---:|---:|---:|---:|---:|---:|\n");
     for a in j.aggregates.iter().filter(|a| keep(&a.key)) {
         out.push_str(&format!(
-            "| {} | {:.1} | {:.1} | {:.1} | {:.3} | {} |\n",
+            "| {} | {:.1} | {:.1} | {} | {} | {} | {} |\n",
             a.key,
             a.cleanflate_mib_s_median,
             a.cleanflate_mib_s_best,
-            a.c_zlib_mib_s_median,
-            a.ratio,
+            crate::bench::opt_f(a.c_zlib_mode.as_ref().map(|_| a.c_zlib_mib_s_median), 1),
+            crate::bench::opt_f(a.ratio, 3),
+            crate::bench::opt_f(a.vs_fresh_streaming, 3),
             vs(a.cleanflate_mib_s_median, base_agg.get(&a.key))
         ));
     }
@@ -454,15 +462,24 @@ pub fn render_md_with_baseline(
         });
         for (key, cf) in rows {
             // Same-mode C zlib row; schema-1 files only have one-shot rows.
+            // The reuse mode has no C zlib row to divide by.
+            let is_reuse = key.ends_with("/reuse");
             let oneshot = key.rsplit_once('/').map(|(b, _)| format!("{b}/oneshot"));
-            let cz = zlib
-                .get(key)
-                .or_else(|| oneshot.as_ref().and_then(|k| zlib.get(k)))
-                .copied()
-                .unwrap_or(0.0);
-            let ratio = if cz > 0.0 { cf / cz } else { f64::NAN };
+            let cz = if is_reuse {
+                0.0
+            } else {
+                zlib.get(key)
+                    .or_else(|| oneshot.as_ref().and_then(|k| zlib.get(k)))
+                    .copied()
+                    .unwrap_or(0.0)
+            };
+            let (cz_text, ratio_text) = if cz > 0.0 {
+                (format!("{cz:.1}"), format!("{:.3}", cf / cz))
+            } else {
+                ("n/a".to_string(), "n/a".to_string())
+            };
             out.push_str(&format!(
-                "| {key} | {} | {cf:.1} | {cz:.1} | {ratio:.3} | {} |\n",
+                "| {key} | {} | {cf:.1} | {cz_text} | {ratio_text} | {} |\n",
                 bytes.get(key).copied().unwrap_or(0),
                 vs(*cf, base_files.get(key))
             ));
@@ -560,8 +577,9 @@ mod tests {
                 cleanflate_mib_s_best: agg,
                 c_zlib_mib_s_median: 100.0,
                 c_zlib_mib_s_best: 100.0,
-                c_zlib_mode: "oneshot".into(),
-                ratio: agg / 100.0,
+                c_zlib_mode: Some("oneshot".into()),
+                ratio: Some(agg / 100.0),
+                vs_fresh_streaming: None,
             }],
             stats: Vec::new(),
         }
@@ -668,7 +686,12 @@ mod tests {
         let stdout = crate::bench::render_markdown(&j);
         for text in [&md, &cmp, &stdout] {
             for l in table_lines(text) {
-                assert!(!l.to_lowercase().contains("min"), "{l}");
+                // "min" as a word, not inside words like "streaming".
+                let has_min_word = l
+                    .to_lowercase()
+                    .split(|c: char| !c.is_alphanumeric())
+                    .any(|w| w == "min" || w == "minimum");
+                assert!(!has_min_word, "{l}");
             }
         }
         assert!(md.contains("(best)"));
@@ -677,7 +700,7 @@ mod tests {
 
     fn with_ratio(mut j: BenchJson, ratio: f64) -> BenchJson {
         for a in &mut j.aggregates {
-            a.ratio = ratio;
+            a.ratio = Some(ratio);
         }
         j
     }
@@ -707,7 +730,9 @@ mod tests {
         let c = compare(&a, &b, Some(&n)).expect("compares");
         match c.aggregates[0].ratio_delta {
             RatioDelta::Pct(d) => assert!((d - 20.0).abs() < 1e-9),
-            RatioDelta::DenominatorChanged => panic!("same denominator"),
+            RatioDelta::DenominatorChanged | RatioDelta::NotApplicable => {
+                panic!("same denominator")
+            }
         }
         assert_eq!(c.aggregates[0].ratio_verdict, Verdict::Win);
         let small = with_ratio(json("quick", 100.0, &[("f", 100.0)]), 0.52);
@@ -725,7 +750,7 @@ mod tests {
     fn denominator_change_marked() {
         let a = json("quick", 100.0, &[("f", 100.0)]);
         let mut b = a.clone();
-        b.aggregates[0].c_zlib_mode = "streaming".into();
+        b.aggregates[0].c_zlib_mode = Some("streaming".into());
         let c = compare(&a, &b, None).expect("compares");
         assert_eq!(c.aggregates[0].ratio_delta, RatioDelta::DenominatorChanged);
         assert!(render_comparison(&c).contains("n/a (denominator changed)"));
@@ -805,6 +830,36 @@ mod tests {
         let text = render_comparison(&c);
         assert!(text.contains("| n/a |"), "{text}");
         assert!(render_md_with_baseline(&a, true, None, None).contains("n/a"));
+    }
+
+    #[test]
+    fn bench_md_shows_reuse_speedup() {
+        let mut j = json("quick", 100.0, &[("f", 100.0)]);
+        let mut reuse = j.aggregates[0].clone();
+        reuse.key = "c/raw/l6/reuse".into();
+        reuse.cleanflate_mib_s_median = 130.0;
+        reuse.c_zlib_mode = None;
+        reuse.ratio = None;
+        reuse.vs_fresh_streaming = Some(1.3);
+        j.aggregates.push(reuse);
+        let mut row = j.results[0].clone();
+        row.mode = "reuse".into();
+        j.results.push(row);
+        let md = render_md(&j, true, None);
+        assert!(md.contains("vs fresh streaming"), "{md}");
+        let line = md
+            .lines()
+            .find(|l| l.contains("c/raw/l6/reuse"))
+            .expect("reuse row");
+        assert!(line.contains("1.300"), "{line}");
+        assert!(line.contains("n/a"), "no C zlib ratio: {line}");
+        let file_line = md
+            .lines()
+            .find(|l| l.contains("c/f/raw/l6/reuse"))
+            .expect("per-file reuse row");
+        assert!(file_line.contains("n/a"), "{file_line}");
+        let stdout = crate::bench::render_markdown(&j);
+        assert!(stdout.contains("1.300"));
     }
 
     #[test]

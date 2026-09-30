@@ -130,13 +130,13 @@ BENCH_OUT ?= target/bench/$(BENCH_ID).json
 bench:
 	mkdir -p $(dir $(BENCH_OUT))
 	cargo run --release -q -p oracle -- bench --kind full --corpus silesia,canterbury \
-		--framings raw,zlib,gzip --levels 1,6,9 --modes oneshot,streaming --iters 7 \
+		--framings raw,zlib,gzip --levels 1,6,9 --modes oneshot,streaming,reuse --iters 7 \
 		--task $(BENCH_ID) --json $(BENCH_OUT)
 
 bench-quick:
 	mkdir -p $(dir $(BENCH_OUT))
 	cargo run --release -q -p oracle -- bench --kind quick --subset quick --corpus silesia,canterbury \
-		--framings raw,zlib,gzip --levels 1,6 --modes oneshot,streaming --iters 5 \
+		--framings raw,zlib,gzip --levels 1,6 --modes oneshot,streaming,reuse --iters 5 \
 		--task $(BENCH_ID) --json $(BENCH_OUT)
 
 sources-check:

@@ -54,6 +54,9 @@ pub enum Mode {
     OneShot,
     /// `Decompressor` fed 64 KiB chunks.
     Streaming,
+    /// One long-lived `Decompressor`, `reset()` before every decode, fed
+    /// 64 KiB chunks. Cleanflate only: there is no C zlib reuse row.
+    Reuse,
 }
 
 /// `--kind`.
@@ -186,6 +189,7 @@ pub fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
                 modes = parse_list(flag, value, |s| match s {
                     "oneshot" => Some(Mode::OneShot),
                     "streaming" => Some(Mode::Streaming),
+                    "reuse" => Some(Mode::Reuse),
                     _ => None,
                 })?
             }
@@ -320,6 +324,16 @@ fn decode_streaming_dec(
     out: &mut [u8],
 ) -> Result<(usize, Decompressor), String> {
     let mut d = Decompressor::new(format, Options::default());
+    let n = decode_streaming_with(&mut d, compressed, out)?;
+    Ok((n, d))
+}
+
+/// The 64 KiB streaming loop over an existing decompressor (fresh or reset).
+fn decode_streaming_with(
+    d: &mut Decompressor,
+    compressed: &[u8],
+    out: &mut [u8],
+) -> Result<usize, String> {
     let mut in_pos = 0usize;
     let mut out_pos = 0usize;
     loop {
@@ -341,7 +355,7 @@ fn decode_streaming_dec(
         }
     }
     d.finish().map_err(|e| format!("{e:?}"))?;
-    Ok((out_pos, d))
+    Ok(out_pos)
 }
 
 /// One timed implementation of a decode.
@@ -349,6 +363,7 @@ fn decode_streaming_dec(
 enum Imp {
     CleanflateOneShot,
     CleanflateStreaming,
+    CleanflateReuse,
     CZlibOneShot,
     CZlibStreaming,
 }
@@ -357,6 +372,17 @@ struct Fixture<'a> {
     framing: Framing,
     original: &'a [u8],
     compressed: &'a [u8],
+    /// The long-lived decompressor of the `reuse` mode, built before timing.
+    reuse: std::cell::RefCell<Decompressor>,
+}
+
+impl Fixture<'_> {
+    /// `reset()` the long-lived decompressor and stream the input through it.
+    fn decode_reuse(&self, scratch: &mut [u8]) -> Result<usize, String> {
+        let mut d = self.reuse.borrow_mut();
+        d.reset();
+        decode_streaming_with(&mut d, self.compressed, scratch)
+    }
 }
 
 /// Run one decode with `imp`; returns the output length (or 0 on error).
@@ -370,6 +396,7 @@ fn run_once(imp: Imp, fx: &Fixture, scratch: &mut [u8]) -> usize {
         Imp::CleanflateStreaming => {
             decode_streaming(format_of(fx.framing), fx.compressed, scratch).unwrap_or(0)
         }
+        Imp::CleanflateReuse => fx.decode_reuse(scratch).unwrap_or(0),
         Imp::CZlibOneShot => {
             let max = fx.original.len().saturating_add(1024);
             inflate_bytes(fx.compressed, fx.framing, None, max)
@@ -398,6 +425,10 @@ fn verify(imp: Imp, fx: &Fixture, scratch: &mut [u8]) -> Result<(), String> {
         }
         Imp::CleanflateStreaming => {
             let n = decode_streaming(format_of(fx.framing), fx.compressed, scratch)?;
+            scratch.get(..n) == Some(fx.original)
+        }
+        Imp::CleanflateReuse => {
+            let n = fx.decode_reuse(scratch)?;
             scratch.get(..n) == Some(fx.original)
         }
         Imp::CZlibOneShot => {
@@ -435,6 +466,7 @@ fn imp_names(imp: Imp) -> (&'static str, &'static str) {
     match imp {
         Imp::CleanflateOneShot => ("cleanflate", "oneshot"),
         Imp::CleanflateStreaming => ("cleanflate", "streaming"),
+        Imp::CleanflateReuse => ("cleanflate", "reuse"),
         Imp::CZlibOneShot => ("c_zlib", "oneshot"),
         Imp::CZlibStreaming => ("c_zlib", "streaming"),
     }
@@ -446,12 +478,16 @@ fn imp_names(imp: Imp) -> (&'static str, &'static str) {
 fn sample_order(modes: &[Mode]) -> Vec<Imp> {
     let one = modes.contains(&Mode::OneShot);
     let stream = modes.contains(&Mode::Streaming);
+    let reuse = modes.contains(&Mode::Reuse);
     let mut v = Vec::new();
     if one {
         v.push(Imp::CleanflateOneShot);
     }
     if stream {
         v.push(Imp::CleanflateStreaming);
+    }
+    if reuse {
+        v.push(Imp::CleanflateReuse);
     }
     if one {
         v.push(Imp::CZlibOneShot);
@@ -535,6 +571,10 @@ pub fn run(args: &BenchArgs, corpora_root: &Path) -> Result<BenchOutcome, String
                         framing,
                         original: &original,
                         compressed: &compressed,
+                        reuse: std::cell::RefCell::new(Decompressor::new(
+                            format_of(framing),
+                            Options::default(),
+                        )),
                     };
                     let mut scratch = vec![0u8; original.len() + STREAM_CHUNK];
 
@@ -716,6 +756,20 @@ fn collect_stats(
                 }
                 ("streaming", d.stats())
             }
+            Mode::Reuse => {
+                // Counters of a decode after `reset()`: the first decode is
+                // discarded by the reset.
+                let mut d = Decompressor::new(format_of(framing), Options::default());
+                decode_streaming_with(&mut d, fx.compressed, scratch)
+                    .map_err(|e| format!("{corpus}/{file}: {e}"))?;
+                d.reset();
+                let n = decode_streaming_with(&mut d, fx.compressed, scratch)
+                    .map_err(|e| format!("{corpus}/{file}: {e}"))?;
+                if scratch.get(..n) != Some(fx.original) {
+                    return Err(format!("{corpus}/{file}: reuse stats output differs"));
+                }
+                ("reuse", d.stats())
+            }
         };
         out.push(StatsEntry {
             corpus: corpus.to_string(),
@@ -875,6 +929,15 @@ pub fn aggregates_of(results: &[ResultRow]) -> Vec<Aggregate> {
         let cf_best = aggregate_mib_s(total, &secs(&cf, |r| r.best_ns));
         let cz_med = aggregate_mib_s(total, &secs(&cz, |r| r.median_ns));
         let cz_best = aggregate_mib_s(total, &secs(&cz, |r| r.best_ns));
+        // `reuse` has no C zlib denominator: no ratio, no C zlib mode.
+        let has_denominator = mode != "reuse";
+        let vs_fresh_streaming = if mode == "reuse" {
+            let st = pick("cleanflate", "streaming");
+            let st_med = aggregate_mib_s(total, &secs(&st, |r| r.median_ns));
+            (st_med > 0.0).then(|| cf_med / st_med)
+        } else {
+            None
+        };
         out.push(Aggregate {
             key: format!("{corpus}/{framing}/l{level}/{mode}"),
             total_bytes: total as u64,
@@ -882,19 +945,21 @@ pub fn aggregates_of(results: &[ResultRow]) -> Vec<Aggregate> {
             cleanflate_mib_s_best: cf_best,
             c_zlib_mib_s_median: cz_med,
             c_zlib_mib_s_best: cz_best,
-            c_zlib_mode: mode.clone(),
-            ratio: if cz_med > 0.0 {
-                cf_med / cz_med
-            } else {
-                f64::NAN
-            },
+            c_zlib_mode: has_denominator.then(|| mode.clone()),
+            ratio: (has_denominator && cz_med > 0.0).then(|| cf_med / cz_med),
+            vs_fresh_streaming,
         });
     }
     out
 }
 
+/// `value` with `decimals` places, or `n/a` when there is none.
+pub fn opt_f(value: Option<f64>, decimals: usize) -> String {
+    value.map_or("n/a".to_string(), |v| format!("{v:.decimals$}"))
+}
+
 /// Two-line definition footer printed under the stdout table.
-pub const TABLE_FOOTER: &str = "median: throughput from the median per-decode time of the samples; best: throughput of the fastest sample. Aggregates: total bytes / sum of per-file times.\nratio (like for like): cleanflate median / C zlib median of the same mode.\n";
+pub const TABLE_FOOTER: &str = "median: throughput from the median per-decode time of the samples; best: throughput of the fastest sample. Aggregates: total bytes / sum of per-file times.\nratio (like for like): cleanflate median / C zlib median of the same mode (n/a for reuse).\nvs fresh streaming (reuse only): reuse median / streaming median of the same key.\n";
 
 /// A markdown table of the aggregates.
 pub fn render_markdown(json: &BenchJson) -> String {
@@ -903,16 +968,17 @@ pub fn render_markdown(json: &BenchJson) -> String {
         "Bench {} ({}), C zlib {}, iters {}\n\n",
         json.task, json.kind, json.c_zlib_version, json.iters
     ));
-    out.push_str("| key | cleanflate MiB/s (median) | cleanflate MiB/s (best) | C zlib MiB/s (median) | ratio (like for like) |\n");
-    out.push_str("|---|---:|---:|---:|---:|\n");
+    out.push_str("| key | cleanflate MiB/s (median) | cleanflate MiB/s (best) | C zlib MiB/s (median) | ratio (like for like) | vs fresh streaming |\n");
+    out.push_str("|---|---:|---:|---:|---:|---:|\n");
     for a in &json.aggregates {
         out.push_str(&format!(
-            "| {} | {:.1} | {:.1} | {:.1} | {:.3} |\n",
+            "| {} | {:.1} | {:.1} | {} | {} | {} |\n",
             a.key,
             a.cleanflate_mib_s_median,
             a.cleanflate_mib_s_best,
-            a.c_zlib_mib_s_median,
-            a.ratio
+            opt_f(a.c_zlib_mode.as_ref().map(|_| a.c_zlib_mib_s_median), 1),
+            opt_f(a.ratio, 3),
+            opt_f(a.vs_fresh_streaming, 3),
         ));
     }
     out.push('\n');
@@ -997,7 +1063,7 @@ mod tests {
         assert!((aggs[0].cleanflate_mib_s_median - 4.0).abs() < 1e-9);
         assert!((aggs[0].cleanflate_mib_s_best - 8.0).abs() < 1e-9);
         assert!((aggs[0].c_zlib_mib_s_median - 8.0).abs() < 1e-9);
-        assert!((aggs[0].ratio - 0.5).abs() < 1e-9);
+        assert!((aggs[0].ratio.expect("ratio") - 0.5).abs() < 1e-9);
     }
 
     #[test]
@@ -1023,12 +1089,12 @@ mod tests {
         ];
         let aggs = aggregates_of(&rows);
         let get = |k: &str| aggs.iter().find(|a| a.key.ends_with(k)).expect("key");
-        assert!((get("oneshot").ratio - 0.5).abs() < 1e-9);
+        assert!((get("oneshot").ratio.expect("ratio") - 0.5).abs() < 1e-9);
         assert!(
-            (get("streaming").ratio - 0.5).abs() < 1e-9,
+            (get("streaming").ratio.expect("ratio") - 0.5).abs() < 1e-9,
             "divides by C zlib streaming"
         );
-        assert_eq!(get("streaming").c_zlib_mode, "streaming");
+        assert_eq!(get("streaming").c_zlib_mode.as_deref(), Some("streaming"));
         assert!((get("streaming").c_zlib_mib_s_median - 4.0).abs() < 1e-9);
     }
 
@@ -1037,8 +1103,93 @@ mod tests {
         let text = r#"{"key":"c/raw/l6/streaming","total_bytes":1,"cleanflate_mib_s_median":1.0,
             "cleanflate_mib_s_min":2.0,"c_zlib_mib_s_median":3.0,"c_zlib_mib_s_min":4.0,"ratio":0.3}"#;
         let a: Aggregate = serde_json::from_str(text).expect("schema-1 aggregate parses");
-        assert_eq!(a.c_zlib_mode, "oneshot");
+        assert_eq!(a.c_zlib_mode.as_deref(), Some("oneshot"));
         assert_eq!(a.cleanflate_mib_s_best, 2.0);
+    }
+
+    #[test]
+    fn reuse_mode_parsed() {
+        let a = |v: &[&str]| parse_args(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let p = a(&["--modes", "oneshot,streaming,reuse"]).expect("parses");
+        assert_eq!(p.modes, vec![Mode::OneShot, Mode::Streaming, Mode::Reuse]);
+        assert!(a(&["--modes", "reuse2"]).is_err());
+        // The reuse run sits after streaming and before C zlib.
+        let names: Vec<_> = sample_order(&p.modes).into_iter().map(imp_names).collect();
+        assert_eq!(
+            names,
+            vec![
+                ("cleanflate", "oneshot"),
+                ("cleanflate", "streaming"),
+                ("cleanflate", "reuse"),
+                ("c_zlib", "oneshot"),
+                ("c_zlib", "streaming"),
+            ]
+        );
+    }
+
+    fn reuse_rows() -> Vec<ResultRow> {
+        let mib = 1024 * 1024;
+        let row = |imp: &str, mode: &str, ns: f64| ResultRow {
+            corpus: "c".into(),
+            file: "a".into(),
+            framing: "raw".into(),
+            level: 1,
+            mode: mode.into(),
+            implementation: imp.into(),
+            bytes: 4 * mib,
+            reps: 1,
+            median_ns: ns,
+            best_ns: ns,
+        };
+        vec![
+            row("cleanflate", "streaming", 2e9),
+            row("cleanflate", "reuse", 1e9),
+            row("c_zlib", "streaming", 1e9),
+        ]
+    }
+
+    #[test]
+    fn reuse_aggregate_has_no_c_zlib_ratio() {
+        let aggs = aggregates_of(&reuse_rows());
+        let reuse = aggs
+            .iter()
+            .find(|g| g.key.ends_with("/reuse"))
+            .expect("reuse");
+        assert_eq!(reuse.ratio, None);
+        assert_eq!(reuse.c_zlib_mode, None);
+        let stream = aggs
+            .iter()
+            .find(|g| g.key.ends_with("/streaming"))
+            .expect("streaming");
+        assert!(stream.ratio.is_some());
+        let text = serde_json::to_string(reuse).expect("serializes");
+        assert!(text.contains("\"ratio\":null") && text.contains("\"c_zlib_mode\":null"));
+        let back: Aggregate = serde_json::from_str(&text).expect("null round-trips");
+        assert_eq!(back.ratio, None);
+        assert_eq!(back.c_zlib_mode, None);
+    }
+
+    #[test]
+    fn vs_fresh_streaming_computed() {
+        let aggs = aggregates_of(&reuse_rows());
+        let reuse = aggs
+            .iter()
+            .find(|g| g.key.ends_with("/reuse"))
+            .expect("reuse");
+        let v = reuse.vs_fresh_streaming.expect("both modes ran");
+        assert!((v - 2.0).abs() < 1e-9, "{v}");
+        // Without streaming rows there is nothing to compare against.
+        let only_reuse: Vec<ResultRow> = reuse_rows()
+            .into_iter()
+            .filter(|r| r.mode == "reuse")
+            .collect();
+        let aggs = aggregates_of(&only_reuse);
+        assert_eq!(aggs[0].vs_fresh_streaming, None);
+        let stream = aggregates_of(&reuse_rows())
+            .into_iter()
+            .find(|g| g.key.ends_with("/streaming"))
+            .expect("streaming");
+        assert_eq!(stream.vs_fresh_streaming, None);
     }
 
     #[test]
