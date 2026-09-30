@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 pub const SCHEMA: u32 = 2;
 
 /// The machine a bench ran on.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Machine {
     /// `uname -srm`.
     pub uname: String,
@@ -19,6 +19,18 @@ pub struct Machine {
     pub loadavg: String,
     /// `rustc --version`.
     pub rustc: String,
+    /// Logical CPUs (`std::thread::available_parallelism`), 0 when unknown.
+    #[serde(default)]
+    pub cores: usize,
+    /// `PRETTY_NAME` from `/etc/os-release`, else `unknown`.
+    #[serde(default)]
+    pub os: String,
+    /// `uname -r`.
+    #[serde(default)]
+    pub kernel: String,
+    /// `/proc/loadavg` after the run.
+    #[serde(default)]
+    pub loadavg_end: String,
 }
 
 /// One (file, framing, level, mode, implementation) measurement.
@@ -114,6 +126,12 @@ pub struct BenchJson {
     pub machine: Machine,
     /// The linked C zlib version string.
     pub c_zlib_version: String,
+    /// The Cargo build profile of the bench binary.
+    #[serde(default)]
+    pub cargo_profile: crate::bench_env::CargoProfile,
+    /// The C library build (version, flags, libz-sys package).
+    #[serde(default)]
+    pub c_zlib: crate::bench_env::CZlibInfo,
     /// Timed samples per measurement.
     pub iters: u32,
     /// Minimum duration of one timed sample.
@@ -186,8 +204,11 @@ mod tests {
                 governor: "unknown".into(),
                 loadavg: "0.1".into(),
                 rustc: "r".into(),
+                ..Machine::default()
             },
             c_zlib_version: "1.3".into(),
+            cargo_profile: Default::default(),
+            c_zlib: Default::default(),
             iters: 5,
             min_sample_ms: 20,
             stats_build: false,

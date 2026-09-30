@@ -373,8 +373,11 @@ mod tests {
                 governor: "g".into(),
                 loadavg: "l".into(),
                 rustc: "r".into(),
+                ..Machine::default()
             },
             c_zlib_version: "1".into(),
+            cargo_profile: Default::default(),
+            c_zlib: Default::default(),
             iters: 5,
             min_sample_ms: 20,
             stats_build: false,

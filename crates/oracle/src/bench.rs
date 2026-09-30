@@ -478,9 +478,39 @@ pub fn run(args: &BenchArgs, corpora_root: &Path) -> Result<BenchOutcome, String
     let mut results: Vec<ResultRow> = Vec::new();
     #[cfg(feature = "stats")]
     let mut stats_entries: Vec<StatsEntry> = Vec::new();
-    let loadavg = std::fs::read_to_string("/proc/loadavg")
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
+    let read_loadavg = || {
+        std::fs::read_to_string("/proc/loadavg")
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| "unknown".to_string())
+    };
+    let loadavg = read_loadavg();
+    let c_zlib = crate::bench_env::c_zlib_info(zlib_version(), crate::ffi::zlib_compile_flags());
+    let cargo_profile = crate::bench_env::cargo_profile();
+    let git_head = command_output("git", &["rev-parse", "HEAD"]);
+    let git_dirty = !command_output("git", &["status", "--porcelain"]).is_empty();
+    let mut machine = Machine {
+        uname: command_output("uname", &["-srm"]),
+        cpu_model: cpu_model(),
+        governor: std::fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| "unknown".to_string()),
+        loadavg,
+        rustc: command_output("rustc", &["--version"]),
+        cores: crate::bench_env::logical_cpus(),
+        os: crate::bench_env::os_pretty_name(),
+        kernel: command_output("uname", &["-r"]),
+        loadavg_end: String::new(),
+    };
+    print!(
+        "{}",
+        crate::bench_env::render_environment(
+            &machine,
+            &cargo_profile,
+            &c_zlib,
+            &git_head,
+            git_dirty
+        )
+    );
 
     for &corpus in &args.corpora {
         let inputs = inputs_for(corpus, corpora_root, args.subset_quick)?;
@@ -582,25 +612,18 @@ pub fn run(args: &BenchArgs, corpora_root: &Path) -> Result<BenchOutcome, String
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    machine.loadavg_end = read_loadavg();
     let json = BenchJson {
         schema: crate::bench_json::SCHEMA,
         kind: args.kind.name().to_string(),
         task: args.task.clone(),
-        git_head: command_output("git", &["rev-parse", "HEAD"]),
-        git_dirty: !command_output("git", &["status", "--porcelain"]).is_empty(),
+        git_head,
+        git_dirty,
         timestamp: format_utc(secs),
-        machine: Machine {
-            uname: command_output("uname", &["-srm"]),
-            cpu_model: cpu_model(),
-            governor: std::fs::read_to_string(
-                "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor",
-            )
-            .map(|s| s.trim().to_string())
-            .unwrap_or_else(|_| "unknown".to_string()),
-            loadavg,
-            rustc: command_output("rustc", &["--version"]),
-        },
-        c_zlib_version: zlib_version(),
+        machine,
+        c_zlib_version: c_zlib.version.clone(),
+        cargo_profile,
+        c_zlib,
         iters: args.iters,
         min_sample_ms: MIN_SAMPLE_MS,
         stats_build: cfg!(feature = "stats"),
