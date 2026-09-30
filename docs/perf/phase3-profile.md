@@ -205,4 +205,164 @@ Where the likely outcome is below the gate the task should record a negative res
 
 ## After (P5-01)
 
-Filled by P5-01.
+Taken on the final code (git `f5f4c85`, after P4-06) with the same commands, iterations, flags and machine as the before profiles: `make profile-required TAG=after` for the three required keys (flamegraphs `docs/perf/flamegraphs/*-after.svg`, checked by `tools/perf/check-flamegraph.sh`), then `make profile` for the other six keys and `make profile-stat` for `silesia/rfc1951/l6/oneshot`. The same caveats apply: user-space samples only, the raw and zlib keys' `crc32` is the harness's output check, unresolved addresses are an unnamed system library. After P4-03 the fast loop, the table lookups and the match copy are a single function, `fast_loop::run`, so the `Huffman::decode_table` and `Window::copy_match` rows of the before tables no longer exist; `Inflater::step_into` is the renamed state machine.
+
+### silesia/rfc1951/l1/oneshot
+
+3 iterations, 606.4 MiB of output.
+
+| self-time symbol | % of samples |
+|---|---:|
+| `cleanflate::fast_loop::run` | 79.04 |
+| `cleanflate::checksum::crc32` | 3.83 |
+| `cleanflate::huffman::Huffman::from_lengths` | 3.02 |
+| `cleanflate::inflate::Inflater::step_into` | 0.93 |
+| unresolved addresses (system library code, summed) | 8.29 |
+
+Top inclusive frames (`top-children.txt`): `cleanflate::fast_loop::run` 79.0%; `copy_match_sink<cleanflate::sink::SliceSink> (inlined)` 21.4%; `copy_match_slices<cleanflate::sink::SliceSink> (inlined)` 20.2%; `copy_within_back (inlined)` 15.6%; `copy_within<u8, core::ops::range::Range<usize>> (inlined)` 12.3%; `copy<u8> (inlined)` 9.4%; `refill_bulk (inlined)` 8.5%; `consume (inlined)` 3.9%; `from_lengths (inlined)` 3.8%; `from_lengths_with_bits (inlined)` 3.8%.
+
+`perf stat`: task-clock 3361 ms (user 2.81 s, sys 0.56 s), page faults 142609 = 235.2 per MiB of output, instructions 25.77 G = 42.5 M per MiB, cycles 10.18 G, branch misses 2.13% of 3.87 G branches.
+
+### silesia/rfc1951/l1/streaming
+
+3 iterations, 606.4 MiB of output.
+
+| self-time symbol | % of samples |
+|---|---:|
+| `cleanflate::fast_loop::run` | 78.28 |
+| `cleanflate::checksum::crc32` | 3.87 |
+| `cleanflate::huffman::Huffman::from_lengths` | 2.62 |
+| `cleanflate::inflate::Inflater::step_into` | 1.73 |
+| unresolved addresses (system library code, summed) | 7.87 |
+
+Top inclusive frames (`top-children.txt`): `profile_decode::stream_through` 96.1%; `cleanflate::fast_loop::run` 78.3%; `copy_match_sink<cleanflate::sink::SliceSink> (inlined)` 25.9%; `copy_match_slices<cleanflate::sink::SliceSink> (inlined)` 24.9%; `copy_within_back (inlined)` 16.3%; `copy_within<u8, core::ops::range::Range<usize>> (inlined)` 12.8%; `copy<u8> (inlined)` 10.5%; `refill_bulk (inlined)` 6.9%; `consume (inlined)` 3.9%; `cleanflate::checksum::crc32` 3.9%.
+
+`perf stat`: task-clock 3496 ms (user 3.00 s, sys 0.50 s), page faults 107442 = 177.2 per MiB of output, instructions 26.15 G = 43.1 M per MiB, cycles 10.61 G, branch misses 2.28% of 3.92 G branches.
+
+### canterbury/rfc1952/l1/oneshot
+
+300 iterations, 804.2 MiB of output.
+
+| self-time symbol | % of samples |
+|---|---:|
+| `cleanflate::fast_loop::run` | 70.20 |
+| `cleanflate::checksum::Crc32::update` | 10.61 |
+| `cleanflate::huffman::Huffman::from_lengths` | 4.78 |
+| `cleanflate::inflate::Inflater::step_into` | 0.63 |
+| unresolved addresses (system library code, summed) | 8.86 |
+
+Top inclusive frames (`top-children.txt`): `cleanflate::fast_loop::run` 70.2%; `copy_match_sink<cleanflate::sink::SliceSink> (inlined)` 23.8%; `copy_match_slices<cleanflate::sink::SliceSink> (inlined)` 22.9%; `copy_within_back (inlined)` 17.2%; `copy_within<u8, core::ops::range::Range<usize>> (inlined)` 13.4%; `copy<u8> (inlined)` 11.2%; `cleanflate::checksum::Crc32::update` 10.6%; `crc32_update_sliced<8> (inlined)` 10.6%; `update (inlined)` 10.6%; `crc32_fold_chunk<8> (inlined)` 9.7%.
+
+`perf stat`: task-clock 4025 ms (user 3.96 s, sys 0.07 s), page faults 696 = 0.9 per MiB of output, instructions 35.98 G = 44.7 M per MiB, cycles 14.17 G, branch misses 1.81% of 5.24 G branches.
+
+### silesia/rfc1951/l6/oneshot
+
+3 iterations, 606.4 MiB of output.
+
+| self-time symbol | % of samples |
+|---|---:|
+| `cleanflate::fast_loop::run` | 78.56 |
+| `cleanflate::checksum::crc32` | 4.59 |
+| `cleanflate::huffman::Huffman::from_lengths` | 3.64 |
+| unresolved addresses (system library code, summed) | 7.54 |
+
+Top inclusive frames (`top-children.txt`): `cleanflate::fast_loop::run` 78.6%; `copy_match_sink<cleanflate::sink::SliceSink> (inlined)` 19.5%; `copy_match_slices<cleanflate::sink::SliceSink> (inlined)` 18.6%; `copy_within_back (inlined)` 14.3%; `copy_within<u8, core::ops::range::Range<usize>> (inlined)` 11.9%; `copy<u8> (inlined)` 10.2%; `refill_bulk (inlined)` 7.8%; `consume (inlined)` 4.9%; `profile_decode::main` 4.6%; `cleanflate::checksum::crc32` 4.6%.
+
+`perf stat`: task-clock 2689 ms (user 2.23 s, sys 0.47 s), page faults 146531 = 241.7 per MiB of output, instructions 21.20 G = 35.0 M per MiB, cycles 8.61 G, branch misses 2.34% of 3.20 G branches.
+
+### silesia/rfc1951/l6/streaming
+
+3 iterations, 606.4 MiB of output.
+
+| self-time symbol | % of samples |
+|---|---:|
+| `cleanflate::fast_loop::run` | 77.07 |
+| `cleanflate::checksum::crc32` | 4.38 |
+| `cleanflate::huffman::Huffman::from_lengths` | 3.15 |
+| `cleanflate::inflate::Inflater::step_into` | 1.26 |
+| unresolved addresses (system library code, summed) | 6.59 |
+
+Top inclusive frames (`top-children.txt`): `profile_decode::stream_through` 95.5%; `cleanflate::fast_loop::run` 77.1%; `copy_match_sink<cleanflate::sink::SliceSink> (inlined)` 22.5%; `copy_match_slices<cleanflate::sink::SliceSink> (inlined)` 21.7%; `copy_within_back (inlined)` 14.2%; `copy_within<u8, core::ops::range::Range<usize>> (inlined)` 10.8%; `copy<u8> (inlined)` 10.1%; `refill_bulk (inlined)` 7.3%; `consume (inlined)` 5.6%; `crc32 (inlined)` 4.5%.
+
+### silesia/rfc1950/l6/streaming
+
+3 iterations, 606.4 MiB of output.
+
+| self-time symbol | % of samples |
+|---|---:|
+| `cleanflate::fast_loop::run` | 72.52 |
+| `cleanflate::zlib::ZlibDecoder::step_into` | 6.75 |
+| `cleanflate::checksum::crc32` | 4.04 |
+| `cleanflate::huffman::Huffman::from_lengths` | 3.62 |
+| `cleanflate::inflate::Inflater::step_into` | 1.43 |
+| `cleanflate::inflate::Inflater::peek_symbol` | 0.57 |
+| unresolved addresses (system library code, summed) | 5.37 |
+
+Top inclusive frames (`top-children.txt`): `cleanflate::fast_loop::run` 72.5%; `copy_match_sink<cleanflate::sink::SliceSink> (inlined)` 19.5%; `copy_match_slices<cleanflate::sink::SliceSink> (inlined)` 18.6%; `copy_within_back (inlined)` 11.5%; `copy_within<u8, core::ops::range::Range<usize>> (inlined)` 9.0%; `copy<u8> (inlined)` 8.0%; `refill_bulk (inlined)` 7.0%; `cleanflate::zlib::ZlibDecoder::step_into` 6.8%; `adler_fold (inlined)` 6.7%; `update (inlined)` 6.7%.
+
+### silesia/rfc1952/l6/streaming
+
+3 iterations, 606.4 MiB of output.
+
+| self-time symbol | % of samples |
+|---|---:|
+| `cleanflate::fast_loop::run` | 68.13 |
+| `cleanflate::checksum::Crc32::update` | 12.42 |
+| `cleanflate::checksum::crc32` | 3.95 |
+| `cleanflate::huffman::Huffman::from_lengths` | 2.31 |
+| `cleanflate::inflate::Inflater::step_into` | 1.30 |
+| unresolved addresses (system library code, summed) | 4.36 |
+
+Top inclusive frames (`top-children.txt`): `cleanflate::fast_loop::run` 68.1%; `copy_match_sink<cleanflate::sink::SliceSink> (inlined)` 18.7%; `copy_match_slices<cleanflate::sink::SliceSink> (inlined)` 17.9%; `crc32_update_sliced<8> (inlined)` 12.5%; `update (inlined)` 12.5%; `cleanflate::checksum::Crc32::update` 12.4%; `copy_within_back (inlined)` 12.1%; `crc32_fold_chunk<8> (inlined)` 11.3%; `copy_within<u8, core::ops::range::Range<usize>> (inlined)` 9.5%; `copy<u8> (inlined)` 8.3%.
+
+### canterbury/rfc1951/l1/oneshot
+
+300 iterations, 804.2 MiB of output.
+
+| self-time symbol | % of samples |
+|---|---:|
+| `cleanflate::fast_loop::run` | 79.74 |
+| `cleanflate::huffman::Huffman::from_lengths` | 4.40 |
+| `cleanflate::inflate::Inflater::step_into` | 0.84 |
+| unresolved addresses (system library code, summed) | 10.86 |
+
+Top inclusive frames (`top-children.txt`): `cleanflate::fast_loop::run` 79.7%; `copy_match_sink<cleanflate::sink::SliceSink> (inlined)` 26.4%; `copy_match_slices<cleanflate::sink::SliceSink> (inlined)` 24.6%; `copy_within_back (inlined)` 19.6%; `copy_within<u8, core::ops::range::Range<usize>> (inlined)` 15.0%; `copy<u8> (inlined)` 12.3%; `refill_bulk (inlined)` 7.1%; `from_lengths (inlined)` 4.8%; `from_lengths_with_bits (inlined)` 4.8%; `consume (inlined)` 4.6%.
+
+### canterbury/rfc1952/l1/streaming
+
+300 iterations, 804.2 MiB of output.
+
+| self-time symbol | % of samples |
+|---|---:|
+| `cleanflate::fast_loop::run` | 69.70 |
+| `cleanflate::checksum::Crc32::update` | 10.56 |
+| `cleanflate::huffman::Huffman::from_lengths` | 4.02 |
+| `cleanflate::inflate::Inflater::step_into` | 0.62 |
+| unresolved addresses (system library code, summed) | 10.35 |
+
+Top inclusive frames (`top-children.txt`): `cleanflate::fast_loop::run` 69.7%; `copy_match_sink<cleanflate::sink::SliceSink> (inlined)` 24.8%; `copy_match_slices<cleanflate::sink::SliceSink> (inlined)` 23.4%; `copy_within_back (inlined)` 16.3%; `copy_within<u8, core::ops::range::Range<usize>> (inlined)` 13.2%; `copy<u8> (inlined)` 11.5%; `cleanflate::checksum::Crc32::update` 10.6%; `crc32_update_sliced<8> (inlined)` 10.6%; `update (inlined)` 10.6%; `crc32_fold_chunk<8> (inlined)` 9.9%.
+
+
+### Hotspots by task: before and after
+
+Shares of samples (self unless marked inclusive), same keys as the before table. A share can rise while the time falls, because the loop got faster and the fixed costs did not (total task-clock for `silesia/rfc1951/l1/oneshot` 3,810 to 3,361 ms, instructions 36.4 G to 25.8 G, both measured with the same 3 passes).
+
+| Task | Key | Frame | Before | After | Outcome of the task |
+|---|---|---|---:|---:|---|
+| P4-03 lookup inlined on table views | `silesia/rfc1951/l1/oneshot` | `fast_loop::run` + `Huffman::decode_table` + `Window::copy_match` | 83.07% | 79.04% (`fast_loop::run`, all inlined) | kept: +18% to +31% on every level-1 and level-6 key |
+| P4-04 multi-literal entries | `silesia/rfc1951/l1/oneshot` | literal branch of the loop (46.6% of symbols) | - | - | reverted: -5.6% to -18% |
+| P4-02 word-read refill | `silesia/rfc1951/l1/oneshot` | `refill_bulk` inclusive | 6.10% | 8.54% | already the technique (D-27); no change kept |
+| P2-03 CRC-32 slicing-by-16 | `silesia/rfc1952/l6/streaming` | `Crc32::update` | 9.56% (8.31% fresh) | 12.42% | measured +13% to +18% on the microbench; reverted then (at most 1.2% of the decode); the share has since grown |
+| P2-02 Adler-32 batch | `silesia/rfc1950/l6/streaming` | `adler_fold` inclusive | 6.34% | 6.70% | gated out (gate 7.02%); still just below |
+| P2-04 wrapper overhead | `silesia/rfc1950/l6/streaming` | wrapper excess over `adler_fold` | 0.05% | 0.05% (6.75% against 6.70%) | gated out |
+| P3-01 per-block table reuse | `canterbury/rfc1952/l1/oneshot` | `from_lengths` inclusive | 2.87% | 5.64% | gated out (gate 4.84%); now above it |
+| P3-02 per-stream setup | `canterbury/rfc1952/l1/oneshot` | `new_with_path` + `Window::new` + `resize<u8>` | about 3.0% | 1.93% + 1.03% + 0.75% (overlapping) | gated out; reuse bench shows about 1% |
+| P2-07 one-shot appends to a `Vec` | `silesia/rfc1951/l1/oneshot` | `resize<u8>`/`extend_with<u8>` inclusive | 2.06% | 2.83% | measured and reverted: page faults unchanged |
+| P2-08 size-hint revisit | `silesia/rfc1951/l1/oneshot` | growth and realloc frames | none | none | gated out |
+
+### Final state of the four patterns
+
+1. **One-shot slower than streaming.** ADJUSTED to fresh-allocation zero-fill and first-touch page faults (P1-02), and left unchanged: a `Vec` sink cannot remove the faults (P2-07: page faults identical, 110,179 before and after) and the size hint has no growth cost to recover (P2-08). The one-shot and streaming bench rows stay within about 10% of each other (T2 still NOT MET).
+2. **Canterbury setup cost.** ADJUSTED and mostly discounted: per-stream setup is about 1% with a reused decompressor (P3-04: reuse within 1% of fresh-object streaming on every aggregate), and per-block table building, 2.9% then, is 5.6% of the now-faster loop, the largest fixed cost left on Canterbury and the first candidate for the next phase.
+3. **Level 1 is the slowest level.** ADJUSTED to a per-symbol instruction count, not literal-heaviness (P1-02), and fixed where it lived: removing the per-symbol `decode_table` call cut instructions by 29% and lifted every level-1 and level-6 row by 18% to 31% (P4-03). Multi-literal entries (P4-04) and other table widths (P4-05) did not help.
+4. **zlib and gzip trail raw.** CONFIRMED (P1-02); the checksum share is now larger because the loop is faster (CRC-32 9.6% to 12.4% of samples, Adler-32 plus wrapper 6.7%), so T4 is essentially unchanged: the CRC-32 slicing-by-16 change (+13% to +18% alone) is worth about 2% of a gzip decode now and is the first candidate after the table build.

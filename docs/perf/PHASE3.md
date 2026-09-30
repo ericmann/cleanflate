@@ -1277,6 +1277,9 @@ Targets (`make bench-targets J=docs/perf/phase3/P4-06.json`), reported, not gate
 - T5 (Silesia level-6 one-shot >= 0.70x C zlib): MET; worst: silesia/raw/l6/oneshot ratio 0.839 (threshold >= 0.70)
 - T6 (no row slower than the phase-2 baseline beyond noise): NOT MET; worst: canterbury/gzip/l1/streaming +12.95% vs baseline
 
+### P5-01
+After-profiles and flamegraphs on the final code: `docs/perf/flamegraphs/*-after.svg` (three required keys, checked), the After section of `docs/perf/phase3-profile.md` (nine keys, a before/after table for every hotspot named in the before report, and each pattern's final state). Headline: `fast_loop::run` is one function at 79% of samples, instructions per MiB of output fell from 60 M to 42.5 M at level 1 one-shot, and the fixed costs left are now proportionally larger (CRC-32 12.4% of gzip samples, table building 5.6% of Canterbury gzip).
+
 ## Targets
 Filled by P5-02 (acceptance tasks).
 
