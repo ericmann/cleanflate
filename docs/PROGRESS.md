@@ -14,7 +14,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P0-09 Phase-3 starting baseline and noise
 - [x] P0-10 M0 acceptance and push
 - [x] P1-01 Profile any key: per-key outputs, perf stat and saved flamegraphs
-- [ ] P1-02 Before-profiles, flamegraphs and phase3-profile.md
+- [x] P1-02 Before-profiles, flamegraphs and phase3-profile.md
 - [ ] P1-03 M1 acceptance and push
 - [ ] P2-01 Checksum microbenchmark (cleanflate only)
 - [ ] P2-02 Adler-32 over a bound-derived unrolled batch (gated)
@@ -81,3 +81,6 @@ Manual check: NOT VERIFIED (human): 1) GitHub Actions ci green on branch; 2) noi
 
 ### P1-01 — 5988e2c
 Makefile: PROFILE_KEY, per-key target/profile/<slug>/{perf.data,top.txt,top-children.txt,flamegraph.svg,stat.txt}, profile-stat, flamegraph-save TAG=, profile-required TAG=, STATS_* vars. tools/perf/check-flamegraph.sh + test. Interpretation: flamegraph uses --no-inline (default inline view strips crate paths so no cleanflate:: frames). profile_decode untouched (already 64 KiB windows). Verified profile/profile-stat/flamegraph-save smoke on this machine (perf works). Smoke svg deleted. Early profile note: silesia rfc1951 l1 streaming top self: fast_loop::run 38%, Huffman::decode_table 25%, crc32 13.5%, copy_match 10%.
+
+### P1-02 — 1089aab
+phase3-profile.md + 3 before SVGs + P1-02-stats.json committed. Verdicts: P1 ADJUSTED (zero-fill+fresh-page faults, 14 resizes/12 files; not growth), P2 ADJUSTED (setup ~7% Canterbury vs ~2% Silesia, table build per byte equal), P3 ADJUSTED (level1 literals 46.6% of symbols vs l6 60.8%; loop is symbol-count heavy), P4 CONFIRMED (Crc32::update 9.6% gzip, ZlibDecoder::step 5.1%). fast_loop::run+Huffman::decode_table (out-of-line) = 70% self at l1. Likely gates: above: P4-03,P4-04,P2-03,P4-02; below: P2-02,P3-01,P3-02,P2-04,P2-08; P2-07 at the gate. CR6 note: guard denied `perf report ... --sort dso` (outside make profile); not worked around. PHASE3.md: append later task-log entries before the exact line "## Targets".
