@@ -152,3 +152,91 @@ fn reference_byte_copy_matches_bulk_copy() {
         }
     }
 }
+
+fn adler_by_hand(data: &[u8]) -> u32 {
+    let (mut a, mut b) = (1u32, 0u32);
+    for &x in data {
+        a = (a + u32::from(x)) % 65521;
+        b = (b + a) % 65521;
+    }
+    (b << 16) | a
+}
+
+#[test]
+fn zlib_decoder_uses_same_path() {
+    use crate::zlib::ZlibDecoder;
+    let mut out = [0u8; 16];
+
+    // Plain zlib stream: header 78 01, stored block "abc", adler.
+    let (raw, plain) = stored_stream();
+    let mut z = vec![0x78, 0x01];
+    z.extend_from_slice(&raw);
+    z.extend_from_slice(&adler_by_hand(&plain).to_be_bytes());
+    let mut d = ZlibDecoder::new(None, DecodePath::Reference);
+    assert_eq!(d.inflater_path(), DecodePath::Reference);
+    let (_, produced, _) = d.step(&z, &mut out).expect("decodes");
+    assert_eq!(produced, 3);
+    assert_eq!(d.inflater_path(), DecodePath::Reference);
+
+    // FDICT stream: 78 20 has FDICT set and a valid FCHECK (0x7820 % 31 == 0).
+    let dict = b"xyz".to_vec();
+    assert_eq!(0x7820u32 % 31, 0);
+    let mut z = vec![0x78, 0x20];
+    z.extend_from_slice(&adler_by_hand(&dict).to_be_bytes());
+    z.extend_from_slice(&raw);
+    z.extend_from_slice(&adler_by_hand(&plain).to_be_bytes());
+    let mut d = ZlibDecoder::new(Some(dict), DecodePath::Reference);
+    let (_, produced, _) = d.step(&z, &mut out).expect("decodes");
+    assert_eq!(produced, 3);
+    assert_eq!(&out[..3], b"abc");
+    assert_eq!(d.inflater_path(), DecodePath::Reference);
+}
+
+#[test]
+fn decompressor_passes_path_every_format() {
+    use crate::stream::Decompressor;
+    let (raw, plain) = stored_stream();
+    let mut zl = vec![0x78, 0x01];
+    zl.extend_from_slice(&raw);
+    zl.extend_from_slice(&adler_by_hand(&plain).to_be_bytes());
+    // Minimal gzip member: header, stored body, CRC-32 and ISIZE.
+    let mut crc = 0xffff_ffffu32;
+    for &x in &plain {
+        crc ^= u32::from(x);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xedb8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    crc = !crc;
+    let mut gz = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff];
+    gz.extend_from_slice(&raw);
+    gz.extend_from_slice(&crc.to_le_bytes());
+    gz.extend_from_slice(&3u32.to_le_bytes());
+
+    let with_dict = Options {
+        dictionary: Some(b"xyz".to_vec()),
+        ..Options::default()
+    };
+    let cases = [
+        (Format::Raw, Options::default(), raw.clone()),
+        (Format::Raw, with_dict, raw.clone()),
+        (Format::Zlib, Options::default(), zl),
+        (Format::Gzip, Options::default(), gz),
+    ];
+    for (format, options, input) in cases {
+        let mut d = Decompressor::new_with_path(format, options, DecodePath::Reference);
+        assert_eq!(
+            d.inflater_path(),
+            DecodePath::Reference,
+            "{format:?} initial"
+        );
+        let mut out = [0u8; 16];
+        let p = d.decompress(&input, &mut out).expect("decodes");
+        assert_eq!(p.produced, 3, "{format:?}");
+        assert_eq!(d.inflater_path(), DecodePath::Reference, "{format:?} after");
+    }
+}

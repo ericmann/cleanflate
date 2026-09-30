@@ -189,6 +189,16 @@ impl Decompressor {
         }
     }
 
+    /// The decode path of the current backend inflater.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn inflater_path(&self) -> DecodePath {
+        match &self.backend {
+            Backend::Raw(i) => i.path(),
+            Backend::Zlib(z) => z.inflater_path(),
+            Backend::Gzip(g) => g.inflater_path(),
+        }
+    }
+
     /// Feed `input` and write decompressed bytes into `output`. Returns
     /// how much of each was used and why the call stopped. With
     /// [`Status::NeedsInput`], all of `input` was consumed; input is left

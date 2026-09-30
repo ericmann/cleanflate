@@ -53,6 +53,12 @@ impl ZlibDecoder {
         }
     }
 
+    /// The decode path of the current inflater.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn inflater_path(&self) -> DecodePath {
+        self.inflater.path()
+    }
+
     /// A snapshot of the counters.
     #[cfg(feature = "stats")]
     pub(crate) fn stats(&self) -> crate::stats::Stats {
