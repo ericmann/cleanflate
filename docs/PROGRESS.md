@@ -30,7 +30,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P3-03 One-shot output sizing from hints
 - [x] P3-04 M3 acceptance and push
 - [x] P4-01 CRC-32 several bytes at a time
-- [~] P4-02 Adler-32 revisit (gated)
+- [x] P4-02 Adler-32 revisit (gated)
 - [ ] P4-03 Re-sweep tunables on the final code
 - [ ] P4-04 M4 acceptance and push
 - [ ] P5-01 Phase-scoped provenance summary and build report
@@ -124,3 +124,6 @@ Manual check: NOT VERIFIED (human): (1) GitHub Actions ci green. (2) Watch peak 
 
 ### P4-01 — 27ad6c7
 CRC32_SLICES=8 (config). checksum.rs: CRC32_TABLES static built by const fn (zero-byte-step recurrence, split_first_mut walking, no indexing), crc32_update_bytewise (tail + reference), fold via as_chunks::<8>. D-32 [perf] with GF(2) linearity derivation. Tests: 3 in tests/checksum.rs + oracle crc32_matches_oracle_long (1 MiB, random pieces). PT1: gzip aggregates WIN (silesia oneshot 120.2->154.3 +28.4%, streaming +28.3%, canterbury +36%/+42%); gzip overhead over raw 36.3% -> 4.6% (silesia oneshot), 46.5% -> 13.4% (canterbury); raw/zlib NEUTRAL (7 drift REGRESSION lines on raw/zlib keys whose code is untouched, noted). make test, proptest-3k pass. Interpretation: as_chunks (stable 1.88).
+
+### P4-02 — aba4f85
+GATED OUT (negative result), no code change. rfc1950 profile: Adler update 6.15% of samples (2% at M0). Full-run noise for silesia zlib 2.6%/1.1% (2x 5.2%/2.3%) but quick-bench noise 6.5%/3.5% (2x 13.0%/7.1%); eliminating Adler entirely gains at most 6.6% < 2x quick noise, so no WIN could be shown (PT4 would revert). Interpretation recorded in PERF.md; revisit if quick noise < ~3%.
