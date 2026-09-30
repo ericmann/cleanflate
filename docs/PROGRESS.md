@@ -8,7 +8,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P0-03 Oracle FFI: C zlib build flags and bounded streaming inflate
 - [x] P0-04 Bench schema 2: "best" replaces "min", every column documented
 - [x] P0-05 C zlib streaming rows and like-for-like ratios
-- [ ] P0-06 Environment capture in every bench run
+- [x] P0-06 Environment capture in every bench run
 - [ ] P0-07 Reports: delta vs the phase-2 baseline, drift-corrected verdicts, per-file sizes
 - [ ] P0-08 `oracle bench-targets`: T1–T6 verdicts from a bench JSON
 - [ ] P0-09 Phase-3 starting baseline and noise
@@ -61,3 +61,7 @@ Schema 2 (bench_json::SCHEMA=2), BenchJson::parse accepts 1|2 (aliases for min_*
 
 ### P0-05 — 53239b7
 Imp::CZlibOneShot/CZlibStreaming, sample_order(), Aggregate.c_zlib_mode (serde default oneshot), ratio like-for-like, render_md per-file table uses same-mode C zlib row (fallback oneshot). bench-quick P0-05 ran 87s: 96 cleanflate streaming rows all have a C zlib streaming row; e.g. canterbury/raw/l6/streaming 248.2 vs 405.1 MiB/s ratio 0.613. Bash note: `sleep` >~100s blocked; use until-loop with timeout.
+
+### P0-06 — 4427b9b
+bench_env.rs (new): CargoProfile, CZlibInfo, render_environment, metadata parsing. Machine gained cores/os/kernel/loadavg_end (Machine: Default); BenchJson gained cargo_profile, c_zlib (serde default). cargo metadata uses --offline --filter-platform <host>. Environment block from bench-quick P0-06:
+cpu_model: AMD Ryzen 5 3400G; cores 8; governor schedutil; os Pop!_OS 24.04 LTS; kernel 7.1.5-76070105-generic; rustc 1.89.0; profile release; debug_assertions false; release_profile: debug = "line-tables-only"; build_env none; c_zlib_version 1.3.2; c_zlib_compile_flags 0xa9; libz_sys_version 1.1.29; libz_sys_features default,libc,static,stock-zlib.
