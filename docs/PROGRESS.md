@@ -39,7 +39,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P5-01 After-profiles and flamegraphs
 - [x] P5-02 Final bench, PHASE3.md report and PERF.md phase-3 section
 - [x] P5-03 Provenance, build report and hand-off push
-- [ ] R1-01 Reset differential: cover the raw dictionary, fail on empty selections, random reset points
+- [x] R1-01 Reset differential: cover the raw dictionary, fail on empty selections, random reset points
 
 ## Log
 (one entry per task, appended by implement)
@@ -158,3 +158,6 @@ P5-02.json (quiet machine, load 1.8) + PHASE3.md Summary/Final tables/Targets/Fl
 ### P5-03 — f57be5d
 PHASE_BASE=cd4a472; SUMMARY.md / BUILD_REPORT.md regenerated (range cd4a472..HEAD, BUILD_REPORT performance line = phase-3 result line); human-interventions.md: dated sentence (no interventions; 9 guard denials explained, none a source read); make ci + make heavy pass; pushed.
 Manual check: NOT VERIFIED (human): 1) final make bench on a quiet machine with pinned governor vs P5-02.json; 2) make fuzz-long / nightly for all six targets + triage fuzz-divergences; 3) GitHub Actions ci green; 4) review PHASE3.md T1-T6 verdicts/attribution/negative results + PERF.md result line; 5) review flamegraphs and assembly evidence; 6) after merge tag v0.3.0-cleanroom; 7) complete human-interventions.md.
+
+### R1-01 — 8a84b96
+Added reset_reapplies_raw_dictionary (Fast+Reference); oracle raw-dictionary case now built via deflate_bytes with dict; zlib dict selection panics with fix hint if empty; reset_proptest gains prefix_calls (0..=6) driven with case schedules. Mutation (drop prefill in Backend::reset) fails new unit test. Interpretation: fixed dict/cyclic data for raw case. verify green incl. proptest-3k.
