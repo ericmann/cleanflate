@@ -679,6 +679,43 @@ Per-key profiling (`PROFILE_KEY`), `profile-stat`, checked `flamegraph-save`, `p
 ### P1-02
 Before-profiles and flamegraphs; `docs/perf/phase3-profile.md`. Headline: `fast_loop::run` plus the out-of-line `Huffman::decode_table` are 70% of self time at level 1; level 1 is symbol-count heavy, not literal-heavy (literals 46.6% of symbols against 60.8% at level 6); one-shot's gap is fresh-page zero-fill and faults, not growth; CRC-32 is 9.6% of gzip, Adler-32 plus wrapper 5.1% of zlib.
 
+### P1-03 (M1 acceptance)
+
+Gates run in order: `make ci` (pass), `make heavy` (pass), `make fuzz-milestone` (pass), then the full bench `docs/perf/phase3/P1-03.json`.
+
+M1 checklist:
+
+- [x] Before-flamegraphs committed: `docs/perf/flamegraphs/silesia-rfc1951-l1-oneshot-before.svg`, `silesia-rfc1951-l1-streaming-before.svg`, `canterbury-rfc1952-l1-oneshot-before.svg` (all pass `tools/perf/check-flamegraph.sh`).
+- [x] `docs/perf/phase3-profile.md` has `How these were taken`, `Before (P1-02)` (per-key tables, inclusive frames, `perf stat`), `Patterns` (four verdicts with numbers) and `Hotspots by task`.
+- [x] The hotspot table covers every gated or optimisation task of M2 to M4: P2-02, P2-03, P2-04, P2-07, P2-08, P3-01, P3-02, P4-02, P4-03, P4-04.
+- [x] `docs/perf/phase3/P1-03.json` is committed.
+
+Fuzz milestone:
+
+```
+fuzz-milestone: diff_oracle_roundtrip seconds=1801 execs=1383630 exit=0 artifacts=0
+fuzz-milestone: diff_fast_reference seconds=1801 execs=525087 exit=0 artifacts=0
+```
+
+`make bench-compare A=baselines/phase3-start.json B=phase3/P1-03.json` (noise `phase3-noise.json`): 9 WIN, 11 LOSS, 65 per-file REGRESSION lines. Against the phase-2 record (first rows; the full table is `make bench-compare A=docs/perf/baselines/phase2.json B=docs/perf/phase3/P1-03.json`):
+
+```
+| key | A MiB/s | B MiB/s | delta % | 2x noise % | verdict | vs phase-2 % | B ratio | ratio delta % | ratio verdict |
+|---|---:|---:|---:|---:|---|---:|---:|---:|---|
+| canterbury/gzip/l1/oneshot | 190.6 | 174.1 | -8.63 | 0.07 | LOSS | -8.63 | 0.515 | -6.35 | NEUTRAL |
+| canterbury/gzip/l1/streaming | 187.9 | 174.0 | -7.39 | 1.14 | LOSS | -7.39 | 0.500 | n/a (denominator changed) | n/a |
+| canterbury/gzip/l6/oneshot | 218.2 | 203.5 | -6.73 | 2.94 | LOSS | -6.73 | 0.582 | -6.86 | NEUTRAL |
+```
+
+Targets (`make bench-targets J=docs/perf/phase3/P1-03.json`), reported, not gates:
+
+- T1 (Silesia streaming >= 0.80x C zlib streaming): NOT MET; worst: silesia/gzip/l1/streaming ratio 0.552 (threshold >= 0.80)
+- T2 (cleanflate one-shot >= streaming, every row): NOT MET; worst: silesia/raw/l6 one-shot / streaming 0.891 (threshold >= 1.00)
+- T3 (Canterbury >= 0.70x C zlib, every mode): NOT MET; worst: canterbury/gzip/l1/streaming ratio 0.500 (threshold >= 0.70)
+- T4 (zlib and gzip within 3% of raw throughput): NOT MET; worst: canterbury/gzip/l1/streaming overhead 13.22% (threshold <= 3%)
+- T5 (Silesia level-6 one-shot >= 0.70x C zlib): NOT MET; worst: silesia/raw/l6/oneshot ratio 0.641 (threshold >= 0.70)
+- T6 (no row slower than the phase-2 baseline beyond noise): NOT MET; worst: canterbury/gzip/l9/oneshot -9.76% vs baseline
+
 ## Targets
 Filled by P5-02 (acceptance tasks).
 
