@@ -36,6 +36,8 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P5-01 Phase-scoped provenance summary and build report
 - [x] P5-02 Final PERF.md phase-2 report and DESIGN audit
 - [x] P5-03 Provenance, build report and hand-off push
+- [ ] R1-01 Pin the pending-literal give-back and keep the Reference path exact-fill
+- [ ] R1-02 Fast-loop error equivalence for an incomplete distance table's unused code
 
 ## Log
 (one entry per task, appended by implement)

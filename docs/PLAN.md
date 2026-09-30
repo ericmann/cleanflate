@@ -1077,3 +1077,41 @@ Derived from docs/SPEC.md v(unversioned, commit 877892c) on 2026-09-29. SPEC.md 
 - **§6 M5 regenerating BUILD_REPORT and SUMMARY "for phase 2":** the phase-1 generators count all history and phase-2 task IDs collide with phase-1 IDs. Resolved with `--since` scoping (P5-01).
 - **§8 dates:** the profiler install is dated 2026-09-30, but SPEC was committed 2026-09-29. It is cosmetic, and `perf`/`cargo flamegraph` are confirmed present at `/usr/bin/perf` and `~/.cargo/bin/cargo-flamegraph`.
 - **Phase-1 carry-overs** (review notes, not SPEC): the `32768` literal in `stream.rs` is fixed by P3-03. The stale `#[allow(dead_code)]` note and the garbled R1-01 comments are left for review to judge.
+
+## Review fixes (round 1)
+
+### R1-01: Pin the pending-literal give-back and keep the Reference path exact-fill
+**Goal:** Make the D-27 (b) exit invariant observable. An OutputFull exit must keep exactly the pending literal's code bits, and the Reference path must never give bytes back, so the fast-vs-reference differential stays an independent oracle for per-call consumed. Today, mutating `self.keep_bits = len;` (crates/cleanflate/src/inflate.rs:675) to `len.min(7)` survives make test and make proptest-3k.
+**Files touched:** crates/cleanflate/src/tests/bitreader_bulk.rs, crates/cleanflate/src/tests/stats.rs, crates/cleanflate/src/inflate.rs, crates/cleanflate/src/bitreader.rs, crates/cleanflate/src/huffman.rs
+**Design constraints:** SPEC 3 (exact consumed accounting), SPEC 5, CLAUDE.md PT3/C20, DESIGN D-27. Global invariants apply: no unsafe, no panicking calls or [] indexing in library code; debug_assert! is allowed.
+- Library changes are limited to:
+  - an optional `debug_assert!(self.path == DecodePath::Fast || k == 0, ...)` at the shared exit in `Inflater::step`;
+  - the two stale doc comments: bitreader.rs:11 ('at most 7 bits', superseded by D-27) and huffman.rs:121 (the Decoded::Invalid doc, superseded by D-26).
+- No behaviour change.
+- The consumed model in the new test must come from the test's own bit accounting (header bits + 9 bits per literal), never from cleanflate.
+**Acceptance tests:** - crates/cleanflate/src/tests/bitreader_bulk.rs::pending_literal_bits_kept_at_output_full:
+  - input: a hand-built fixed block of literals 144..=255 (9-bit codes, at least 64 literals) plus EOB, decoded with 1-byte output on both DecodePath::Fast and DecodePath::Reference;
+  - after every call returning OutputFull, cumulative consumed == ceil((3 header bits + 9 * literals_written + 9) / 8);
+  - repeat with output chunks of 3.
+- crates/cleanflate/src/tests/stats.rs::reference_path_never_gives_back (#[cfg(feature = "stats")]):
+  - streams: the same fixed literal stream plus the existing hand-built fixed and dynamic streams;
+  - output chunks 1 and 3;
+  - on DecodePath::Reference, Decompressor stats().given_back_bytes == 0.
+- Both tests must fail when crates/cleanflate/src/inflate.rs `self.keep_bits = len;` is mutated to `self.keep_bits = len.min(7);` (check with foundry_mutate or by reasoning in the commit).
+**Out of scope:** Any change to decoding behaviour, the fast loop, or the give-back algorithm itself. Performance work.
+**Verification:** make lint && make test && make proptest-3k. Then confirm by mutation that the keep_bits = len.min(7) mutant is killed by make test.
+**Depends on:** none
+
+### R1-02: Fast-loop error equivalence for an incomplete distance table's unused code
+**Goal:** Deterministically cover the fast loop's distance-lookup Invalid exit (crates/cleanflate/src/fast_loop.rs:137). Its error value can change today without make test noticing; only a random corrupted stream in proptest-3k catches it.
+**Files touched:** crates/cleanflate/src/tests/fast_loop.rs
+**Design constraints:** SPEC 5 (identical errors on both paths, mutation-check the fast path), RFC 1951 S3.2.7 (a single distance code of length 1 leaves one unused code). The test is hand-built with the existing bitwriter/dynbuilder helpers. No library change.
+**Acceptance tests:** - Extend crates/cleanflate/src/tests/fast_loop.rs::fast_loop_errors_identical_to_reference (or add fast_loop_incomplete_distance_table_invalid_code) with this case:
+  - a dynamic block whose distance table has exactly one code of length 1;
+  - at least FAST_LOOP_MIN_INPUT + 8 bytes of valid literals/matches, so the fast loop is entered;
+  - then a length symbol followed by the unused distance code (bit 1).
+- Assert the same Error value (InvalidSymbol) at the same call index on Fast and Reference. Use a whole-input call with >= 258 bytes of output room, plus the 7/13 schedule.
+- The test must fail when fast_loop.rs line 137 `Decoded::Invalid => return FastExit::Error(Error::InvalidSymbol),` is mutated to return `Error::BadBlockType`.
+**Out of scope:** Library changes; other error kinds already covered by fast_loop_errors_identical_to_reference.
+**Verification:** make lint && make test && make proptest-3k. Confirm by mutation that the BadBlockType mutant of the distance-Invalid arm is killed by make test.
+**Depends on:** none
