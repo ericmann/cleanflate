@@ -755,3 +755,15 @@ The zlib and raw aggregates, which do not compute a CRC-32, stay NEUTRAL, as the
 | canterbury streaming | 51.8% | 11.0% |
 
 No per-file REGRESSION line was printed for a gzip key. Seven were printed for raw and zlib keys (for example silesia dickens zlib -18%), whose code path does not touch the CRC-32; they are run-to-run drift (this pair's noise file is from a single earlier pair) and confirm that per-file lines are prompts to re-measure, not verdicts. Result: **kept**, a WIN of about +28% on Silesia gzip, which closes almost all of the gap between gzip and raw framing.
+
+### P4-02 (gated, negative result)
+
+Gate (PT2): the Adler-32 share in `make profile PROFILE_FRAMING=rfc1950` (Silesia level 6, 3 iterations, cleanflate-only, after P4-01), against max(2%, 2x aggregate noise).
+
+| item | share of samples |
+|---|---:|
+| `update (inlined)` of `Adler32` inside `ZlibDecoder::step` | 6.15% |
+| (for comparison) the example's own CRC-32 length check, `checksum::crc32` | 3.29% |
+| `fast_loop::run` / `Huffman::decode_table` / `Window::copy_match` | 41.2% / 26.7% / 9.0% |
+
+At M0 the Adler-32 was about 2% of samples; the rest of the decoder became about three times faster, so its share rose to 6.15% while its absolute cost is unchanged. Noise thresholds for the affected keys: the full-run noise of silesia zlib one-shot is 2.6% (twice: 5.2%) and of streaming 1.1% (2.3%), but the quick bench that PT1 uses for a before/after pair has 6.5% (twice: 13.0%) for one-shot and 3.5% (7.1%) for streaming. Even removing the Adler-32 completely would speed zlib framing up by at most 1 / (1 - 0.0615) - 1 = 6.6%, which is below twice the quick noise for both keys, so no implementation of this task could be shown as a WIN under PT1 (and PT4 would then require reverting it). The measured gain the previous, larger cost centres delivered (D-27 to D-32) is where the remaining budget sits. **Negative result: no code was changed.** Revisit if the quick-bench noise falls below about 3% (a pinned governor on a quiet machine would do it): the allowed change would be fixed-size sub-blocks (`chunks_exact`) inside the existing `ADLER_NMAX` reduction, and the tests named in the plan (`adler32_chunked_matches_bytewise`, the oracle long-buffer test) would go with it.

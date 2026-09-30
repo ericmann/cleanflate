@@ -30,7 +30,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P3-03 One-shot output sizing from hints
 - [x] P3-04 M3 acceptance and push
 - [x] P4-01 CRC-32 several bytes at a time
-- [ ] P4-02 Adler-32 revisit (gated)
+- [~] P4-02 Adler-32 revisit (gated)
 - [ ] P4-03 Re-sweep tunables on the final code
 - [ ] P4-04 M4 acceptance and push
 - [ ] P5-01 Phase-scoped provenance summary and build report
