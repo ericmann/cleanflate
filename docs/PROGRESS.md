@@ -24,7 +24,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P2-01 Fast literal/length/distance decode loop
 - [x] P2-02 Differential fuzz target: fast vs reference
 - [x] P2-03 Copyable state in the slow path (gated)
-- [~] P2-04 M2 acceptance and push
+- [x] P2-04 M2 acceptance and push
 - [ ] P3-01 Output as match history; window carried only across calls
 - [ ] P3-02 Overlapping matches by pattern doubling
 - [ ] P3-03 One-shot output sizing from hints
@@ -104,3 +104,7 @@ fuzz/fuzz_targets/diff_fast_reference.rs (byte0%3 format, byte1/2 chunk sizes; c
 
 ### P2-03 — 3dd7e54
 GATED OUT (negative result), no code change. After P2-01: Inflater::step self 0.49% (was 35.9%), State clone frame 0.15% (was 7.5%); fast_loop::run self 38.4%; perf-profiled decode 138 MiB/s. Below the 2% floor.
+
+### P2-04 — 139a5d4
+make ci, make heavy (incl. full-tier differential), make fuzz-smoke (6 targets, 0 crashes; diff_fast_reference 96,588 runs) green; docs/perf/P2-04.json committed; PERF.md M2 acceptance. Silesia l6 vs baseline: one-shot raw 62.3->153.8, zlib 61.3->147.9, gzip 51.8->105.8; streaming raw 176.8 (64.3% of C zlib), zlib 166.8 (66.3%) => streaming target 60% met for raw/zlib; one-shot 56.0%/58.8%/41.3% (target 70% NOT YET MET). Fast loop covers 99.98% of symbols, 0.0032 dispatches/output byte. No REGRESSION. Repro audit: 4 seed fixtures pass. Push: pushed to origin.
+Manual check: NOT VERIFIED (human): (1) GitHub Actions ci green. (2) Run make fuzz-long or nightly workflow incl. diff_fast_reference for the 1-hour signal. (3) Review the fast-loop code by hand and mutation-sample it (SPEC 5).
