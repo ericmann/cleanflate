@@ -118,7 +118,7 @@ pub(crate) enum Decoded {
     },
     /// Not enough bits are buffered to know the answer yet.
     NeedMoreBits,
-    /// 15 bits were available and none of them formed a valid code.
+    /// No valid code matches the buffered bits (see DESIGN.md D-26).
     Invalid,
 }
 

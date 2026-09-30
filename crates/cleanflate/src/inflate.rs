@@ -276,6 +276,10 @@ impl Inflater {
         let status = result?;
         if status != InflateStatus::NeedsInput {
             let k = self.br.give_back(self.keep_bits);
+            debug_assert!(
+                self.path == DecodePath::Fast || k == 0,
+                "the reference path is exact-fill and never gives bytes back"
+            );
             debug_assert!(k <= pos, "gave back bytes that were never loaded this call");
             pos = pos.saturating_sub(k);
         }
@@ -394,6 +398,10 @@ impl Inflater {
                                 // Whole bytes still buffered belong to the stored
                                 // payload: hand them back so it is read from `input`.
                                 let k = self.br.give_back(0);
+                                debug_assert!(
+                                    self.path == DecodePath::Fast || k == 0,
+                                    "the reference path is exact-fill and never gives bytes back"
+                                );
                                 debug_assert!(k <= pos, "gave back bytes that were never loaded");
                                 pos = pos.saturating_sub(k);
                                 self.state = State::StoredCopy {

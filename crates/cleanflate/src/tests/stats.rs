@@ -197,3 +197,40 @@ fn stats_decompress_with_counts_resizes() {
     assert_eq!(s.oneshot_resizes, 3);
     assert_eq!(s.oneshot_bytes_allocated, 131_072);
 }
+
+#[test]
+fn reference_path_never_gives_back() {
+    use crate::decode_path::DecodePath;
+    let mut w = BitWriter::new();
+    emit_block_header(&mut w, true, 0b01);
+    for i in 0..96u16 {
+        emit_literal(&mut w, 144 + i);
+    }
+    emit_end_of_block(&mut w);
+    let literals = w.finish();
+    let mut w = BitWriter::new();
+    let (b1, p1) = dynamic_block(false);
+    emit_dynamic_block(&mut w, &b1, &p1);
+    let (b2, p2) = dynamic_block(true);
+    emit_dynamic_block(&mut w, &b2, &p2);
+    let dynamic = w.finish();
+    for stream in [literals, fixed_stream(), dynamic] {
+        for out_chunk in [1usize, 3] {
+            let mut d =
+                Decompressor::new_with_path(Format::Raw, Options::default(), DecodePath::Reference);
+            let mut pos = 0usize;
+            let mut buf = vec![0u8; out_chunk];
+            for _ in 0..100_000 {
+                let p = d
+                    .decompress(stream.get(pos..).unwrap_or(&[]), &mut buf)
+                    .expect("decodes");
+                pos += p.consumed;
+                if p.status == Status::Done {
+                    break;
+                }
+            }
+            d.finish().expect("finishes");
+            assert_eq!(d.stats().given_back_bytes, 0, "chunk {out_chunk}");
+        }
+    }
+}

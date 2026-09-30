@@ -339,3 +339,50 @@ fn stored_block_after_bulk_refill() {
         }
     }
 }
+
+/// A fixed block of 9-bit literals (144..=255, 96 of them) plus EOB.
+fn nine_bit_literal_stream() -> (Vec<u8>, usize) {
+    let mut w = BitWriter::new();
+    emit_block_header(&mut w, true, 0b01);
+    let n = 96usize;
+    for i in 0..n {
+        emit_literal(&mut w, 144 + i as u16);
+    }
+    emit_end_of_block(&mut w);
+    (w.finish(), n)
+}
+
+#[test]
+fn pending_literal_bits_kept_at_output_full() {
+    let (stream, n) = nine_bit_literal_stream();
+    for path in [DecodePath::Fast, DecodePath::Reference] {
+        for out_chunk in [1usize, 3] {
+            let mut inf = Inflater::new_with_path(path);
+            let mut consumed = 0usize;
+            let mut written = 0usize;
+            let mut full_calls = 0usize;
+            for _ in 0..10_000 {
+                let mut buf = vec![0u8; out_chunk];
+                let (c, p, st) = inf
+                    .step(stream.get(consumed..).unwrap_or(&[]), &mut buf)
+                    .expect("decodes");
+                consumed += c;
+                written += p;
+                if st == InflateStatus::OutputFull {
+                    full_calls += 1;
+                    let bits = 3 + 9 * written + 9;
+                    assert_eq!(
+                        consumed,
+                        bits.div_ceil(8),
+                        "{path:?} chunk {out_chunk} written {written}"
+                    );
+                }
+                if st == InflateStatus::Done {
+                    break;
+                }
+            }
+            assert_eq!(written, n, "{path:?} chunk {out_chunk}");
+            assert!(full_calls >= n / out_chunk - 1, "{path:?} {out_chunk}");
+        }
+    }
+}

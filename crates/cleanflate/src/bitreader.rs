@@ -8,10 +8,9 @@
 //! decoder's job (it reads bits with this reader one at a time and shifts
 //! them into a code value from the low end).
 
-/// A resumable, LSB-first bit buffer. Holds at most 7 bits between
-/// completed decode steps (see DESIGN.md D-07): the buffer never carries
-/// a fractional byte's worth of already-consumed-by-a-symbol bits across
-/// calls beyond what a single in-progress `take`/`fill` leaves behind.
+/// A resumable, LSB-first bit buffer. The exact-fill path holds at most 7
+/// bits between steps; the bulk-refill path may hold more within a call and
+/// returns whole unneeded bytes to the input at exit (DESIGN.md D-27).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct BitReader {
     buffer: u64,
