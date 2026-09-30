@@ -37,7 +37,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P5-02 Final PERF.md phase-2 report and DESIGN audit
 - [x] P5-03 Provenance, build report and hand-off push
 - [x] R1-01 Pin the pending-literal give-back and keep the Reference path exact-fill
-- [ ] R1-02 Fast-loop error equivalence for an incomplete distance table's unused code
+- [x] R1-02 Fast-loop error equivalence for an incomplete distance table's unused code
 
 ## Log
 (one entry per task, appended by implement)
@@ -149,3 +149,6 @@ Manual check: NOT VERIFIED (human): (1) Run the final make bench on a quiet mach
 
 ### R1-01 — 0b0ab82
 Added pending_literal_bits_kept_at_output_full (bitreader_bulk.rs) and reference_path_never_gives_back (stats.rs, stats feature). Added debug_assert Reference => k==0 at step exit; fixed stale docs in bitreader.rs and huffman.rs. Mutant keep_bits=len.min(7) killed (manually applied: both tests fail). verify green incl. proptest-3k. Interpretation: none.
+
+### R1-02 — 773445d
+Added incomplete-distance-table unused-code case to fast_loop_errors_identical_to_reference; hand-built block (emit_dynamic_header_raw + manual CL program) since builder appends EOB. Mutant Error::BadBlockType at fast_loop.rs:137 killed (applied manually, reverted). verify green incl proptest-3k. Interpretation: hand-built block as noted.
