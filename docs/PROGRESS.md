@@ -21,7 +21,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P2-03 CRC-32 slicing-by-16 against 8 (gated)
 - [x] P2-04 Wrapper per-call overhead in streaming (gated)
 - [x] P2-05 Output-sink abstraction in the decoder core (slice sink only)
-- [~] P2-06 Vec sink and the sink differential
+- [x] P2-06 Vec sink and the sink differential
 - [ ] P2-07 One-shot decoding appends to a Vec: no zero-fill
 - [ ] P2-08 One-shot size-hint revisit (gated)
 - [ ] P2-09 M2 acceptance and push
@@ -102,3 +102,6 @@ GATED OUT. Wrapper excess over checksum: 0.05% / 0.04% (zlib keys), <0.5% (gzip 
 
 ### P2-05 — 726eb2c
 OutputSink/SliceSink (sink.rs), generic step_into on Inflater/ZlibDecoder/GzipDecoder/Backend, Window::copy_match_sink + back_parts, fast_loop::run generic (param out_base because `base` is shadowed by LENGTH_BASE locals). Slice-shaped test wrappers in tests/slice_api.rs (cfg(test) banned in src by rule). DESIGN D-34 (non-perf). PT1: hot share unchanged (83.07% -> 82.55%); interleaved A/B neutral/positive; fastslow-full, bomb, proptest-3k, fuzz-smoke pass. Next free D is D-35. Note for P2-06: VecSink must implement written_since, copy_within_back etc. for Vec; SliceSink::at is test-only helper.
+
+### P2-06 — f1c3f9c
+VecSink (capacity-bounded, no zero-fill), Decompressor::decompress_vec via allowance()/decompress_into(), decompress_core_vec + grow_output + shared finish_core, test_hooks::{OneShotSink, decompress_with_sink}. Differential sinks_* (4 combos) pass in proptest-3k and fastslow-full; fuzz diff_fast_reference extended, 120 s smoke pass (33308 runs). Public one-shot unchanged (P2-07 switches). Interpretation: VecSink room bounded by capacity so writes cannot fail; OutputFull = capacity full; driver grows by next_len exactly like the old one. Dead-code attrs cfg_attr(not(any(test, feature="test-hooks")), allow(dead_code)) on VecSink/decompress_vec/decompress_core_vec/grow_output — remove in P2-07 when production uses them.
