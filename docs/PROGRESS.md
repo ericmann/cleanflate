@@ -35,7 +35,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P4-04 M4 acceptance and push
 - [x] P5-01 Phase-scoped provenance summary and build report
 - [x] P5-02 Final PERF.md phase-2 report and DESIGN audit
-- [ ] P5-03 Provenance, build report and hand-off push
+- [x] P5-03 Provenance, build report and hand-off push
 
 ## Log
 (one entry per task, appended by implement)
@@ -140,3 +140,7 @@ summarize.py --since-commit REV (commit_time, filter_since, Range header, ValueE
 
 ### P5-02 — d7abee1
 docs/perf/P5-02.json committed; PERF.md '### Final (P5-02)' with targets table, per-milestone gains (baseline/M1..M4/final), H1-H6 final verdicts, negative results (P1-03, P1-04, P2-03, P3-02 reverted, P4-02, P4-03) with fixture/test names, level 1/9 summary, conditions, shortfall + next steps with profile evidence. Result line: phase 2: cleanflate / C zlib (Silesia, level 6, one-shot) = 66.9% raw, 68.8% zlib, 68.8% gzip (target 70%: NOT MET); streaming 64 KiB = 74.9% raw (target 60%: MET). vs baseline: 0 REGRESSION, 0 LOSS, 36 WIN. DESIGN audit: D-27..D-32 all [perf] entries pass design-check and cite existing JSONs; no edit needed. Manual check: NOT VERIFIED (human): repeat the final bench on a quiet machine with pinned governor.
+
+### P5-03 — dfa5d50
+make ci and make heavy green; make provenance-snapshot/provenance-summary/build-report regenerated for the phase-2 range (599ca51..HEAD; BUILD_REPORT shows the phase-2 result line); human-interventions.md: one dated sentence (none recorded in the flight). Push: pushed to origin.
+Manual check: NOT VERIFIED (human): (1) Run the final make bench on a quiet machine with a fixed governor (SPEC 8), record conditions, compare with docs/perf/P5-02.json. (2) Run make fuzz-long or the nightly workflow for all six targets and triage make fuzz-divergences. (3) Confirm GitHub Actions ci is green. (4) Review the PERF.md result line and the negative results. (5) After review and merge into feature/perf (and on to main), tag v0.2.0-cleanroom. (6) Complete provenance/human-interventions.md.
