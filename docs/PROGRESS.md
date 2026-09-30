@@ -37,7 +37,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P4-05 Re-tune table widths on the final loop
 - [x] P4-06 M4 acceptance and push
 - [x] P5-01 After-profiles and flamegraphs
-- [ ] P5-02 Final bench, PHASE3.md report and PERF.md phase-3 section
+- [~] P5-02 Final bench, PHASE3.md report and PERF.md phase-3 section
 - [ ] P5-03 Provenance, build report and hand-off push
 
 ## Log

@@ -1,5 +1,15 @@
 # cleanflate phase 3 performance report
 
+## Summary
+
+Phase 3 (M0 to M5) made one optimisation that moved throughput, and proved the rest of the plan's candidates neutral, already in place or not worth doing on this machine, with the evidence for each committed.
+
+- **What moved.** P4-03 (the fast loop does its table lookups itself, on fixed-size first-level views, with the bit buffer in locals: DESIGN D-36) cut instructions per output byte from 57 to 41 on level-1 one-shot and lifted every Silesia and Canterbury aggregate at levels 1 and 6 by +18% to +31% in the PT1 pair, both on throughput and on the like-for-like ratio.
+- **Final numbers** (`docs/perf/phase3/P5-02.json`, quiet machine, load average 1.81 at the start and 1.72 at the end): cleanflate / C zlib like for like on Silesia at level 6 is **84.1% raw, 85.7% zlib, 85.4% gzip one-shot** (phase-2 record: 66.9%, 68.8%, 68.8%) and **81.8% raw, 83.9% zlib, 78.0% gzip streaming**. Every aggregate is faster than the phase-2 record (+7.3% to +25.8%; the phase-2 record was taken on a busier machine, so the ratio columns are the fair comparison).
+- **Targets.** 1 of T1 to T6 met (T5). T1 to T4 and T6 are not met: the shortfalls and next steps are under `## Targets`.
+- **Also delivered.** The like-for-like bench (C zlib streaming rows, schema 2, environment capture, drift-corrected verdicts, `make bench-targets`), per-key profiling and checked flamegraphs, an assembly evidence tool, `Decompressor::reset` with a reset differential (D-35), the output-sink abstraction and a Vec sink with a slice-against-Vec differential (D-34), a reuse bench mode, and the checksum microbench.
+- **Not changed, on evidence.** Slicing-by-16 CRC-32 (+13% to +18% alone, at most 1.2% of a decode then), the Adler-32 batch, wrapper overhead, per-block table reuse, per-stream setup, the one-shot `Vec` switch, the size hint, the refill (already the word-read technique), multi-literal entries (-6% to -18%) and both table widths.
+
 ## Method
 
 Every number in this report comes from `oracle bench` (release build, `make bench` for the full tier, `make bench-quick` for the quick tier) and is written to a JSON file by the tool; nothing is hand-edited.
@@ -1280,11 +1290,150 @@ Targets (`make bench-targets J=docs/perf/phase3/P4-06.json`), reported, not gate
 ### P5-01
 After-profiles and flamegraphs on the final code: `docs/perf/flamegraphs/*-after.svg` (three required keys, checked), the After section of `docs/perf/phase3-profile.md` (nine keys, a before/after table for every hotspot named in the before report, and each pattern's final state). Headline: `fast_loop::run` is one function at 79% of samples, instructions per MiB of output fell from 60 M to 42.5 M at level 1 one-shot, and the fixed costs left are now proportionally larger (CRC-32 12.4% of gzip samples, table building 5.6% of Canterbury gzip).
 
+### P5-02
+Final full bench (`docs/perf/phase3/P5-02.json`), the report sections below (Summary, Final tables, Targets, Flamegraphs, Attribution, Tried and reverted, Conditions) and the `## Phase 3` section of `docs/PERF.md` with its result line.
+
+
+## Final tables
+
+Phase 2 (the operator's record, `docs/perf/baselines/phase2.json`), the phase-3 start (`phase3-start.json`) and the final run, all aggregates at one-shot and streaming. C zlib is timed in the same mode as cleanflate in the final run; the phase-2 ratio divides by C zlib one-shot for both modes (its streaming rows were not like for like).
+
+| key | phase 2 MiB/s | phase 3 start MiB/s | phase 3 final MiB/s | final vs phase 2 | C zlib MiB/s (same mode, final) | phase-2 ratio (one-shot C zlib) | final ratio (like for like) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| silesia/raw/l1/oneshot | 176.9 | 164.4 | 215.2 | +21.6% | 274.2 | 0.637 | 0.785 |
+| silesia/raw/l1/streaming | 192.7 | 181.2 | 240.3 | +24.7% | 321.3 | 0.693 | 0.748 |
+| silesia/raw/l6/oneshot | 199.5 | 195.6 | 249.2 | +24.9% | 296.5 | 0.661 | 0.841 |
+| silesia/raw/l6/streaming | 227.3 | 215.7 | 283.0 | +24.5% | 345.9 | 0.753 | 0.818 |
+| silesia/raw/l9/oneshot | 207.7 | 201.8 | 255.8 | +23.2% | 300.4 | 0.681 | 0.852 |
+| silesia/raw/l9/streaming | 231.6 | 222.0 | 287.2 | +24.0% | 344.3 | 0.759 | 0.834 |
+| silesia/zlib/l1/oneshot | 166.2 | 160.6 | 201.1 | +21.0% | 248.5 | 0.648 | 0.809 |
+| silesia/zlib/l1/streaming | 183.0 | 174.9 | 221.3 | +20.9% | 290.9 | 0.714 | 0.761 |
+| silesia/zlib/l6/oneshot | 192.6 | 181.2 | 233.9 | +21.5% | 272.9 | 0.696 | 0.857 |
+| silesia/zlib/l6/streaming | 214.0 | 200.7 | 262.7 | +22.7% | 312.9 | 0.773 | 0.839 |
+| silesia/zlib/l9/oneshot | 194.5 | 176.3 | 236.5 | +21.6% | 276.7 | 0.707 | 0.855 |
+| silesia/zlib/l9/streaming | 215.7 | 199.5 | 266.8 | +23.7% | 316.6 | 0.784 | 0.843 |
+| silesia/gzip/l1/oneshot | 166.6 | 150.1 | 198.1 | +18.9% | 255.1 | 0.631 | 0.777 |
+| silesia/gzip/l1/streaming | 176.4 | 162.3 | 210.5 | +19.3% | 296.6 | 0.668 | 0.710 |
+| silesia/gzip/l6/oneshot | 192.8 | 179.3 | 230.7 | +19.7% | 270.3 | 0.707 | 0.854 |
+| silesia/gzip/l6/streaming | 205.8 | 191.6 | 250.1 | +21.5% | 320.7 | 0.754 | 0.780 |
+| silesia/gzip/l9/oneshot | 194.1 | 184.4 | 236.6 | +21.9% | 266.9 | 0.701 | 0.887 |
+| silesia/gzip/l9/streaming | 209.9 | 197.7 | 251.1 | +19.6% | 324.9 | 0.758 | 0.773 |
+| canterbury/raw/l1/oneshot | 207.1 | 199.5 | 260.5 | +25.8% | 372.8 | 0.562 | 0.699 |
+| canterbury/raw/l1/streaming | 208.5 | 199.4 | 257.4 | +23.5% | 383.8 | 0.566 | 0.671 |
+| canterbury/raw/l6/oneshot | 246.3 | 230.0 | 309.8 | +25.8% | 394.9 | 0.653 | 0.785 |
+| canterbury/raw/l6/streaming | 243.0 | 230.3 | 299.4 | +23.2% | 402.0 | 0.644 | 0.745 |
+| canterbury/raw/l9/oneshot | 251.2 | 233.0 | 300.6 | +19.7% | 370.0 | 0.646 | 0.813 |
+| canterbury/raw/l9/streaming | 253.0 | 232.1 | 291.9 | +15.4% | 373.3 | 0.651 | 0.782 |
+| canterbury/zlib/l1/oneshot | 195.8 | 192.5 | 224.3 | +14.5% | 313.3 | 0.592 | 0.716 |
+| canterbury/zlib/l1/streaming | 196.2 | 190.2 | 217.0 | +10.6% | 316.3 | 0.594 | 0.686 |
+| canterbury/zlib/l6/oneshot | 231.0 | 215.0 | 283.9 | +22.9% | 351.8 | 0.675 | 0.807 |
+| canterbury/zlib/l6/streaming | 227.5 | 214.6 | 275.2 | +20.9% | 357.6 | 0.664 | 0.769 |
+| canterbury/zlib/l9/oneshot | 241.3 | 235.5 | 275.9 | +14.3% | 333.5 | 0.691 | 0.827 |
+| canterbury/zlib/l9/streaming | 239.3 | 234.0 | 268.3 | +12.1% | 344.7 | 0.685 | 0.778 |
+| canterbury/gzip/l1/oneshot | 190.6 | 180.0 | 230.3 | +20.8% | 344.7 | 0.550 | 0.668 |
+| canterbury/gzip/l1/streaming | 187.9 | 177.5 | 223.0 | +18.7% | 350.7 | 0.543 | 0.636 |
+| canterbury/gzip/l6/oneshot | 218.2 | 214.3 | 241.6 | +10.7% | 325.2 | 0.624 | 0.743 |
+| canterbury/gzip/l6/streaming | 216.7 | 210.8 | 232.6 | +7.3% | 336.0 | 0.620 | 0.692 |
+| canterbury/gzip/l9/oneshot | 228.5 | 221.1 | 269.9 | +18.1% | 358.5 | 0.632 | 0.753 |
+| canterbury/gzip/l9/streaming | 222.9 | 214.6 | 264.7 | +18.8% | 366.9 | 0.616 | 0.722 |
+
+Reuse mode (cleanflate only, one `Decompressor` with `reset()` between decodes), against fresh-object streaming:
+
+| key | reuse MiB/s | vs fresh streaming |
+|---|---:|---:|
+| silesia/raw/l1/reuse | 238.3 | 0.992 |
+| silesia/raw/l6/reuse | 281.2 | 0.994 |
+| silesia/raw/l9/reuse | 284.2 | 0.989 |
+| silesia/zlib/l1/reuse | 219.9 | 0.994 |
+| silesia/zlib/l6/reuse | 260.9 | 0.993 |
+| silesia/zlib/l9/reuse | 266.6 | 0.999 |
+| silesia/gzip/l1/reuse | 212.3 | 1.009 |
+| silesia/gzip/l6/reuse | 249.3 | 0.997 |
+| silesia/gzip/l9/reuse | 252.5 | 1.006 |
+| canterbury/raw/l1/reuse | 260.5 | 1.012 |
+| canterbury/raw/l6/reuse | 306.6 | 1.024 |
+| canterbury/raw/l9/reuse | 290.7 | 0.996 |
+| canterbury/zlib/l1/reuse | 226.7 | 1.045 |
+| canterbury/zlib/l6/reuse | 280.3 | 1.019 |
+| canterbury/zlib/l9/reuse | 282.2 | 1.052 |
+| canterbury/gzip/l1/reuse | 228.6 | 1.025 |
+| canterbury/gzip/l6/reuse | 238.7 | 1.026 |
+| canterbury/gzip/l9/reuse | 266.8 | 1.008 |
+
+Full per-aggregate output with the vs-phase-2 column: `make bench-md J=docs/perf/phase3/P5-02.json BASELINE=docs/perf/baselines/phase2.json`.
+
 ## Targets
-Filled by P5-02 (acceptance tasks).
+
+`make bench-targets J=docs/perf/phase3/P5-02.json` (noise `docs/perf/baselines/phase3-noise.json`), reported, not gating:
+
+- T1 (Silesia streaming >= 0.80x C zlib streaming): NOT MET; worst: silesia/gzip/l1/streaming ratio 0.710 (threshold >= 0.80)
+- T2 (cleanflate one-shot >= streaming, every row): NOT MET; worst: silesia/raw/l6 one-shot / streaming 0.881 (threshold >= 1.00)
+- T3 (Canterbury >= 0.70x C zlib, every mode): NOT MET; worst: canterbury/gzip/l1/streaming ratio 0.636 (threshold >= 0.70)
+- T4 (zlib and gzip within 3% of raw throughput): NOT MET; worst: canterbury/gzip/l6/streaming overhead 22.32% (threshold <= 3%)
+- T5 (Silesia level-6 one-shot >= 0.70x C zlib): MET; worst: silesia/raw/l6/oneshot ratio 0.841 (threshold >= 0.70)
+- T6 (no row slower than the phase-2 baseline beyond noise): NOT MET; worst: canterbury/gzip/l6/streaming +7.33% vs baseline
+
+**T1.** The Silesia streaming rows below 0.80 are the level-1 rows (raw 0.748, zlib 0.761, gzip 0.710) and the gzip rows at levels 6 and 9 (0.780, 0.773). The gzip shortfall is the checksum: `Crc32::update` is 12.4% of `silesia/rfc1952/l6/streaming` samples (`docs/perf/phase3-profile.md`, After), above its gate of 5.1%, so CRC-32 slicing-by-16 (+13% to +18% on the microbench) is the next step and is worth about 2% of a gzip decode by itself; the level-1 rows need about 7% more, which points at the per-symbol cost again (branch misses are 2.1% of branches after P4-03, instructions 42.5 M per MiB).
+
+Failing rows: silesia/raw/l1/streaming: ratio 0.748 < 0.80; silesia/zlib/l1/streaming: ratio 0.761 < 0.80; silesia/gzip/l1/streaming: ratio 0.710 < 0.80; silesia/gzip/l6/streaming: ratio 0.780 < 0.80; silesia/gzip/l9/streaming: ratio 0.773 < 0.80.
+
+**T2.** One-shot is 6% to 12% slower than streaming on every Silesia aggregate. The cause found in P1-02 is fresh-allocation zero-fill and first-touch page faults, and P2-07 showed a `Vec` sink cannot remove them (page faults identical). The next step is to let the caller supply the output buffer (an API addition) or to reuse one across calls; the reuse mode shows the decode itself is not slower (reuse equals fresh streaming within 1%).
+
+**T3.** Canterbury rows below 0.70 are the gzip and small-file rows (worst gzip level 1 streaming 0.636). Profile evidence (After, `canterbury/rfc1952/l1/oneshot`): `Crc32::update` 10.6%, `Huffman::from_lengths` 5.6% inclusive (above its gate of 4.8% now that the loop is faster), per-stream setup about 3%. Next steps in order: CRC-32 slicing-16, then reusing table storage per block (P3-01 re-gated).
+
+**T4.** zlib and gzip trail raw by up to 22% on the small Canterbury files and 10% to 12% on Silesia: the checksum is now a larger share of a faster decode (CRC-32 12.4% of gzip samples, Adler-32 plus wrapper 6.7% of zlib). Both are the same next steps as T1 and T3; Adler-32 is at its gate (6.7% against 7.0%) and worth re-gating first.
+
+**T5.** Met on every Silesia level-6 one-shot row (worst raw 0.841 against the 0.70 threshold).
+
+**T6.** Every aggregate is faster than the phase-2 record (worst +7.3%), so there is no aggregate LOSS, but five per-file rows are slower than the record beyond noise, all `canterbury/ptt5` at levels 6 and 9 in zlib and gzip framing (-2.5% to -11.6%; ptt5 is a fax bitmap dominated by long, overlapping matches). Not profiled in this phase; the first step is to profile that one file with the final loop and compare the short-distance match copy (`copy_match_sink` with small `dist`, the chunked `copy_within_back` path) against the phase-2 copy.
+
+Failing rows: REGRESSION canterbury/ptt5/gzip/l6/streaming: 288.3 -> 281.0 MiB/s (-2.5%, threshold -0.9%); REGRESSION canterbury/ptt5/gzip/l9/oneshot: 342.3 -> 302.7 MiB/s (-11.6%, threshold -2.2%); REGRESSION canterbury/ptt5/gzip/l9/streaming: 339.1 -> 303.6 MiB/s (-10.5%, threshold -1.3%); REGRESSION canterbury/ptt5/zlib/l9/oneshot: 358.4 -> 331.1 MiB/s (-7.6%, threshold -6.9%); REGRESSION canterbury/ptt5/zlib/l9/streaming: 371.5 -> 330.9 MiB/s (-10.9%, threshold -8.2%).
+
+## Flamegraphs
+
+| flamegraph | what it shows |
+|---|---|
+| `docs/perf/flamegraphs/silesia-rfc1951-l1-oneshot-before.svg` | before: the loop body, the separate `Huffman::decode_table` call and `Window::copy_match` side by side, each a wide frame |
+| `docs/perf/flamegraphs/silesia-rfc1951-l1-oneshot-after.svg` | after: one wide `fast_loop::run` frame; the lookup and the match copy are inside it |
+| `docs/perf/flamegraphs/silesia-rfc1951-l1-streaming-before.svg` | before: the same split, plus the streaming wrapper and output-window handling |
+| `docs/perf/flamegraphs/silesia-rfc1951-l1-streaming-after.svg` | after: one wide `fast_loop::run` frame under `decompress` |
+| `docs/perf/flamegraphs/canterbury-rfc1952-l1-oneshot-before.svg` | before: the loop split as above, with `Crc32::update` and table building visible |
+| `docs/perf/flamegraphs/canterbury-rfc1952-l1-oneshot-after.svg` | after: `fast_loop::run` plus `Crc32::update` and `Huffman::from_lengths` as the visible fixed costs |
 
 ## Attribution
-Filled by P5-02.
+
+Which task moved which rows (PT1 pairs and acceptance runs; the machine is a shared desktop, so each pair is confirmed by interleaved old/new binaries where the bench JSONs were load-polluted):
+
+| task | rows moved | by how much | evidence |
+|---|---|---|---|
+| P4-03 lookup in the loop on fixed-size table views | every Silesia and Canterbury aggregate at levels 1 and 6, all framings and both modes | +18% to +31%, throughput and ratio WIN everywhere; instructions -29%, cycles -21% on Silesia level 1 | `docs/perf/phase3/P4-03-before.json`, `P4-03.json`, `P4-03-asm.json`; D-36 |
+| P2-05 output-sink abstraction (slice sink) | none | neutral (interleaved A/B -0.6% to +5%, same hot frames) | `P2-05-before.json`, `P2-05.json`; D-34 |
+| P2-06 Vec sink and differential | none (public path unchanged) | - | sink differential in `make proptest-3k` and `make heavy` |
+| P3-03 `Decompressor::reset` | none by itself | - | reset differential; D-35 |
+| P3-04 reuse bench | measurement only | reuse / fresh streaming 0.99 to 1.04 | `P3-04.json` |
+| P2-01 checksum refactor | none | neutral (interleaved +3.7%) | `P2-01-*.json` |
+
+The other tasks added no throughput (see the next section). The moves between the milestone benches (M0 to M4, `P0-10.json` to `P4-06.json`) before P4-03 are machine drift, which is why the acceptance comparisons against `phase3-start.json` show WIN and LOSS lines with no decoder change; PT1's interleaved pairs are the attribution, not those.
 
 ## Tried and reverted
-Filled by P5-02.
+
+Every gated-out or reverted task, with its numbers in the `### <ID>` entry of the task log above. No regression fixture was needed: no wrong output, error or `consumed` appeared in any run (the fuzz milestones, `make heavy` and the differentials were green at every milestone).
+
+| task | outcome | reason |
+|---|---|---|
+| P2-02 Adler-32 batch | gated out | `adler_fold` 6.34% and 4.83% against a 7.02% gate |
+| P2-03 CRC-32 slicing-by-16 | measured, reverted (PT4) | microbench +13% to +18%, but at most 1.2% of a gzip decode and no clean WIN; its share has since grown to 12.4% |
+| P2-04 wrapper overhead | gated out | wrapper excess over the checksum 0.05% and below 0.5% |
+| P2-07 one-shot appends to a `Vec` | measured, reverted (PT4) | page faults identical, `extend_from_within` cost offset the saved zero-fill, A/B -2.3% to +3.0% |
+| P2-08 size-hint revisit | gated out | no growth or realloc frames; over-allocation bound about 0.7% |
+| P3-01 per-block table reuse | gated out | `from_lengths` 2.9% and 3.2% against gates near 4.8% (now 5.6%, see T3) |
+| P3-02 per-stream setup | gated out | about 3.0% upper bound against 4.84%; reuse mode confirms about 1% |
+| P4-02 branch-light refill | measured, reverted (PT4) | `refill_bulk` already is the word-read technique (D-27); a respelled variant compiled to the same branch counts and benchmarked neutral |
+| P4-04 multi-literal entries | measured, reverted (PT4) | correct but -5.6% to -18% (LOSS on throughput and ratio) |
+| P4-05 table widths | measured, no change | 11 and 12 bits lost, 9 and 7 bits within drift, `DIST` 9 slightly worse at level 1 |
+
+Re-gating on the final profile (`docs/perf/phase3-profile.md`, After): CRC-32 (12.4%, gate 5.1%) and per-block table building (5.6%, gate 4.8%) are now above their gates, and Adler-32 (6.7%, gate 7.0%) is at it, so P2-03, P3-01 and P2-02 are the first things to revisit.
+
+## Conditions of the final run
+
+`docs/perf/phase3/P5-02.json`: full bench, 7 samples per measurement, git `9f8979e461` (the tree held only the result file, hence `dirty`), AMD Ryzen 5 3400G with Radeon Vega Graphics, 8 logical cores, governor `schedutil`, Pop!_OS 24.04 LTS, kernel 7.1.5-76070105-generic, `rustc 1.89.0 (29483883e 2025-08-04)`, C zlib 1.3.2 (flags `0xa9`), load average 1.81 2.36 2.73 1/3841 1302277 at the start and 1.72 1.85 2.33 2/3820 1313851 at the end (quiet: the phase-3 start baselines ran at 2 to 5). The noise estimate used for verdicts is `docs/perf/baselines/phase3-noise.json` (aggregate maximum 8.2%, above the 3% the plan asked for; a manual check).

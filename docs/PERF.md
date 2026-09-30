@@ -948,3 +948,13 @@ Canterbury, where the two are within 1 point. These are the open items phase
 **Reading the table:** the bench's "min" column is the throughput of the
 fastest sample (the minimum time), which is why it is higher than the median.
 The ratio column always uses medians.
+
+## Phase 3
+
+Phase 3 measured first and optimised second: the bench now compares like with like (C zlib is timed one-shot and streaming with the same 64 KiB windows, schema 2, environment captured, drift-corrected verdicts), profiles are per key with checked flamegraphs, and every change went through a measure, gate, keep-or-revert protocol. One change moved throughput (the fast loop's table lookups done in the loop, DESIGN D-36, +18% to +31%); the other candidates were gated out, neutral, already in place or slower, each with its numbers.
+
+- Report, tables, targets, attribution and everything reverted: `docs/perf/PHASE3.md`.
+- Profiles before and after, patterns confirmed or discarded, hotspot gates: `docs/perf/phase3-profile.md`.
+- Baselines, noise files and the method: `docs/perf/README.md`, `docs/perf/baselines/`.
+
+**Result:** phase 3: cleanflate / C zlib like for like (Silesia, level 6) = one-shot 84.1% raw, 85.7% zlib, 85.4% gzip; streaming 81.8% raw, 83.9% zlib, 78.0% gzip; targets met: T5 of T1-T6.
