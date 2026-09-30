@@ -34,7 +34,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P4-03 Re-sweep tunables on the final code
 - [x] P4-04 M4 acceptance and push
 - [x] P5-01 Phase-scoped provenance summary and build report
-- [~] P5-02 Final PERF.md phase-2 report and DESIGN audit
+- [x] P5-02 Final PERF.md phase-2 report and DESIGN audit
 - [ ] P5-03 Provenance, build report and hand-off push
 
 ## Log
@@ -137,3 +137,6 @@ Manual check: NOT VERIFIED (human): (1) GitHub Actions ci green. (2) Review the 
 
 ### P5-01 — 2c8359d
 summarize.py --since-commit REV (commit_time, filter_since, Range header, ValueError on unknown rev), build_report.py --since REV (git log REV..HEAD, Range header, read_perf_result_line returns the LAST **Result:** paragraph), Makefile PHASE_BASE ?= 599ca51 wired into provenance-summary/build-report. 4 new tests (test_since_commit_filters_entries, unknown-rev, test_since_limits_commits, test_reads_last_result_line). make tools-check passes. Note: PERF.md currently has no phase-2 **Result:** paragraph, so build-report would still show the phase-1 one until P5-02 writes it. Interpretation: entries without parseable ts are dropped when filtering.
+
+### P5-02 — d7abee1
+docs/perf/P5-02.json committed; PERF.md '### Final (P5-02)' with targets table, per-milestone gains (baseline/M1..M4/final), H1-H6 final verdicts, negative results (P1-03, P1-04, P2-03, P3-02 reverted, P4-02, P4-03) with fixture/test names, level 1/9 summary, conditions, shortfall + next steps with profile evidence. Result line: phase 2: cleanflate / C zlib (Silesia, level 6, one-shot) = 66.9% raw, 68.8% zlib, 68.8% gzip (target 70%: NOT MET); streaming 64 KiB = 74.9% raw (target 60%: MET). vs baseline: 0 REGRESSION, 0 LOSS, 36 WIN. DESIGN audit: D-27..D-32 all [perf] entries pass design-check and cite existing JSONs; no edit needed. Manual check: NOT VERIFIED (human): repeat the final bench on a quiet machine with pinned governor.
