@@ -542,3 +542,94 @@ pub fn zlib_version() -> String {
     let cstr = unsafe { std::ffi::CStr::from_ptr(ptr) };
     cstr.to_string_lossy().into_owned()
 }
+
+/// The build-time option flags of the linked C zlib (`zlibCompileFlags`).
+pub fn zlib_compile_flags() -> u64 {
+    // SAFETY: zlibCompileFlags() takes no arguments and returns a plain
+    // integer describing how the library was built.
+    (unsafe { sys::zlibCompileFlags() }) as u64
+}
+
+const Z_STREAM_ERROR: c_int = -2;
+
+/// Decompress `input` into the caller's `out` buffer with C zlib's streaming
+/// path, offering at most `in_chunk` input bytes and `out_chunk` output bytes
+/// per `inflate` call. Returns the number of bytes produced at stream end.
+/// Performs no heap allocation inside the loop. Gzip stops at the end of the
+/// first member. A zero chunk size is an error (`OtherError(Z_STREAM_ERROR)`).
+pub fn inflate_streaming_into(
+    input: &[u8],
+    framing: Framing,
+    in_chunk: usize,
+    out: &mut [u8],
+    out_chunk: usize,
+) -> Result<usize, OracleStatus> {
+    if in_chunk == 0 || out_chunk == 0 {
+        return Err(OracleStatus::OtherError(Z_STREAM_ERROR));
+    }
+    let mut strm = new_stream();
+    let window_bits = inflate_window_bits(framing);
+
+    // SAFETY: strm fully initialized above; version/size match this build.
+    let rc = unsafe { sys::inflateInit2_(&mut strm, window_bits, version_ptr(), stream_size()) };
+    if rc != Z_OK {
+        return Err(OracleStatus::OtherError(rc));
+    }
+
+    let result = run_streaming(&mut strm, input, in_chunk, out, out_chunk);
+
+    // SAFETY: strm.state is valid (inflateInit2_ succeeded above).
+    unsafe { sys::inflateEnd(&mut strm) };
+
+    result
+}
+
+fn run_streaming(
+    strm: &mut sys::z_stream,
+    input: &[u8],
+    in_chunk: usize,
+    out: &mut [u8],
+    out_chunk: usize,
+) -> Result<usize, OracleStatus> {
+    let mut in_pos = 0usize;
+    let mut out_pos = 0usize;
+    loop {
+        let in_take = std::cmp::min(in_chunk, input.len() - in_pos);
+        let out_take = std::cmp::min(out_chunk, out.len() - out_pos);
+        let in_window = input.get(in_pos..in_pos + in_take).unwrap_or(&[]);
+        let out_window = out.get_mut(out_pos..out_pos + out_take).unwrap_or(&mut []);
+
+        strm.next_in = in_window.as_ptr() as *mut u8;
+        strm.avail_in = in_take as libz_sys::uInt;
+        strm.next_out = out_window.as_mut_ptr();
+        strm.avail_out = out_take as libz_sys::uInt;
+
+        // SAFETY: strm is valid; next_in/avail_in and next_out/avail_out
+        // describe live slices of exactly the offered lengths.
+        let rc = unsafe { sys::inflate(strm, Z_NO_FLUSH) };
+
+        let used = in_take - strm.avail_in as usize;
+        let produced = out_take - strm.avail_out as usize;
+        in_pos += used;
+        out_pos += produced;
+
+        match rc {
+            _ if rc == Z_STREAM_END => return Ok(out_pos),
+            _ if rc == Z_DATA_ERROR => return Err(OracleStatus::DataError),
+            _ if rc == Z_NEED_DICT => return Err(OracleStatus::NeedDict),
+            _ if rc == Z_OK || rc == Z_BUF_ERROR => {
+                if used == 0 && produced == 0 {
+                    if out_pos == out.len() {
+                        return Err(OracleStatus::OutputLimit);
+                    }
+                    if in_pos == input.len() {
+                        return Err(OracleStatus::Truncated);
+                    }
+                    // Both windows had room and zlib made no progress.
+                    return Err(OracleStatus::OtherError(rc));
+                }
+            }
+            other => return Err(OracleStatus::OtherError(other)),
+        }
+    }
+}
