@@ -36,7 +36,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P4-04 Multi-literal table entries (optional, measured)
 - [x] P4-05 Re-tune table widths on the final loop
 - [x] P4-06 M4 acceptance and push
-- [ ] P5-01 After-profiles and flamegraphs
+- [x] P5-01 After-profiles and flamegraphs
 - [ ] P5-02 Final bench, PHASE3.md report and PERF.md phase-3 section
 - [ ] P5-03 Provenance, build report and hand-off push
 
@@ -147,3 +147,6 @@ Measured no change: LITLEN_TABLE_BITS stays 10 (11: -6%, 12: -4%, 9: within drif
 
 ### P4-06 — f5f4c85
 make ci, heavy, fuzz-milestone pass: diff_oracle_roundtrip seconds=1802 execs=1504454; diff_fast_reference seconds=1802 execs=395074; no artifacts. P4-06.json + P4-06-asm.json committed, pushed. Level-1 vs M3: 12/12 WIN (throughput and ratio): M4 criterion MET. Compare vs phase3-start: 36 WIN 0 LOSS 5 REGRESSION lines. Manual check: NOT VERIFIED (human): ci green; review fast loop by hand + mutation-sample; review D-36 wording.
+
+### P5-01 — b850150
+After flamegraphs (3, checked) + After section of phase3-profile.md (9 keys, hotspot before/after table, pattern final states). Findings for P5-02: fast_loop::run 79% one function; instructions/MiB 60M->42.5M (l1 oneshot); fixed costs now larger shares: Crc32::update 12.4% (gate 5.1%), adler_fold 6.7% (gate 7.0%), from_lengths 5.64% Canterbury (gate 4.84%) -> next-step candidates: CRC-32 slicing-16 (~2% of gzip), table build.
