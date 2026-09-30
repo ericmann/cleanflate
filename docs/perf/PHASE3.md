@@ -909,6 +909,13 @@ Named frames: `Huffman::from_lengths` (with `build_table` and the allocator fram
 
 Counters: 38 dynamic blocks, 0 fixed blocks, 114 table builds (3 per block) and `fixed_table_clones` 0 over the 11 Canterbury files, in every framing and mode. There are no fixed blocks to stop cloning for, and rebuilding the dynamic tables in place would save only the allocation part of `from_lengths`: the computation of the table entries (56,058 entries for 2.8 MB of output) remains, and that computation is most of the 2.9% to 3.2%. Both keys are under the gate, so the task records a negative result and leaves `Huffman::from_lengths` and the block-table storage unchanged.
 
+### P3-02
+**Negative result (gated out, PT2). No code change.**
+
+Named frames on `canterbury/rfc1952/l1/oneshot` (fresh `make profile`, 300 passes over 11 files, inclusive shares from `top-children.txt`): `Inflater::new_with_path` 1.06% + 0.65% = 1.71% (two call sites; includes the two fixed-table builds and the window), `resize<u8>` 0.72%, `Window::new` (the `new` frame) 0.53%; no `GzipDecoder::new` or header-parser frame reaches the profile's display floor. Together, at most about 3.0%, and the three overlap (the window and fixed tables sit inside `new_with_path`), so the true total is lower. `perf stat` for the key: 47.18 G instructions, 696 page faults for 3,300 stream constructions, about 14.3 M instructions per file, of which the setup frames are roughly 0.4 M.
+
+Gate: max(2%, 2 x the quick noise of `canterbury/gzip/l1/oneshot`) = 4.84%. The named frames are below it, so the task records a negative result: no `Inflater::reset`, no lazy window and no skipped table fill were tried. The 696 page faults (none per file) show that allocation of these structures is already not faulting fresh pages on every stream. `Decompressor::reset` (P3-03) is still built for its API value and for the reuse bench mode (P3-04), which measures the reuse case directly.
+
 ## Targets
 Filled by P5-02 (acceptance tasks).
 
