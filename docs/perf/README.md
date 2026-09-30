@@ -28,3 +28,12 @@ Method: each file is compressed once with the oracle (Default strategy, windowBi
 - `make bench-compare A=before.json B=after.json [NOISE=file]` prints per-aggregate deltas with the verdict `WIN` (better than +2x noise), `LOSS` (worse than -2x noise) or `NEUTRAL`, `UNKNOWN` when no noise file exists, and lists per-file `REGRESSION` lines (a drop beyond the larger of the file's noise and its aggregate's noise). It refuses a JSON whose `stats_build` is true. `oracle bench-compare ... --fail-on-regression` exits 1 on any regression.
 - `make bench-md J=results.json` prints the aggregates as markdown for PERF.md (`oracle bench-md J --files --filter PREFIX` for per-file rows).
 - `make bench-stats BENCH_ID=id` runs `oracle bench --stats` (needs oracle feature `stats`): untimed decodes that print derived statistics per framing and mode, and write the raw counters to a `stats` array in the JSON (per file, plus `*total*` rows). Stats builds are never timed or compared.
+
+## Profiling (cleanflate only)
+
+Profiles must never include C zlib (SPEC 2.2). The flow is split so the profiled process cannot execute it:
+
+1. `make profile-prep` runs `oracle perf-prep`, which uses C zlib to compress a corpus into `testdata/perf-inputs/<corpus>/<rfc195x>-l<level>/` with an `index.tsv` (`file`, `compressed_len`, `original_len`, `original_crc32`). This step is never profiled and is skipped when the directory is already complete.
+2. `make profile` builds `crates/cleanflate/examples/profile_decode.rs` (cleanflate and std only, debug info on), runs it under `perf record` and writes `target/profile/top.txt` (top symbols). `make flamegraph` writes `target/profile/flamegraph.svg` the same way.
+
+Variables: `PROFILE_CORPUS` (silesia), `PROFILE_FRAMING` (rfc1951), `PROFILE_LEVEL` (6), `PROFILE_ITERS` (3), `PROFILE_MODE` (oneshot), `PROFILE_PERF_FLAGS`. The first iteration verifies length and CRC-32 against the index. Outputs stay under `target/profile/` (gitignored); findings go into `docs/PERF.md` in words and numbers. Never run a profiler on `oracle bench` or any test binary; the guard denies it.

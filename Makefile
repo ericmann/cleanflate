@@ -1,6 +1,6 @@
 .PHONY: regress-seed fmt-check lint test corpus corpus-full crate-checks cleanroom-selftest \
         tools-check design-check ci proptest-10k proptest-3k fastslow-full bomb heavy \
-        fuzz-check fuzz-smoke fuzz-long fuzz-divergences bench bench-quick bench-compare bench-noise bench-md bench-stats \
+        fuzz-check fuzz-smoke fuzz-long fuzz-divergences bench bench-quick bench-compare bench-noise bench-md bench-stats profile-prep profile flamegraph \
         provenance-snapshot provenance-summary build-report hooks-install \
         sources-check conformance-full malformed
 
@@ -165,3 +165,27 @@ bench-stats:
 	mkdir -p $(dir $(BENCH_OUT))
 	cargo run --release -q -p oracle --features stats -- bench --stats --iters 0 --kind custom --corpus silesia \
 		--framings raw,zlib,gzip --levels 6 --modes oneshot,streaming --task $(BENCH_ID) --json $(BENCH_OUT)
+
+PROFILE_CORPUS ?= silesia
+PROFILE_FRAMING ?= rfc1951
+PROFILE_LEVEL ?= 6
+PROFILE_ITERS ?= 3
+PROFILE_MODE ?= oneshot
+PROFILE_PERF_FLAGS ?= --call-graph dwarf -F 499
+PROFILE_DIR := testdata/perf-inputs/$(PROFILE_CORPUS)/$(PROFILE_FRAMING)-l$(PROFILE_LEVEL)
+PROFILE_ARGS = --dir $(PROFILE_DIR) --format $(PROFILE_FRAMING) --iters $(PROFILE_ITERS) --mode $(PROFILE_MODE)
+
+profile-prep:
+	cargo run --release -q -p oracle -- perf-prep --corpus $(PROFILE_CORPUS) --framing $(PROFILE_FRAMING) --level $(PROFILE_LEVEL) --out testdata/perf-inputs
+
+profile: profile-prep
+	CARGO_PROFILE_RELEASE_DEBUG=true cargo build --release -p cleanflate --example profile_decode
+	mkdir -p target/profile
+	perf record $(PROFILE_PERF_FLAGS) -o target/profile/perf.data target/release/examples/profile_decode $(PROFILE_ARGS)
+	perf report -i target/profile/perf.data --stdio --no-children -g none --sort symbol --percent-limit 0.5 > target/profile/top.txt
+	head -n 60 target/profile/top.txt
+
+flamegraph: profile-prep
+	mkdir -p target/profile
+	CARGO_PROFILE_RELEASE_DEBUG=true cargo flamegraph -p cleanflate --example profile_decode -o target/profile/flamegraph.svg -- $(PROFILE_ARGS)
+	@if [ -f perf.data ]; then mv -f perf.data target/profile/flamegraph-perf.data; fi

@@ -11,5 +11,6 @@ pub mod inputs;
 pub mod malformed;
 pub mod manifest;
 pub mod matrix;
+pub mod perf_prep;
 pub mod prng;
 pub mod regress;

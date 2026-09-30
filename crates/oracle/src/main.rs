@@ -44,6 +44,7 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some("perf-prep") => report(run_perf_prep(&args[2..]), "perf-prep"),
         Some("bench-md") => report(run_bench_md(&args[2..]), "bench-md"),
         Some("regress-add") => match oracle::regress::run_add(&args[2..]) {
             Ok(()) => ExitCode::SUCCESS,
@@ -320,5 +321,12 @@ fn run_bench_md(args: &[String]) -> Result<(), String> {
         "{}",
         bench_compare::render_md(&json, files, filter.as_deref())
     );
+    Ok(())
+}
+
+fn run_perf_prep(args: &[String]) -> Result<(), String> {
+    let parsed = oracle::perf_prep::parse_args(args)?;
+    let dir = oracle::perf_prep::run(&parsed, &generate::default_corpora_root())?;
+    println!("oracle perf-prep: {}", dir.display());
     Ok(())
 }
