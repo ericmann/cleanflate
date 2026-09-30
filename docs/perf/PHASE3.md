@@ -756,6 +756,18 @@ Reading: production CRC-32 (8 slices) runs at about 1.8 GiB/s, sliced-16 about 2
 
 PT1 on the production refactor (key `silesia/rfc1952/l6/streaming`, hotspot `Crc32::update`): self-time share 9.56% before (P1-02) to 9.19% after (`make profile`). `bench-quick` before/after (`docs/perf/phase3/P2-01-before.json`, `P2-01.json`) shows every key, raw included, 4% to 10% slower: the machine load average was 1.35 at the start of the before run and 4.70 at the start of the after run (a shared desktop), so the JSON comparison cannot judge the change, and its LOSS lines on gzip keys are matched by equal LOSS lines on raw keys that the change cannot touch. The controlled check is an interleaved A/B of the old and new `profile_decode` binaries on `silesia/rfc1952/l6/streaming` (4 alternating pairs, MiB/s): before 148.4, 146.2, 154.2, 135.2; after 150.0, 152.8, 156.6, 146.2. After is at least as fast in all four pairs (mean 151.4 against 146.0, +3.7%), so the refactor is neutral, not a LOSS.
 
+### P2-02
+**Negative result (gated out, PT2). No code change.**
+
+Frames: `Adler32::update` (inlined as `adler_fold` inside `ZlibDecoder::step`). Fresh profiles, `make profile`:
+
+| key | frame | share (inclusive, `top-children.txt`) | `ZlibDecoder::step` self |
+|---|---|---:|---:|
+| `silesia/rfc1950/l6/streaming` | `adler_fold` | 6.34% | 4.37% (5.1% summed over address ranges in P1-02) |
+| `canterbury/rfc1950/l1/oneshot` | `adler_fold` | 4.83% | 4.35% |
+
+Gate: max(2%, 2 x the quick noise of `silesia/zlib/l6/streaming`) = max(2%, 2 x 3.51%) = 7.02%. Both keys are below it (6.34% and 4.83%), so the task records a negative result and changes nothing. The margin on Silesia is small, and the microbench suggests where it comes from: production Adler-32 runs at about 3.0 GiB/s (P2-01), which at about 200 MiB/s of decode is roughly 6.5% of time. Even a batched loop that doubled Adler-32 speed would return about 3% of zlib decode time, below the 7% this machine's noise lets a bench prove, so a WIN verdict could not be shown. The zlib to raw gap (T4) is therefore left to the decode loop work (P4-02 to P4-04), which speeds every framing.
+
 ## Targets
 Filled by P5-02 (acceptance tasks).
 
