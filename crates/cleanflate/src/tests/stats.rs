@@ -168,6 +168,8 @@ fn stats_accumulate_across_gzip_members() {
 
 #[test]
 fn stats_decompress_with_counts_resizes() {
+    // Two stored blocks: the output (100000 bytes) is smaller than four
+    // times the input, so the ratio hint sizes the buffer in one step.
     let zeros = vec![0u8; 50_000];
     let mut input = stored_block(false, &zeros);
     input.extend_from_slice(&stored_block(true, &zeros));
@@ -175,6 +177,23 @@ fn stats_decompress_with_counts_resizes() {
         decompress_with_stats(Format::Raw, &input, &Options::default()).expect("decodes");
     assert_eq!(decoded.data.len(), 100_000);
     assert_eq!(s.output_bytes, 100_000);
+    assert_eq!(s.oneshot_resizes, 1);
+    assert_eq!(s.oneshot_bytes_allocated, 4 * input.len() as u64);
+
+    // A highly compressible stream: 77401 bytes from a few hundred input
+    // bytes, far above the hint, so the buffer grows geometrically from the
+    // growth floor: 32768, 65536, 131072.
+    let mut w = BitWriter::new();
+    emit_block_header(&mut w, true, 0b01);
+    emit_literal(&mut w, b'a' as u16);
+    for _ in 0..300 {
+        emit_match(&mut w, 258, 1);
+    }
+    emit_end_of_block(&mut w);
+    let input = w.finish();
+    let (decoded, s) =
+        decompress_with_stats(Format::Raw, &input, &Options::default()).expect("decodes");
+    assert_eq!(decoded.data.len(), 1 + 300 * 258);
     assert_eq!(s.oneshot_resizes, 3);
     assert_eq!(s.oneshot_bytes_allocated, 131_072);
 }

@@ -53,3 +53,20 @@ pub(crate) const FAST_LOOP_MIN_INPUT: usize = 16;
 /// so this must be at least that: an iteration never has to stop halfway
 /// through a match for lack of room. Initial value; re-swept in P4-03.
 pub(crate) const FAST_LOOP_MIN_OUTPUT: usize = 258;
+
+/// Smallest growth step of the one-shot decompressor's output buffer, in
+/// bytes: each growth adds `max(len, ONESHOT_GROWTH_FLOOR)` (SPEC S6 M3).
+/// Moved here from a literal in `stream.rs`; re-swept in P4-03.
+pub(crate) const ONESHOT_GROWTH_FLOOR: usize = 32_768;
+
+/// Size hint for the first output allocation of a one-shot decode of raw or
+/// zlib data: this many output bytes per input byte (SPEC S6 M3). Only a
+/// hint: growth continues from it and the output never depends on it.
+/// Initial value; re-swept in P4-03.
+pub(crate) const ONESHOT_INITIAL_RATIO: usize = 4;
+
+/// Largest first allocation, in bytes, a size hint may cause (SPEC S6 M3),
+/// so a hostile hint (a gzip ISIZE of 4 GiB, say) cannot force a large
+/// up-front allocation: memory stays proportional to the output actually
+/// produced beyond this fixed cap. Initial value; re-swept in P4-03.
+pub(crate) const ONESHOT_MAX_PREALLOC: usize = 64 << 20;

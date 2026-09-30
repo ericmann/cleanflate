@@ -897,3 +897,42 @@ Provenance: general technique; not derived from any specific implementation.
 Measurement: docs/perf/P3-01.json against docs/perf/P3-01-before.json:
 Silesia level 6 one-shot raw 133.4 -> 160.6 MiB/s, zlib 122.1 -> 151.1, gzip
 87.9 -> 108.2; streaming raw 134.3 -> 160.4.
+
+### D-31: [perf] One-shot output sizing from hints
+
+RFC: RFC 1952 S2.3.1
+Decision: `decompress_with` sizes its first output allocation from hints
+and grows geometrically from there only when the decoder says it has run
+out of room. The first allocation is `max(growth floor, hint)`. The hint
+is, for gzip input of at least 18 bytes, the last four bytes read as a
+little-endian ISIZE (RFC 1952 S2.3.1: the uncompressed length of the last
+member modulo 2^32); for anything else, `ONESHOT_INITIAL_RATIO` output
+bytes per input byte. The hint is capped by `Options::max_output` and by
+`ONESHOT_MAX_PREALLOC`, and the growth step keeps its floor,
+`ONESHOT_GROWTH_FLOOR` (a literal moved into `config.rs`). Growth happens
+on `OutputFull` and nowhere else; if the buffer is already at
+`max_output`, the call fails with `OutputLimitExceeded`, the backstop of
+D-25 restated in terms of the buffer.
+Why a hostile ISIZE cannot force a large allocation: the hint is only an
+upper bound on the first allocation, never a length the output is trusted
+to have. A crafted ISIZE of 4 GiB is capped at `ONESHOT_MAX_PREALLOC`
+(and at `max_output` when that is smaller), so memory stays proportional
+to the output actually produced beyond a fixed cap. A hint that is too
+small (a multi-member stream whose last member is short, trailing data)
+only costs an ordinary growth step; one that is too large costs at most the
+capped allocation. The decoded output never depends on the hint, the
+output limit is enforced exactly as before, and the bomb test is unchanged.
+Growing only on `OutputFull` also removes an extra zero-filled buffer the
+old loop allocated when a gzip stream stopped, exactly full, at its member
+boundary.
+Rationale: The loop used to start from nothing and double, so a 200 MiB
+output took about 120 growth steps, each zero-filling new space, and a
+gzip decode allocated about twice its output because the last loop
+iteration grew the buffer before finding nothing left to do. A hint that
+is usually right removes both. Memory safety is kept by capping the hint,
+not by trusting it.
+Provenance: general technique; not derived from any specific implementation.
+Measurement: docs/perf/P3-03.json against docs/perf/P3-03-before.json:
+`make bench-stats` one-shot growth steps on Silesia 122 -> 15 (raw and
+zlib) and 134 -> 12 (gzip), gzip bytes allocated 513.9 MB -> 211.9 MB
+(equal to the output); Silesia level 6 gzip one-shot 108.1 -> 117.9 MiB/s.

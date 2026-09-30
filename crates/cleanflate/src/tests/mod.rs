@@ -27,6 +27,7 @@ mod inflate_dynamic;
 mod inflate_fixed;
 mod inflate_stored;
 mod invariants;
+mod oneshot_sizing;
 #[cfg(feature = "stats")]
 mod stats;
 mod stream_contract;

@@ -681,3 +681,27 @@ Overlapping matches by pattern doubling (copy the growing repeated pattern in do
 | silesia/gzip/l6/streaming | 121.4 | 123.8 | NEUTRAL (+2.0%) | 117.3 | LOSS (-3.3%) |
 
 Run 1 gave 6 WIN and 6 NEUTRAL aggregates, run 2 gave 1 WIN, 1 LOSS and 10 NEUTRAL, and the per-file REGRESSION lines fell on different files each time. The effect is inside the run-to-run variation, as the M0 profile predicted: only 0.48% of matches have a distance smaller than their length (H4, DISCARDED). Under PT4 a change that is not a WIN and not the prerequisite of a later task is reverted: **the code was reverted; the tests (`tests/history.rs::pattern_doubling_matches_model_exhaustive`, `pattern_doubling_straddling_window`) were kept and pass against the slice-chunk copy of P3-01, so the overlap semantics remain covered.** No DESIGN entry was written because no technique was kept. The per-file table, the doubling derivation (a copy from `k` back with `k` a multiple of the distance keeps the period) and both JSONs are the record.
+
+### P3-03
+
+One-shot output sizing from hints (D-31). `make bench-quick` before (`docs/perf/P3-03-before.json`) and after (`docs/perf/P3-03.json`, and a repeat `docs/perf/P3-03-rerun.json`), plus `make bench-stats` before and after:
+
+| counter, Silesia level 6, one-shot | before | after |
+|---|---:|---:|
+| `oneshot_resizes`, raw and zlib | 122 | 15 |
+| `oneshot_resizes`, gzip | 134 | 12 |
+| `oneshot_bytes_allocated`, raw | 301,989,888 | 304,788,200 |
+| `oneshot_bytes_allocated`, gzip | 513,928,468 | 211,938,580 (the output size exactly) |
+
+Timing, Silesia level 6 one-shot medians (MiB/s), with the untouched streaming path as a drift control:
+
+| key | before | run 1 | run 2 |
+|---|---:|---:|---:|
+| gzip one-shot | 108.1 | 117.9 (WIN, +9.1%) | 109.4 (NEUTRAL) |
+| gzip streaming (unchanged code) | 120.5 | 118.9 | 109.5 |
+| gzip one-shot / streaming | 0.897 | 0.991 | 0.999 |
+| raw one-shot | 162.8 | 165.8 (NEUTRAL) | 152.0 (NEUTRAL) |
+| raw streaming (unchanged code) | 159.5 | 164.9 | 151.8 |
+| raw one-shot / streaming | 1.021 | 1.005 | 1.001 |
+
+The machine drifts by up to 10% between runs (the untouched streaming keys show the same swings, including two LOSS verdicts on Canterbury zlib and gzip streaming in the repeat), so absolute deltas are not reliable here; the one-shot to streaming ratio removes the drift. It shows the expected effect: gzip one-shot, which allocated twice its output and zero-filled the extra buffer, gains about 10% relative to streaming, and raw and zlib one-shot are unchanged (the decode dominates; the growth steps were cheap next to it). Result: **kept**, a WIN for gzip one-shot (H6) and neutral elsewhere, with the allocation counters as the direct evidence. The bomb test passes unchanged.
