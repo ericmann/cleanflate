@@ -591,7 +591,45 @@ REGRESSION silesia/xml/raw/l6/streaming: 525.1 -> 453.7 MiB/s (-13.6%, threshold
 REGRESSION silesia/xml/zlib/l9/oneshot: 458.4 -> 370.7 MiB/s (-19.1%, threshold -10.4%)
 REGRESSION silesia/xml/zlib/l9/streaming: 469.2 -> 392.4 MiB/s (-16.4%, threshold -12.1%)
 
-### Targets at start (`make bench-targets J=docs/perf/baselines/phase3-start.json NOISE=baselines/phase3-noise.json`)
+#
+
+### P0-10 (M0 acceptance)
+
+Gates run in this order: `make ci` (pass), `make heavy` (pass: proptest-10k, bomb, conformance-full, fastslow-full), `make fuzz-milestone` (pass), then the full bench `docs/perf/phase3/P0-10.json`.
+
+M0 checklist:
+
+- [x] Phase-3 start baseline and noise are committed: `docs/perf/baselines/phase3-start.json`, `phase3-start-rerun.json`, `phase3-noise.json`, `phase3-start-quick.json`, `phase3-start-quick-rerun.json`, `phase3-noise-quick.json`.
+- [x] Every streaming row has a C zlib streaming counterpart: `docs/perf/phase3/P0-10.json` has 207 cleanflate streaming rows and 207 C zlib streaming rows.
+- [x] `make bench-compare` shows deltas against the phase-2 baseline (header and first rows, full table by `make bench-compare A=docs/perf/baselines/phase2.json B=docs/perf/phase3/P0-10.json`):
+
+```
+| key | A MiB/s | B MiB/s | delta % | 2x noise % | verdict | vs phase-2 % | B ratio | ratio delta % | ratio verdict |
+|---|---:|---:|---:|---:|---|---:|---:|---:|---|
+| canterbury/gzip/l1/oneshot | 190.6 | 184.8 | -3.03 | 0.07 | LOSS | -3.03 | 0.519 | -5.64 | NEUTRAL |
+| canterbury/gzip/l1/streaming | 187.9 | 182.9 | -2.68 | 1.14 | LOSS | -2.68 | 0.507 | n/a (denominator changed) | n/a |
+| canterbury/gzip/l6/oneshot | 218.2 | 213.6 | -2.12 | 2.94 | NEUTRAL | -2.12 | 0.582 | -6.74 | NEUTRAL |
+```
+
+- [x] Fuzz milestone runs (`make fuzz-milestone`, 1800 s target each, run concurrently):
+
+```
+fuzz-milestone: diff_oracle_roundtrip seconds=1826 execs=1205957 exit=0 artifacts=0
+fuzz-milestone: diff_fast_reference seconds=1826 execs=894969 exit=0 artifacts=0
+```
+
+No code changed between `phase3-start` and this run (Phase 0 changed tooling only), so any WIN or LOSS between them is measurement drift. `make bench-compare A=baselines/phase3-start.json B=phase3/P0-10.json` reports 14 WIN or LOSS aggregate lines; two runs from the noise pair under-estimate run-to-run drift on this shared machine (see the noise warning above).
+
+Targets at M0 (`make bench-targets J=docs/perf/phase3/P0-10.json`), all reported, none gating:
+
+- T1 (Silesia streaming >= 0.80x C zlib streaming): NOT MET; worst: silesia/raw/l1/streaming ratio 0.546 (threshold >= 0.80)
+- T2 (cleanflate one-shot >= streaming, every row): NOT MET; worst: silesia/raw/l6 one-shot / streaming 0.879 (threshold >= 1.00)
+- T3 (Canterbury >= 0.70x C zlib, every mode): NOT MET; worst: canterbury/raw/l1/streaming ratio 0.499 (threshold >= 0.70)
+- T4 (zlib and gzip within 3% of raw throughput): NOT MET; worst: canterbury/gzip/l9/streaming overhead 17.40% (threshold <= 3%)
+- T5 (Silesia level-6 one-shot >= 0.70x C zlib): NOT MET; worst: silesia/raw/l6/oneshot ratio 0.639 (threshold >= 0.70)
+- T6 (no row slower than the phase-2 baseline beyond noise): NOT MET; worst: canterbury/zlib/l1/oneshot -8.58% vs baseline
+
+## Targets at start (`make bench-targets J=docs/perf/baselines/phase3-start.json NOISE=baselines/phase3-noise.json`)
 
 - T1 (Silesia streaming >= 0.80x C zlib streaming): NOT MET; worst: silesia/gzip/l1/streaming ratio 0.543 (threshold >= 0.80)
 - T2 (cleanflate one-shot >= streaming, every row): NOT MET; worst: silesia/zlib/l9 one-shot / streaming 0.884 (threshold >= 1.00)
