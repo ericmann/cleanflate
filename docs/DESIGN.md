@@ -757,3 +757,51 @@ Provenance: general technique; not derived from any specific implementation.
 Measurement: docs/perf/P1-01.json against docs/perf/P1-01-before.json:
 Silesia level 6 one-shot raw 51.1 -> 79.3 MiB/s (WIN), zlib 49.7 -> 75.5,
 gzip 45.3 -> 57.8; streaming raw 50.6 -> 78.2.
+
+### D-28: [perf] Two-level lookup tables for every symbol
+
+RFC: RFC 1951 S3.2.2, S3.1.1, S3.2.7
+Decision: The Fast path decodes every literal/length, distance and
+code-length symbol through lookup tables; the bit-serial walk (`decode`)
+stays as the Reference path and as the specification the tables are
+checked against. A table has a first level of `1 << table_bits` entries
+indexed by the next `table_bits` stream bits (codes are stored reversed
+because the stream is read LSB-first), and, for every first-level prefix
+that some longer code shares, a second-level table appended in the same
+`Vec`, indexed by the following `max_len - table_bits` bits, where
+`max_len` is the longest code under that prefix. Short codes fill every
+index that agrees with them on their own bits; a second-level table is
+filled the same redundant way. Entries are packed into one `u32`: an
+`Invalid` marker, a `Symbol` (symbol and full code length), or a `Sub`
+(offset and width). The code-length alphabet gets a single 7-bit level:
+RFC 1951 S3.2.7 sends its lengths as 3-bit fields, so its codes are at
+most 7 bits. The widths of the other first levels stay in `config.rs`.
+Lookup, with `a` buffered bits and unavailable bits reading as zero:
+index the first level; follow a `Sub` into its table with the next bits;
+a `Symbol` of length at most `a` is the answer; a `Symbol` longer than
+`a` means `NeedMoreBits`; an `Invalid` entry with `a >= 1` is `Invalid`
+(the uniform rule of D-26). This supersedes D-16's gate that used the
+table only when at least `table_bits` bits were buffered.
+Why the lookup equals `decode` for every buffer state: a prefix code is
+prefix-free, so the real bits, if they contain a whole code, contain
+exactly one. If a code of length `len <= a` matches the real bits, the
+zero padding cannot change which entry the lookup reaches, so it returns
+that code. If no code of length at most `a` matches, then any entry the
+padded index reaches is longer than `a` (a shorter match would have been
+found), so the lookup says `NeedMoreBits`, as the serial walk does when it
+runs out of bits. The `Invalid` cases exist only in the two incomplete
+distance tables of S3.2.7, where an index bit already proves no code
+matches. `tests/huffman_twolevel.rs` checks the equality for fixed,
+exception and random complete tables (with 15-bit codes) at every buffer
+size and for widths 7 to 12.
+Rationale: After bulk refill (D-27) the buffer usually holds enough bits,
+but a code longer than the first level and a nearly empty buffer both
+still sent the decoder down the serial walk, one bit per step. Making
+the lookup total removes that walk from the Fast path and gives the
+later fast loop a single lookup per symbol. The extra memory is bounded:
+at most `1 << (15 - table_bits)` entries per first-level prefix.
+Provenance: general technique; not derived from any specific implementation.
+Measurement: docs/perf/P1-02.json against docs/perf/P1-02-before.json:
+NEUTRAL on Silesia (level 6 one-shot raw 78.9 -> 81.9 MiB/s, +3.8%, inside
+twice the noise), WINs on several Canterbury aggregates; kept as the
+prerequisite of the fast loop.

@@ -18,6 +18,7 @@ mod gzip;
 mod gzip_header;
 mod huffman;
 mod huffman_table;
+mod huffman_twolevel;
 mod huffman_validation;
 mod inflate_dynamic;
 mod inflate_fixed;

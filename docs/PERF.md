@@ -516,3 +516,21 @@ Bulk bit refill with an exact give-back invariant (D-27). `make bench-quick`, be
 | canterbury/gzip/l6/oneshot | 65.2 | 77.5 | +18.9 | 6.0 | WIN |
 
 All twelve aggregates are WIN and there is no per-file REGRESSION. The machine was in a slow phase for this pair (the "before" raw figure is well below the M0 baseline), so the absolute numbers are not comparable with `baseline.json`; the before/after pair was taken back to back. The effect is far larger than the noise, which is what the table-lookup hypothesis (H1) predicted: the table now serves nearly every symbol.
+
+### P1-02
+
+Two-level lookup tables for every symbol (D-28). `make bench-quick` before (`docs/perf/P1-02-before.json`) and after (`docs/perf/P1-02.json`), back to back, compared with `docs/perf/noise-quick.json`:
+
+| key | before MiB/s | after MiB/s | delta % | 2x noise % | verdict |
+|---|---:|---:|---:|---:|---|
+| silesia/raw/l6/oneshot | 78.9 | 81.9 | +3.8 | 7.2 | NEUTRAL |
+| silesia/raw/l6/streaming | 80.7 | 83.0 | +2.9 | 8.7 | NEUTRAL |
+| silesia/zlib/l6/oneshot | 81.4 | 78.3 | -3.8 | 13.0 | NEUTRAL |
+| silesia/zlib/l6/streaming | 81.1 | 80.1 | -1.2 | 7.1 | NEUTRAL |
+| silesia/gzip/l6/oneshot | 63.5 | 61.2 | -3.6 | 1.4 | LOSS |
+| silesia/gzip/l6/streaming | 67.9 | 68.3 | +0.6 | 2.2 | NEUTRAL |
+| canterbury/raw/l6/oneshot | 99.2 | 108.3 | +9.2 | 5.2 | WIN |
+| canterbury/gzip/l6/oneshot | 75.1 | 84.6 | +12.5 | 6.0 | WIN |
+| canterbury/gzip/l6/streaming | 74.9 | 87.9 | +17.3 | 4.9 | WIN |
+
+A second after-run (not committed) gave silesia gzip one-shot +0.3% (NEUTRAL) and silesia zlib one-shot -7.6% (NEUTRAL); the single LOSS above is inside the run-to-run drift seen in P0-13 and did not repeat, and no per-file verdict was treated as reliable. Result: **NEUTRAL on Silesia, kept under PT4 as the named prerequisite of the fast loop (P2-01)**, which needs one total lookup per symbol. `make bench-stats` after this change: litlen and dist table-decode 100.0% (was 54.0% and 51.7% at baseline), bytes per refill 6.21 (was 1.08). Most of the gain from removing the serial walk came from P1-01's bulk refill, which is why this task adds little on top.

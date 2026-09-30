@@ -21,9 +21,10 @@ pub const DEFAULT_MAX_GZIP_FIELD: usize = 65_536;
 /// around after this many.
 pub const DEFAULT_MAX_GZIP_HEADERS: usize = 1_024;
 
-/// Bits of lookahead the literal/length table-driven decode path
-/// indexes on (SPEC S5 M2: "a table-driven fast decode path"). Codes
-/// longer than this fall back to the bit-serial walk. P4-09 swept
+/// Bits of lookahead of the first level of the literal/length lookup
+/// table (SPEC S5 M2: "a table-driven fast decode path"). Codes longer
+/// than this are resolved through a second-level table, never through a
+/// bit-serial walk (D-28). P4-09 swept
 /// `{9,10,11}` against every `DIST_TABLE_BITS` in `{7,8,9}` (Canterbury,
 /// then a head-to-head of the leading candidates on Silesia at more
 /// iterations for a cleaner read); this value's throughput was tied

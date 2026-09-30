@@ -17,7 +17,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P0-12 Hypotheses H1–H6 and baseline profile
 - [x] P0-13 M0 acceptance and push
 - [x] P1-01 Bulk bit refill with an exact give-back invariant
-- [ ] P1-02 Two-level lookup tables for every symbol
+- [~] P1-02 Two-level lookup tables for every symbol
 - [ ] P1-03 Per-block table reuse (gated)
 - [ ] P1-04 Length/distance payload in table entries (gated)
 - [ ] P1-05 M1 acceptance and push

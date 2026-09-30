@@ -143,9 +143,12 @@ fn stats_symbol_decode_methods_sum() {
     let (_, s) = run(Format::Raw, &w.finish(), 1);
     assert_eq!(s.litlen_table_decodes + s.litlen_serial_decodes, 2);
     assert_eq!(s.codelen_table_decodes + s.codelen_serial_decodes, 258);
-    // One-byte input starves the table, so the serial walk must be used.
+    assert_eq!(s.codelen_serial_decodes, 0);
+    // Every Fast-path symbol resolves through a lookup table, even when
+    // one-byte input leaves few bits buffered (two-level tables, D-28).
     let (_, one) = run(Format::Raw, &fixed_stream(), 1);
-    assert!(one.litlen_serial_decodes > 0);
+    assert_eq!(one.litlen_serial_decodes + one.dist_serial_decodes, 0);
+    assert!(one.litlen_table_decodes > 0);
 }
 
 #[test]
