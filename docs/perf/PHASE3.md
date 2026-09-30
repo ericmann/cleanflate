@@ -593,6 +593,50 @@ REGRESSION silesia/xml/zlib/l9/streaming: 469.2 -> 392.4 MiB/s (-16.4%, threshol
 
 #
 
+### Targets at start (`make bench-targets J=docs/perf/baselines/phase3-start.json NOISE=baselines/phase3-noise.json`)
+
+- T1 (Silesia streaming >= 0.80x C zlib streaming): NOT MET; worst: silesia/gzip/l1/streaming ratio 0.543 (threshold >= 0.80)
+- T2 (cleanflate one-shot >= streaming, every row): NOT MET; worst: silesia/zlib/l9 one-shot / streaming 0.884 (threshold >= 1.00)
+- T3 (Canterbury >= 0.70x C zlib, every mode): NOT MET; worst: canterbury/raw/l1/streaming ratio 0.496 (threshold >= 0.70)
+- T4 (zlib and gzip within 3% of raw throughput): NOT MET; worst: silesia/zlib/l9/oneshot overhead 12.63% (threshold <= 3%)
+- T5 (Silesia level-6 one-shot >= 0.70x C zlib): NOT MET; worst: silesia/raw/l6/oneshot ratio 0.649 (threshold >= 0.70)
+- T6 (no row slower than the phase-2 baseline beyond noise): NOT MET; worst: silesia/gzip/l1/oneshot -9.89% vs baseline
+
+The full list of failing rows is reproduced by the command above.
+
+## Profile
+See `docs/perf/phase3-profile.md`: before-profiles for the three required keys and six more, the four SPEC section 1 patterns with verdicts (1, 2 and 3 ADJUSTED, 4 CONFIRMED), and the hotspot and likely gate outcome of every later optimisation task. Before-flamegraphs: `docs/perf/flamegraphs/*-before.svg`.
+
+## Task log
+Every task appends `### <ID>`.
+
+### P0-01
+Fuzz gate targets (`fuzz-smoke-decoder`, `fuzz-milestone`), `bench-quick` levels 1 and 6, phase-2 baseline copy, report skeleton.
+
+### P0-02
+`design-check` requires a `Profile:` line in `[perf]` DESIGN entries from D-34.
+
+### P0-03
+Oracle FFI: `zlib_compile_flags`, bounded `inflate_streaming_into`.
+
+### P0-04
+Bench schema 2: `best` replaces `min`; every column documented in `docs/perf/README.md`.
+
+### P0-05
+C zlib streaming rows (64 KiB chunks); aggregate ratios divide by the same-mode C zlib figure.
+
+### P0-06
+Environment capture in every JSON and at the top of stdout.
+
+### P0-07
+Comparison columns: vs phase-2, like-for-like ratio, ratio delta and verdict; per-file rows with sizes.
+
+### P0-08
+`oracle bench-targets`: T1 to T6 verdicts from one bench JSON.
+
+### P0-09
+Phase-3 starting baseline measured twice (full and quick) plus noise files; sections above filled. Noise exceeds 3% (8.22% full, 8.82% quick): manual check. Reruns show no WIN, LOSS or REGRESSION against each other.
+
 ### P0-10 (M0 acceptance)
 
 Gates run in this order: `make ci` (pass), `make heavy` (pass: proptest-10k, bomb, conformance-full, fastslow-full), `make fuzz-milestone` (pass), then the full bench `docs/perf/phase3/P0-10.json`.
@@ -629,49 +673,11 @@ Targets at M0 (`make bench-targets J=docs/perf/phase3/P0-10.json`), all reported
 - T5 (Silesia level-6 one-shot >= 0.70x C zlib): NOT MET; worst: silesia/raw/l6/oneshot ratio 0.639 (threshold >= 0.70)
 - T6 (no row slower than the phase-2 baseline beyond noise): NOT MET; worst: canterbury/zlib/l1/oneshot -8.58% vs baseline
 
-## Targets at start (`make bench-targets J=docs/perf/baselines/phase3-start.json NOISE=baselines/phase3-noise.json`)
+### P1-01
+Per-key profiling (`PROFILE_KEY`), `profile-stat`, checked `flamegraph-save`, `profile-required`. Flamegraphs use `--no-inline` so frames carry crate paths.
 
-- T1 (Silesia streaming >= 0.80x C zlib streaming): NOT MET; worst: silesia/gzip/l1/streaming ratio 0.543 (threshold >= 0.80)
-- T2 (cleanflate one-shot >= streaming, every row): NOT MET; worst: silesia/zlib/l9 one-shot / streaming 0.884 (threshold >= 1.00)
-- T3 (Canterbury >= 0.70x C zlib, every mode): NOT MET; worst: canterbury/raw/l1/streaming ratio 0.496 (threshold >= 0.70)
-- T4 (zlib and gzip within 3% of raw throughput): NOT MET; worst: silesia/zlib/l9/oneshot overhead 12.63% (threshold <= 3%)
-- T5 (Silesia level-6 one-shot >= 0.70x C zlib): NOT MET; worst: silesia/raw/l6/oneshot ratio 0.649 (threshold >= 0.70)
-- T6 (no row slower than the phase-2 baseline beyond noise): NOT MET; worst: silesia/gzip/l1/oneshot -9.89% vs baseline
-
-The full list of failing rows is reproduced by the command above.
-
-## Profile
-Filled by P1-02 (pointer to `docs/perf/phase3-profile.md`).
-
-## Task log
-Every task appends `### <ID>`.
-
-### P0-01
-Fuzz gate targets (`fuzz-smoke-decoder`, `fuzz-milestone`), `bench-quick` levels 1 and 6, phase-2 baseline copy, report skeleton.
-
-### P0-02
-`design-check` requires a `Profile:` line in `[perf]` DESIGN entries from D-34.
-
-### P0-03
-Oracle FFI: `zlib_compile_flags`, bounded `inflate_streaming_into`.
-
-### P0-04
-Bench schema 2: `best` replaces `min`; every column documented in `docs/perf/README.md`.
-
-### P0-05
-C zlib streaming rows (64 KiB chunks); aggregate ratios divide by the same-mode C zlib figure.
-
-### P0-06
-Environment capture in every JSON and at the top of stdout.
-
-### P0-07
-Comparison columns: vs phase-2, like-for-like ratio, ratio delta and verdict; per-file rows with sizes.
-
-### P0-08
-`oracle bench-targets`: T1 to T6 verdicts from one bench JSON.
-
-### P0-09
-Phase-3 starting baseline measured twice (full and quick) plus noise files; sections above filled. Noise exceeds 3% (8.22% full, 8.82% quick): manual check. Reruns show no WIN, LOSS or REGRESSION against each other.
+### P1-02
+Before-profiles and flamegraphs; `docs/perf/phase3-profile.md`. Headline: `fast_loop::run` plus the out-of-line `Huffman::decode_table` are 70% of self time at level 1; level 1 is symbol-count heavy, not literal-heavy (literals 46.6% of symbols against 60.8% at level 6); one-shot's gap is fresh-page zero-fill and faults, not growth; CRC-32 is 9.6% of gzip, Adler-32 plus wrapper 5.1% of zlib.
 
 ## Targets
 Filled by P5-02 (acceptance tasks).
