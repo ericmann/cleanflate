@@ -855,6 +855,48 @@ Current one-shot path: the slice driver (P2-07's switch was reverted). Fresh `ma
 
 There is no growth cost to revisit: about one allocation per file means the ratio estimate is close enough that growth steps are rare, and no reallocation or copy frame reaches the profile's display floor. What is visible is the zero-fill `resize<u8>` of the output buffer, and that is mostly the first allocation (14 resizes for 12 files), which no hint can avoid (P2-07 showed that removing the zero-fill does not change throughput or page faults either). Re-choosing `ONESHOT_INITIAL_RATIO` could only trim the over-allocation: the buffer is 1.49x the output on Silesia, so at most a third of the 2.26% zero-fill (about 0.7%) and a third of 0.57% on Canterbury are attributable to the excess. That is below the gate, max(2%, 2 x the quick noise of the key) = 2% for `silesia/raw/l1/oneshot` (noise 0.91%) and 4.84% for `canterbury/gzip/l1/oneshot` (noise 2.42%), and far below what this machine can measure. No candidate ratio was run; `ONESHOT_INITIAL_RATIO`, `ONESHOT_GROWTH_FLOOR` and D-31/D-33 stay as they are.
 
+### P2-09 (M2 acceptance)
+
+Gates run in order: `make ci` (pass), `make heavy` (pass), `make fuzz-milestone` (pass), then the full bench `docs/perf/phase3/P2-09.json`.
+
+M2 checklist:
+
+- [x] T2 and T4 reported (targets below; at the start: T2 worst `silesia/zlib/l9` one-shot / streaming 0.884, T4 worst `silesia/zlib/l9/oneshot` overhead 12.63%; now T2 worst `silesia/raw/l9` 0.902 and T4 worst `canterbury/gzip/l9/streaming` 11.51%: both still NOT MET, and unchanged within noise because no M2 technique was adopted).
+- [x] Checksum microbench numbers committed: `docs/perf/phase3/P2-01-checksum.json`, `P2-01-checksum-rerun.json`, `P2-03-checksum.json` (CRC-32 production ~1.8 GiB/s, sliced-16 ~2.1 GiB/s, Adler-32 production ~3.0 GiB/s).
+- [x] Checksum techniques: P2-02 (Adler-32 batch) gated out (6.34% and 4.83% against a 7.02% gate); P2-03 (CRC-32 slicing-by-16) measured and reverted by PT4 (+13% to +18% on the microbench but at most 1.2% of a whole decode); P2-04 (wrapper overhead) gated out (under 0.1% beyond the checksum).
+- [x] Sink differential: `sinks_conformance_oneshot`, `sinks_malformed`, `sinks_proptest` (slice and Vec sinks, Fast and Reference) pass in `make heavy` (full-tier conformance, 7 tests in the fastslow binary) and in `make proptest-3k`; fuzz `diff_fast_reference` also compares the Vec sink.
+- [x] `make bomb` passes (3 tests, including the streaming default limit and the small one-shot limit).
+- [x] Memory bounds unchanged: `decompressor_size_not_grown` (`size_of::<Decompressor>()` no more than 1024 bytes above the recorded baseline) passes; the public one-shot path still uses the slice driver (P2-07 reverted), so `oneshot_bytes_allocated` is identical to P1-02 (Silesia level 1: 316,146,272 for 211,938,580 bytes of output, 14 resizes).
+- [x] `docs/perf/phase3/P2-09.json` is committed.
+
+M2 outcome in one line: the sink abstraction (P2-05) and the Vec sink with its differential (P2-06) are in; the one-shot Vec switch (P2-07) and CRC slicing-by-16 (P2-03) were measured and reverted; Adler, wrapper and size-hint tasks were gated out. No throughput change is claimed for M2.
+
+Fuzz milestone:
+
+```
+fuzz-milestone: diff_oracle_roundtrip seconds=1802 execs=1282261 exit=0 artifacts=0
+fuzz-milestone: diff_fast_reference seconds=1802 execs=391032 exit=0 artifacts=0
+```
+
+`make bench-compare A=baselines/phase3-start.json B=phase3/P2-09.json` (noise `phase3-noise.json`): 22 WIN, 0 LOSS, 29 per-file REGRESSION lines. Against the phase-2 record (first rows; the full table is `make bench-compare A=docs/perf/baselines/phase2.json B=docs/perf/phase3/P2-09.json`):
+
+```
+| key | A MiB/s | B MiB/s | delta % | 2x noise % | verdict | vs phase-2 % | B ratio | ratio delta % | ratio verdict |
+|---|---:|---:|---:|---:|---|---:|---:|---:|---|
+| canterbury/gzip/l1/oneshot | 190.6 | 189.9 | -0.35 | 0.07 | LOSS | -0.35 | 0.535 | -2.75 | NEUTRAL |
+| canterbury/gzip/l1/streaming | 187.9 | 187.8 | -0.05 | 1.14 | NEUTRAL | -0.05 | 0.511 | n/a (denominator changed) | n/a |
+| canterbury/gzip/l6/oneshot | 218.2 | 217.6 | -0.25 | 2.94 | NEUTRAL | -0.25 | 0.599 | -4.10 | NEUTRAL |
+```
+
+Targets (`make bench-targets J=docs/perf/phase3/P2-09.json`), reported, not gates:
+
+- T1 (Silesia streaming >= 0.80x C zlib streaming): NOT MET; worst: silesia/gzip/l1/streaming ratio 0.560 (threshold >= 0.80)
+- T2 (cleanflate one-shot >= streaming, every row): NOT MET; worst: silesia/raw/l9 one-shot / streaming 0.902 (threshold >= 1.00)
+- T3 (Canterbury >= 0.70x C zlib, every mode): NOT MET; worst: canterbury/gzip/l1/streaming ratio 0.511 (threshold >= 0.70)
+- T4 (zlib and gzip within 3% of raw throughput): NOT MET; worst: canterbury/gzip/l9/streaming overhead 11.51% (threshold <= 3%)
+- T5 (Silesia level-6 one-shot >= 0.70x C zlib): NOT MET; worst: silesia/raw/l6/oneshot ratio 0.663 (threshold >= 0.70)
+- T6 (no row slower than the phase-2 baseline beyond noise): NOT MET; worst: canterbury/zlib/l9/streaming -5.15% vs baseline
+
 ## Targets
 Filled by P5-02 (acceptance tasks).
 
