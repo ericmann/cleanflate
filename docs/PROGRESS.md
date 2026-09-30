@@ -11,7 +11,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P0-06 Environment capture in every bench run
 - [x] P0-07 Reports: delta vs the phase-2 baseline, drift-corrected verdicts, per-file sizes
 - [x] P0-08 `oracle bench-targets`: T1–T6 verdicts from a bench JSON
-- [ ] P0-09 Phase-3 starting baseline and noise
+- [x] P0-09 Phase-3 starting baseline and noise
 - [ ] P0-10 M0 acceptance and push
 - [ ] P1-01 Profile any key: per-key outputs, perf stat and saved flamegraphs
 - [ ] P1-02 Before-profiles, flamegraphs and phase3-profile.md
@@ -71,3 +71,6 @@ bench_compare: compare_with_baseline, render_md_with_baseline (old fns kept as w
 
 ### P0-08 — dabe22e
 bench_targets.rs (evaluate/render), `oracle bench-targets J [--baseline] [--noise]`, `make bench-targets`. Interpretations: reuse rows = mode not oneshot/streaming (ignored); no evaluable rows -> n/a; noise default from J's kind. Phase-2 baseline currently: T1 n/a (schema-1 streaming), T4 fails, T5 fails (silesia raw l6 0.661, zlib 0.696). clippy neg_cmp_op fixed with is_nan checks.
+
+### P0-09 — 66b9d12
+Baselines committed under docs/perf/baselines (phase3-start[-rerun], quick pair, two noise files). All schema 2, stats_build false, streaming c_zlib_mode streaming. Noise: aggregate_max_pct 8.22% full / 8.82% quick (>3%, manual check); ratio noise max 12.63% / 7.08%. Reruns show no WIN/LOSS/REGRESSION. Targets at start: all T1-T6 NOT MET (T1 worst silesia/gzip/l1/streaming 0.543; T5 worst silesia/raw/l6/oneshot 0.649). This machine ~5-10% below phase-2 record. PHASE3.md Method/Machine/Baselines filled, task log started. Manual check: NOT VERIFIED (human): noise >3%.
