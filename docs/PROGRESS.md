@@ -16,7 +16,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P1-01 Profile any key: per-key outputs, perf stat and saved flamegraphs
 - [x] P1-02 Before-profiles, flamegraphs and phase3-profile.md
 - [x] P1-03 M1 acceptance and push
-- [ ] P2-01 Checksum microbenchmark (cleanflate only)
+- [x] P2-01 Checksum microbenchmark (cleanflate only)
 - [ ] P2-02 Adler-32 over a bound-derived unrolled batch (gated)
 - [ ] P2-03 CRC-32 slicing-by-16 against 8 (gated)
 - [ ] P2-04 Wrapper per-call overhead in streaming (gated)
@@ -87,3 +87,6 @@ phase3-profile.md + 3 before SVGs + P1-02-stats.json committed. Verdicts: P1 ADJ
 
 ### P1-03 — 6aa0edf
 make ci/heavy/fuzz-milestone pass. fuzz: diff_oracle_roundtrip seconds=1801 execs=1383630 exit=0 artifacts=0; diff_fast_reference seconds=1801 execs=525087 exit=0 artifacts=0. P1-03.json committed, provenance snapshot, pushed. IMPORTANT: compare vs phase3-start with NO code change shows 9 WIN, 11 LOSS, 65 per-file REGRESSION lines: the two-run noise pair underestimates cross-session drift on this machine. Later tasks should take before and after back to back (same session) and read ratio verdicts. Manual check: NOT VERIFIED (human): ci green; open before SVGs and sanity check phase3-profile.md tables; SVGs only cleanflate/std/libc frames.
+
+### P2-01 — 6da7532
+checksum_bench example + test_hooks::checksum variants; generic crc32_update_sliced::<N> (N<4 or >16 -> bytewise), shared 16-row CRC32_TABLES (CRC32_MAX_SLICES in checksum.rs, not config: derived capacity). Microbench (MiB/s): crc32 bytewise ~435, sliced4 ~1200, sliced8 ~1830, sliced16 ~2140 (+17%), production ~1830; adler32 bytewise ~345, production ~3050. Run-to-run mean diff 2.9%, max 7.6%. PT1: Crc32::update 9.56% -> 9.19%; interleaved A/B neutral/positive (+3.7%); bench-quick JSON pair load-polluted (load 1.35 vs 4.70): whole machine is a shared desktop, so use interleaved A/B with old/new profile_decode binaries as the controlled check for code changes (binaries at scratchpad pd_before/pd_after method: git stash, build, cp). Verify passed incl. proptest-3k and fuzz-smoke-decoder.
