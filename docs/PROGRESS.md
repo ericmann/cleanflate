@@ -27,7 +27,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P2-04 M2 acceptance and push
 - [x] P3-01 Output as match history; window carried only across calls
 - [x] P3-02 Overlapping matches by pattern doubling
-- [~] P3-03 One-shot output sizing from hints
+- [x] P3-03 One-shot output sizing from hints
 - [ ] P3-04 M3 acceptance and push
 - [ ] P4-01 CRC-32 several bytes at a time
 - [ ] P4-02 Adler-32 revisit (gated)
@@ -114,3 +114,6 @@ Window now append/read_back/history_available/copy_match(path, output, cur, dist
 
 ### P3-02 — 41de696
 NEGATIVE RESULT, code reverted per PT4. Doubling implemented in Window::copy_match_slices (dist==1 fill; k doubling from dist) and validated by 2 new tests (pattern_doubling_matches_model_exhaustive, pattern_doubling_straddling_window, both kept, pass on the P3-01 chunk copy). Two bench-quick runs vs before: run1 6 WIN/6 NEUTRAL, run2 1 WIN/1 LOSS/10 NEUTRAL (silesia raw oneshot 158.3->171.2->162.6) => not reliable, H4 predicted <1% (overlap 0.48% of matches). JSONs committed: P3-02-before/P3-02/P3-02-rerun. No DESIGN entry (no technique kept). PERF.md '### P3-02 (negative result, code reverted)'.
+
+### P3-03 — 68c8f86
+config: ONESHOT_GROWTH_FLOOR=32768, ONESHOT_INITIAL_RATIO=4, ONESHOT_MAX_PREALLOC=64<<20. stream.rs: initial_len(format,input,max_output) (gzip ISIZE else ratio, capped), decompress_core rewritten: first allocation max(next_len(0), hint), growth only on OutputFull, limit backstop = cannot grow (D-25 restated). D-31 [perf]. 6 tests in tests/oneshot_sizing.rs (gzip literal CRCs f3ddb8f7 / d09108fc), stats test updated. bench-stats: growth steps 122->15 raw/zlib, 134->12 gzip; gzip bytes allocated 513.9MB->211.9MB (=output). Timing: drift up to 10% (untouched streaming keys swing too); one-shot/streaming ratio for silesia gzip 0.897 -> 0.991/0.999 (WIN run1 +9.1%); raw/zlib neutral. Kept. make test, proptest-3k, bomb pass. Interpretation: growth only on OutputFull.
