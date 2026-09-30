@@ -819,6 +819,30 @@ bench-quick (`docs/perf/phase3/P2-05-before.json`, `P2-05.json`; load average at
 
 No key is slower on average and every key is at least as fast in most pairs, so the refactor is NEUTRAL (the small positive means are within run-to-run spread) and stays as the prerequisite of P2-06. `make fastslow-full` and `make bomb` pass; `size_of::<Decompressor>()` is unchanged (`decompressor_size_not_grown` passes).
 
+### P2-07
+**Measured and reverted (PT4): the public one-shot path stays on the slice driver.** P2-05 (sink abstraction), P2-06 (`VecSink`, `decompress_core_vec`, the sink differential) and the new `oneshot_sizing` tests stay; only the `stream.rs` switch of the public entry points to the Vec driver was undone. SPEC's negative result applies: on this machine a sink design that appends to a `Vec` cannot beat the current path.
+
+Hotspot and evidence. Pattern 1's candidate cost is the zero-fill (`resize<u8>`/`extend_with<u8>`, 2.06% inclusive in `silesia/rfc1951/l1/oneshot`, P1-02) plus first-touch page faults. `perf stat` (`make profile-stat`), before and after the switch:
+
+| key | page faults before | after | task-clock before | after |
+|---|---:|---:|---:|---:|
+| `silesia/rfc1951/l1/oneshot` | 110,179 | 110,179 | 3,701 ms | 3,679 ms |
+| `silesia/rfc1951/l6/oneshot` | 110,749 | 110,748 | 3,249 ms | 3,230 ms |
+
+The fault count does not move at all: appending to fresh capacity touches exactly the pages that zero-filling touched, so the kernel's first-touch cost (the part of pattern 1 that user-space samples cannot see) is not something a sink can remove, only a reused buffer can (M3). Memory is unchanged by design: `oneshot_resizes` and `oneshot_bytes_allocated` (`make bench-stats STATS_CORPUS=silesia,canterbury STATS_LEVELS=1,6`) are identical before and after: Silesia level 1, 14 resizes and 316,146,272 bytes; level 6, 15 and 304,788,200; Canterbury level 1, 13 and 4,753,344; level 6, 14 and 4,492,008. After the switch the profile shows `extend_from_within` at 13.37% inclusive (`spec_extend_from_within` 9.91%) in the same key: the safe-Rust match copy into a `Vec` is slightly costlier than `copy_within` on a slice, which offsets the removed zero-fill.
+
+PT1 (`docs/perf/phase3/P2-07-before.json`, `P2-07.json`, bench-quick): the JSON pair is load-polluted again (Canterbury raw and gzip one-shot keys show -6% to -12% together), so the controlled check is interleaved runs of the old and new `profile_decode` binaries (MiB/s, means over 6 alternating pairs):
+
+| key | before | after | change | after faster in |
+|---|---:|---:|---:|---:|
+| silesia/rfc1951 l1 oneshot | 164.2 | 160.4 | -2.3% | 2 of 6 |
+| silesia/rfc1951 l6 oneshot | 181.5 | 187.7 | +3.4% | 5 of 6 |
+| silesia/rfc1952 l6 oneshot | 175.2 | 175.1 | -0.0% | 4 of 6 |
+| canterbury/rfc1951 l1 oneshot | 200.6 | 203.8 | +1.6% | 3 of 6 |
+| canterbury/rfc1952 l1 oneshot | 182.9 | 180.1 | -1.6% | 3 of 6 |
+
+The one-shot keys the switch was meant to help are within run-to-run spread (-2.3% to +3.0% on Silesia, both signs on Canterbury), with Silesia level 1 slightly negative and level 6 slightly positive; none is a WIN, and the quick-bench verdicts on the one-shot keys are LOSS or NEUTRAL except `silesia/zlib/l6/oneshot`. PT4 therefore reverts the switch. The zero-fill is not where the one-shot gap to streaming (T2) lives on this machine; that gap is the fresh-allocation faults, which M3's buffer reuse can address.
+
 ## Targets
 Filled by P5-02 (acceptance tasks).
 

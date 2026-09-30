@@ -484,7 +484,7 @@ pub(crate) struct Core {
 }
 
 /// The one implementation behind every one-shot entry point.
-fn decompress_core(
+pub(crate) fn decompress_core(
     format: Format,
     input: &[u8],
     options: &Options,
