@@ -31,7 +31,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P3-04 M3 acceptance and push
 - [x] P4-01 CRC-32 several bytes at a time
 - [x] P4-02 Adler-32 revisit (gated)
-- [~] P4-03 Re-sweep tunables on the final code
+- [x] P4-03 Re-sweep tunables on the final code
 - [ ] P4-04 M4 acceptance and push
 - [ ] P5-01 Phase-scoped provenance summary and build report
 - [ ] P5-02 Final PERF.md phase-2 report and DESIGN audit
@@ -127,3 +127,6 @@ CRC32_SLICES=8 (config). checksum.rs: CRC32_TABLES static built by const fn (zer
 
 ### P4-02 — aba4f85
 GATED OUT (negative result), no code change. rfc1950 profile: Adler update 6.15% of samples (2% at M0). Full-run noise for silesia zlib 2.6%/1.1% (2x 5.2%/2.3%) but quick-bench noise 6.5%/3.5% (2x 13.0%/7.1%); eliminating Adler entirely gains at most 6.6% < 2x quick noise, so no WIN could be shown (PT4 would revert). Interpretation recorded in PERF.md; revisit if quick noise < ~3%.
+
+### P4-03 — bd4f2be
+Swept LITLEN_TABLE_BITS {9,10,11,12}, DIST_TABLE_BITS {7,8,9,10}, FAST_LOOP_MIN_INPUT {8,16,32}, FAST_LOOP_MIN_OUTPUT {258,320,512}, CRC32_SLICES {4,8,16}, ONESHOT_INITIAL_RATIO {2,4,8} with bench-quick (20 runs + default-repeat), JSONs in docs/perf/P4-03/. NO default changed: real effects only DIST_TABLE_BITS !=8 slower (-5..-9% raw) and CRC32_SLICES 4 slower (-11% gzip); everything else inside drift (up to ~10% between runs; e.g. both MIN_INPUT candidates showed +9% vs a slow default outlier; repeat default run restores parity). config.rs doc comments (comments only) cite the sweep; PERF.md '### Tunables (P4-03)'. Safety bounds not swept (stated). make lint/test/proptest-3k pass.
