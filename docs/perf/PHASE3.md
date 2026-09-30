@@ -1210,6 +1210,73 @@ Drift control (default against default-repeat, same code): 4 WIN and 3 LOSS of 2
 
 Reading: 11 bits (6% slower on average, 14 to 16 LOSS of 24) and 12 bits (4% slower, 8 to 10 LOSS) are clearly worse, the larger first level costing more per table build and per cache line than it saves in second-level lookups. 9 bits (`LITLEN`) and 7 bits (`DIST`) are within the drift of the defaults (mean -0.9% to +0.6%, win and loss counts inside the control's). 9 bits for the distance table shows +0.2% to +0.6% overall but 1.5% to 2.6% slower on the level-1 raw keys the task targets. No candidate was a clean quick WIN on the level-1 raw keys, so the full-bench confirmation was not needed and no default changed; the doc comments in `config.rs` record these runs.
 
+### P4-06 (M4 acceptance)
+
+Gates run in order: `make ci` (pass), `make heavy` (pass), `make fuzz-milestone` (pass), then the full bench `docs/perf/phase3/P4-06.json`.
+
+M4 checklist:
+
+- [x] Level-1 rows against M3 (`make bench-compare A=docs/perf/phase3/P3-05.json B=docs/perf/phase3/P4-06.json`, full-bench noise): 12 level-1 aggregates, throughput verdict WIN on 12 and LOSS on 0, ratio verdict WIN on 12 and LOSS on 0. **M4 'a WIN verdict' on the level-1 rows: MET** (recorded, not blocking).
+- [x] Elision evidence committed: `docs/perf/phase3/P4-01-asm.json` (before), `docs/perf/phase3/P4-03-asm.json`, `docs/perf/phase3/P4-06-asm.json` (final): the fast loop has no panic or bounds-failure call sites before or after (0 panic calls in `Inflater::step_into`, which contains the loop); the only two in the decode path are in `Window::copy_match_sink`. The gain came from removing the per-symbol call and memory traffic (DESIGN D-36), not from elided panics.
+- [x] Every section 5 gate green: `make ci`, `make heavy`, `make fuzz-milestone` (below).
+- [x] `docs/perf/phase3/P4-06.json` and `P4-06-asm.json` are committed.
+
+Assembly, P4-01 baseline against the final code (`make asm-count`; `-` means the symbol no longer exists, its code is inlined into `Inflater::step_into`):
+
+| function or source | instructions P4-01 | P4-06 | cond branches P4-01 | P4-06 | panic calls P4-01 | P4-06 | panic sites P4-01 | P4-06 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `cleanflate::inflate::Inflater::step_into` | 2259 | 2394 | 167 | 172 | 0 | 0 | 0 | 0 |
+| `src:crates/cleanflate/src/inflate.rs` | 1380 | 1422 | 83 | 80 | 0 | 0 | 0 | 0 |
+| `src:crates/cleanflate/src/bitreader.rs` | 582 | 593 | 39 | 44 | 0 | 0 | 0 | 0 |
+| `src:crates/cleanflate/src/huffman.rs` | 507 | 569 | 40 | 46 | 0 | 0 | 0 | 0 |
+| `cleanflate::window::Window::copy_match_sink` | 241 | 241 | 24 | 24 | 2 | 2 | 2 | 2 |
+| `cleanflate::huffman::Huffman::decode_table` | 182 | - | 22 | - | 0 | - | 0 | - |
+| `src:crates/cleanflate/src/window.rs` | 169 | 162 | 21 | 21 | 0 | 0 | 0 | 0 |
+| `src:crates/cleanflate/src/fast_loop.rs` | 79 | 50 | 11 | 9 | 0 | 0 | 0 | 0 |
+
+Level-1 aggregates against M3 (P3-05 to P4-06):
+
+| key | M3 MiB/s | M4 MiB/s | delta % | throughput verdict | ratio delta % | ratio verdict |
+|---|---:|---:|---:|---|---:|---|
+| canterbury/gzip/l1/oneshot | 184.6 | 222.2 | +20.38 | WIN | +20.72 | WIN |
+| canterbury/gzip/l1/streaming | 181.4 | 212.3 | +17.02 | WIN | +17.14 | WIN |
+| canterbury/raw/l1/oneshot | 199.7 | 252.7 | +26.52 | WIN | +22.15 | WIN |
+| canterbury/raw/l1/streaming | 200.5 | 247.3 | +23.37 | WIN | +21.23 | WIN |
+| canterbury/zlib/l1/oneshot | 190.6 | 228.8 | +20.01 | WIN | +17.58 | WIN |
+| canterbury/zlib/l1/streaming | 186.7 | 227.5 | +21.89 | WIN | +21.76 | WIN |
+| silesia/gzip/l1/oneshot | 159.7 | 197.3 | +23.49 | WIN | +21.67 | WIN |
+| silesia/gzip/l1/streaming | 168.2 | 209.7 | +24.74 | WIN | +22.81 | WIN |
+| silesia/raw/l1/oneshot | 172.5 | 211.5 | +22.63 | WIN | +24.69 | WIN |
+| silesia/raw/l1/streaming | 187.2 | 236.2 | +26.22 | WIN | +25.97 | WIN |
+| silesia/zlib/l1/oneshot | 160.3 | 196.8 | +22.74 | WIN | +20.16 | WIN |
+| silesia/zlib/l1/streaming | 175.2 | 220.1 | +25.58 | WIN | +24.03 | WIN |
+
+Fuzz milestone:
+
+```
+fuzz-milestone: diff_oracle_roundtrip seconds=1802 execs=1504454 exit=0 artifacts=0
+fuzz-milestone: diff_fast_reference seconds=1802 execs=395074 exit=0 artifacts=0
+```
+
+`make bench-compare A=baselines/phase3-start.json B=phase3/P4-06.json` (noise `phase3-noise.json`): 36 WIN, 0 LOSS, 5 per-file REGRESSION lines. Against the phase-2 record (first rows; the full table is `make bench-compare A=docs/perf/baselines/phase2.json B=docs/perf/phase3/P4-06.json`):
+
+```
+| key | A MiB/s | B MiB/s | delta % | 2x noise % | verdict | vs phase-2 % | B ratio | ratio delta % | ratio verdict |
+|---|---:|---:|---:|---:|---|---:|---:|---:|---|
+| canterbury/gzip/l1/oneshot | 190.6 | 222.2 | +16.61 | 0.07 | WIN | +16.61 | 0.677 | +22.96 | WIN |
+| canterbury/gzip/l1/streaming | 187.9 | 212.3 | +12.95 | 1.14 | WIN | +12.95 | 0.625 | n/a (denominator changed) | n/a |
+| canterbury/gzip/l6/oneshot | 218.2 | 253.1 | +16.02 | 2.94 | WIN | +16.02 | 0.743 | +18.98 | WIN |
+```
+
+Targets (`make bench-targets J=docs/perf/phase3/P4-06.json`), reported, not gates:
+
+- T1 (Silesia streaming >= 0.80x C zlib streaming): NOT MET; worst: silesia/gzip/l1/streaming ratio 0.715 (threshold >= 0.80)
+- T2 (cleanflate one-shot >= streaming, every row): NOT MET; worst: silesia/raw/l6 one-shot / streaming 0.883 (threshold >= 1.00)
+- T3 (Canterbury >= 0.70x C zlib, every mode): NOT MET; worst: canterbury/gzip/l1/streaming ratio 0.625 (threshold >= 0.70)
+- T4 (zlib and gzip within 3% of raw throughput): NOT MET; worst: canterbury/gzip/l1/reuse overhead 14.41% (threshold <= 3%)
+- T5 (Silesia level-6 one-shot >= 0.70x C zlib): MET; worst: silesia/raw/l6/oneshot ratio 0.839 (threshold >= 0.70)
+- T6 (no row slower than the phase-2 baseline beyond noise): NOT MET; worst: canterbury/gzip/l1/streaming +12.95% vs baseline
+
 ## Targets
 Filled by P5-02 (acceptance tasks).
 

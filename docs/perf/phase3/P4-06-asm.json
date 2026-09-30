@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "kind": "asm",
+  "git_head": "95030bf2aaf0893d384c4de28fed57c46ff40f88",
+  "rustc": "rustc 1.89.0 (29483883e 2025-08-04)",
+  "functions": [
+    {
+      "name": "cleanflate::inflate::Inflater::step_into",
+      "instructions": 2394,
+      "cond_branches": 172,
+      "panic_calls": 0,
+      "panic_sites": 0
+    },
+    {
+      "name": "src:crates/cleanflate/src/inflate.rs",
+      "instructions": 1422,
+      "cond_branches": 80,
+      "panic_calls": 0,
+      "panic_sites": 0
+    },
+    {
+      "name": "src:crates/cleanflate/src/bitreader.rs",
+      "instructions": 593,
+      "cond_branches": 44,
+      "panic_calls": 0,
+      "panic_sites": 0
+    },
+    {
+      "name": "src:crates/cleanflate/src/huffman.rs",
+      "instructions": 569,
+      "cond_branches": 46,
+      "panic_calls": 0,
+      "panic_sites": 0
+    },
+    {
+      "name": "cleanflate::window::Window::copy_match_sink",
+      "instructions": 241,
+      "cond_branches": 24,
+      "panic_calls": 2,
+      "panic_sites": 2
+    },
+    {
+      "name": "src:crates/cleanflate/src/window.rs",
+      "instructions": 162,
+      "cond_branches": 21,
+      "panic_calls": 0,
+      "panic_sites": 0
+    },
+    {
+      "name": "src:crates/cleanflate/src/fast_loop.rs",
+      "instructions": 50,
+      "cond_branches": 9,
+      "panic_calls": 0,
+      "panic_sites": 0
+    }
+  ]
+}
