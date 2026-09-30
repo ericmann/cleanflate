@@ -17,7 +17,7 @@ Started: 2026-09-29T23:20:38.692Z
 - [x] P0-12 Hypotheses H1–H6 and baseline profile
 - [x] P0-13 M0 acceptance and push
 - [x] P1-01 Bulk bit refill with an exact give-back invariant
-- [~] P1-02 Two-level lookup tables for every symbol
+- [x] P1-02 Two-level lookup tables for every symbol
 - [ ] P1-03 Per-block table reuse (gated)
 - [ ] P1-04 Length/distance payload in table entries (gated)
 - [ ] P1-05 M1 acceptance and push
@@ -82,3 +82,6 @@ Manual check: NOT VERIFIED (human): (1) GitHub Actions ci run green on the pushe
 
 ### P1-01 — 17ecd44
 BitReader::refill_bulk/give_back, Inflater::step now wraps step_inner with one exit helper (give_back(keep_bits) on OutputFull/Done; keep_bits set at the pending-literal OutputFull site), StoredLen gives back all whole bytes + defensive drain in StoredCopy, Fast peek_symbol bulk-refills when <15 bits. D-27 [perf] added. 6 tests in tests/bitreader_bulk.rs (mutation-checked). PT1: all 12 quick aggregates WIN (silesia l6 oneshot raw 51.1->79.3, zlib 49.7->75.5, gzip 45.3->57.8), no per-file REGRESSION. make test, proptest-3k, fastslow-full (209s), bomb pass. Interpretation: give-back applied on both paths (Reference returns 0).
+
+### P1-02 — 8096976
+huffman.rs: packed u32 Entry (Invalid/Symbol/Sub), two-level build_table, total lookup in decode_table_method (Symbol longer than available => NeedMoreBits, Invalid with a>=1 => Invalid), CodeLength single 7-bit level (CODE_LENGTH_TABLE_BITS const, RFC-fixed), from_lengths_with_bits for sweeps. D-28 [perf] (supersedes D-16 gate, includes prefix-freeness argument). Tests in tests/huffman_twolevel.rs (220+ random complete sets with 15-bit codes, widths 7..=12). stats test updated: Fast has 0 serial decodes. PT1: NEUTRAL on Silesia (raw oneshot 78.9->81.9), Canterbury gzip/raw WIN; one LOSS on silesia gzip oneshot did not repeat in a second run. Kept per PT4 as prerequisite of P2-01. Stats after: table-decode 100%, bytes/refill 6.21. fastslow-full, proptest-3k pass. Interpretation: NEUTRAL kept as prerequisite.
