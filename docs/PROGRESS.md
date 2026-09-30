@@ -10,7 +10,7 @@ Started: 2026-09-30T14:32:48.581Z
 - [x] P0-05 C zlib streaming rows and like-for-like ratios
 - [x] P0-06 Environment capture in every bench run
 - [x] P0-07 Reports: delta vs the phase-2 baseline, drift-corrected verdicts, per-file sizes
-- [ ] P0-08 `oracle bench-targets`: T1–T6 verdicts from a bench JSON
+- [x] P0-08 `oracle bench-targets`: T1–T6 verdicts from a bench JSON
 - [ ] P0-09 Phase-3 starting baseline and noise
 - [ ] P0-10 M0 acceptance and push
 - [ ] P1-01 Profile any key: per-key outputs, perf stat and saved flamegraphs
@@ -68,3 +68,6 @@ cpu_model: AMD Ryzen 5 3400G; cores 8; governor schedutil; os Pop!_OS 24.04 LTS;
 
 ### P0-07 — 5668fd5
 bench_compare: compare_with_baseline, render_md_with_baseline (old fns kept as wrappers), RatioDelta, Noise.ratio_aggregate(+_max_pct, serde default), default_noise_path(root,a,b)->Option<(path,phase2?)>. main: --baseline for bench-compare/bench-md, load_baseline prints "baseline missing: path". Makefile passes FILES/FILTER/BASELINE. Interpretation: ratio verdict UNKNOWN if noise file lacks ratio noise. Verified: make bench-compare A=docs/perf/P5-02.json B=docs/perf/baselines/phase2.json prints new columns.
+
+### P0-08 — dabe22e
+bench_targets.rs (evaluate/render), `oracle bench-targets J [--baseline] [--noise]`, `make bench-targets`. Interpretations: reuse rows = mode not oneshot/streaming (ignored); no evaluable rows -> n/a; noise default from J's kind. Phase-2 baseline currently: T1 n/a (schema-1 streaming), T4 fails, T5 fails (silesia raw l6 0.661, zlib 0.696). clippy neg_cmp_op fixed with is_nan checks.
