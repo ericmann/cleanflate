@@ -3,8 +3,10 @@
 //! Huffman (BTYPE=10) blocks are all implemented.
 
 use crate::bitreader::BitReader;
+use crate::config::{FAST_LOOP_MIN_INPUT, FAST_LOOP_MIN_OUTPUT};
 use crate::decode_path::DecodePath;
 use crate::error::{Error, HuffmanError};
+use crate::fast_loop::{self, FastCtx, FastExit};
 use crate::huffman::{Decoded, Huffman, TableKind};
 #[cfg(feature = "stats")]
 use crate::stats::Stats;
@@ -193,16 +195,7 @@ impl Inflater {
     /// Count one symbol resolved from a table of `kind`.
     #[cfg(feature = "stats")]
     fn count_decode(&mut self, kind: TableKind, via_table: bool) {
-        let s = &mut self.stats;
-        let slot = match (kind, via_table) {
-            (TableKind::LitLen, true) => &mut s.litlen_table_decodes,
-            (TableKind::LitLen, false) => &mut s.litlen_serial_decodes,
-            (TableKind::Distance, true) => &mut s.dist_table_decodes,
-            (TableKind::Distance, false) => &mut s.dist_serial_decodes,
-            (TableKind::CodeLength, true) => &mut s.codelen_table_decodes,
-            (TableKind::CodeLength, false) => &mut s.codelen_serial_decodes,
-        };
-        stat!(*slot, 1);
+        crate::stats::count_decode(&mut self.stats, kind, via_table);
     }
 
     /// Total bytes produced so far across all calls to `step`.
@@ -297,6 +290,9 @@ impl Inflater {
 
         let mut pos = 0usize;
         let mut out_pos = 0usize;
+        // After the fast loop stops on a margin, one state-machine dispatch
+        // runs before it is tried again, so every pass makes progress.
+        let mut skip_fast = false;
 
         loop {
             match &self.state {
@@ -304,6 +300,38 @@ impl Inflater {
                 State::Failed(e) => return Err(e.clone()),
                 _ => {}
             }
+
+            if !skip_fast
+                && self.path == DecodePath::Fast
+                && matches!(self.state, State::LitLen)
+                && input.len().saturating_sub(pos) >= FAST_LOOP_MIN_INPUT
+                && output.len().saturating_sub(out_pos) >= FAST_LOOP_MIN_OUTPUT
+            {
+                let before = out_pos;
+                let mut ctx = FastCtx {
+                    litlen: &self.litlen_table,
+                    dist: &self.dist_table,
+                    br: &mut self.br,
+                    window: &mut self.window,
+                    #[cfg(feature = "stats")]
+                    stats: &mut self.stats,
+                };
+                let exit = fast_loop::run(&mut ctx, input, &mut pos, output, &mut out_pos);
+                self.total_out += (out_pos - before) as u64;
+                match exit {
+                    FastExit::Margin => skip_fast = true,
+                    FastExit::EndOfBlock => self.state = self.next_block_state(),
+                    FastExit::Copy { remaining, dist } => {
+                        self.state = State::Copy { remaining, dist };
+                    }
+                    FastExit::Error(e) => {
+                        self.state = State::Failed(e.clone());
+                        return Err(e);
+                    }
+                }
+                continue;
+            }
+            skip_fast = false;
             stat!(self.stats.state_dispatches, 1);
 
             match self.state.clone() {
@@ -737,27 +765,7 @@ impl Inflater {
                                 return Err(e);
                             }
                             #[cfg(feature = "stats")]
-                            {
-                                stat!(self.stats.matches, 1);
-                                stat!(self.stats.match_bytes, len);
-                                if u32::from(len) > distance {
-                                    stat!(self.stats.overlap_matches, 1);
-                                }
-                                if let Some(b) = self
-                                    .stats
-                                    .match_len_hist
-                                    .get_mut(crate::stats::len_bucket(u32::from(len)))
-                                {
-                                    stat!(*b, 1);
-                                }
-                                if let Some(b) = self
-                                    .stats
-                                    .match_dist_hist
-                                    .get_mut(crate::stats::dist_bucket(distance))
-                                {
-                                    stat!(*b, 1);
-                                }
-                            }
+                            crate::stats::record_match(&mut self.stats, u32::from(len), distance);
                             self.state = State::Copy {
                                 remaining: len,
                                 dist: distance as u16,

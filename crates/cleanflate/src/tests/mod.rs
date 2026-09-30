@@ -10,9 +10,11 @@ mod bitreader_bulk;
 #[allow(dead_code)] // write_code is reused by later Huffman/inflate tests
 pub(crate) mod bitwriter;
 mod checksum;
+mod config;
 mod decode_path;
 mod dynbuilder;
 mod error;
+mod fast_loop;
 mod fastpath;
 mod gzip;
 mod gzip_header;

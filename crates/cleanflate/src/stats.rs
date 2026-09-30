@@ -167,3 +167,35 @@ pub(crate) fn dist_bucket(dist: u32) -> usize {
         _ => 8,
     }
 }
+
+/// Count one symbol resolved from a table of `kind`, by table lookup
+/// (`via_table`) or by the bit-serial walk.
+#[cfg(feature = "stats")]
+pub(crate) fn count_decode(stats: &mut Stats, kind: crate::huffman::TableKind, via_table: bool) {
+    use crate::huffman::TableKind;
+    let slot = match (kind, via_table) {
+        (TableKind::LitLen, true) => &mut stats.litlen_table_decodes,
+        (TableKind::LitLen, false) => &mut stats.litlen_serial_decodes,
+        (TableKind::Distance, true) => &mut stats.dist_table_decodes,
+        (TableKind::Distance, false) => &mut stats.dist_serial_decodes,
+        (TableKind::CodeLength, true) => &mut stats.codelen_table_decodes,
+        (TableKind::CodeLength, false) => &mut stats.codelen_serial_decodes,
+    };
+    stat!(*slot, 1);
+}
+
+/// Record one decoded match of `len` bytes at `distance`.
+#[cfg(feature = "stats")]
+pub(crate) fn record_match(stats: &mut Stats, len: u32, distance: u32) {
+    stat!(stats.matches, 1);
+    stat!(stats.match_bytes, len);
+    if len > distance {
+        stat!(stats.overlap_matches, 1);
+    }
+    if let Some(b) = stats.match_len_hist.get_mut(len_bucket(len)) {
+        stat!(*b, 1);
+    }
+    if let Some(b) = stats.match_dist_hist.get_mut(dist_bucket(distance)) {
+        stat!(*b, 1);
+    }
+}

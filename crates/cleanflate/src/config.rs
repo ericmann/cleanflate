@@ -37,3 +37,19 @@ pub(crate) const LITLEN_TABLE_BITS: u32 = 10;
 /// Measured alongside `LITLEN_TABLE_BITS` in the same P4-09 sweep; kept
 /// for the same reason.
 pub(crate) const DIST_TABLE_BITS: u32 = 8;
+
+/// Input bytes that must remain for one iteration of the fast decode loop
+/// to start (SPEC S6 M2). One iteration consumes at most 48 bits (15 for
+/// the literal/length code, 5 extra length bits, 15 for the distance code,
+/// 13 extra distance bits), and the loop refills to at least 48 bits with a
+/// single word read. That read needs at least 8 bytes, so this must be at
+/// least 8; the margin above that keeps the loop away from the end of the
+/// input, where the state machine takes over. Initial value; re-swept in
+/// P4-03.
+pub(crate) const FAST_LOOP_MIN_INPUT: usize = 16;
+
+/// Output bytes that must remain for one iteration of the fast decode loop
+/// to start (SPEC S6 M2). The longest match is 258 bytes (RFC 1951 S3.2.5),
+/// so this must be at least that: an iteration never has to stop halfway
+/// through a match for lack of room. Initial value; re-swept in P4-03.
+pub(crate) const FAST_LOOP_MIN_OUTPUT: usize = 258;

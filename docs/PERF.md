@@ -588,3 +588,21 @@ Aggregate gain against the M0 baseline (Silesia, level 6, median MiB/s; C zlib i
 `make bench-compare` of the M1 run against `baseline.json` reports WIN on every Silesia level-6 aggregate and no per-file REGRESSION line; against `P0-13.json` (which was itself about 6% faster than the baseline through drift, see M0) the gains are +38% to +54% and again no REGRESSION. The gain comes almost entirely from P1-01 (bulk refill, D-27); P1-02 (D-28) was NEUTRAL alone and is kept as the prerequisite of the fast loop; P1-03 and P1-04 were gated out with negative results (see their sections). The M1 numbers do not yet reach the primary target (70% of C zlib) or the streaming target (60%): they are recorded here for the M4 acceptance.
 
 Correctness gates: `make ci`, `make heavy` (10k-case chunking and fast-vs-reference proptests, full-tier conformance and differential, bomb) all pass; no regression fixture was needed.
+
+### P2-01
+
+Fast literal/length/distance decode loop (D-29). `make bench-quick` before (`docs/perf/P2-01-before.json`, the M1 code) and after (`docs/perf/P2-01.json`), back to back, compared with `docs/perf/noise-quick.json`:
+
+| key | before MiB/s | after MiB/s | delta % | 2x noise % | verdict |
+|---|---:|---:|---:|---:|---|
+| silesia/raw/l6/oneshot | 83.1 | 132.2 | +59.0 | 7.2 | WIN |
+| silesia/raw/l6/streaming | 83.8 | 135.5 | +61.8 | 8.7 | WIN |
+| silesia/zlib/l6/oneshot | 80.2 | 131.0 | +63.4 | 13.0 | WIN |
+| silesia/zlib/l6/streaming | 81.9 | 130.9 | +59.9 | 7.1 | WIN |
+| silesia/gzip/l6/oneshot | 66.1 | 92.6 | +40.0 | 1.4 | WIN |
+| silesia/gzip/l6/streaming | 70.2 | 100.9 | +43.7 | 2.2 | WIN |
+| canterbury/raw/l6/oneshot | 110.8 | 155.2 | +40.1 | 5.2 | WIN |
+| canterbury/zlib/l6/oneshot | 104.6 | 156.8 | +49.9 | 0.2 | WIN |
+| canterbury/gzip/l6/oneshot | 86.9 | 115.7 | +33.2 | 6.0 | WIN |
+
+All twelve aggregates are WIN and there is no per-file REGRESSION. The gain is far beyond the noise: the loop removes the per-symbol `State` clone and dispatch (the two costs that together were about 31% of samples at the M0 profile). gzip gains least because its CRC-32 is untouched (P4-01).

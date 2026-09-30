@@ -100,6 +100,7 @@ pub mod checksum;
 mod config;
 mod decode_path;
 pub mod error;
+mod fast_loop;
 pub mod gzip;
 mod huffman;
 mod inflate;

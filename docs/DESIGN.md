@@ -805,3 +805,53 @@ Measurement: docs/perf/P1-02.json against docs/perf/P1-02-before.json:
 NEUTRAL on Silesia (level 6 one-shot raw 78.9 -> 81.9 MiB/s, +3.8%, inside
 twice the noise), WINs on several Canterbury aggregates; kept as the
 prerequisite of the fast loop.
+
+### D-29: [perf] Fast decode loop with margins
+
+RFC: RFC 1951 S3.2.5, S3.2.6
+Decision: On the Fast path, when the state is "decode a literal/length
+symbol" and both margins hold, `Inflater::step` hands control to a loop
+(`fast_loop.rs`) that decodes literals, matches and the end-of-block
+symbol without cloning the state or returning to the state machine for
+each symbol. The margins are tunables in `config.rs`: at least
+`FAST_LOOP_MIN_INPUT` input bytes and `FAST_LOOP_MIN_OUTPUT` output bytes
+must remain at the start of every iteration. Each iteration tops the bit
+buffer up to at least 48 bits when it holds fewer, does a literal/length
+lookup, and for a length symbol reads the extra bits, does a distance
+lookup, reads the distance's extra bits, checks the distance against the
+history, and copies the whole match. The loop stops, and the state machine
+continues, when a margin no longer holds; at the end-of-block symbol (the
+loop sets the next-block state); and on any error, with the same `Error`
+value the state machine reports (invalid symbol for an invalid lookup,
+distance codes 30 and 31, and codes 286 and 287; invalid distance with the
+same `distance` and `available`). After a margin stop, one state-machine
+dispatch runs before the loop is tried again, so every pass makes
+progress.
+Why no step inside an iteration can run out of bits or room: an iteration
+needs at most 15 + 5 + 15 + 13 = 48 bits (the longest literal/length code,
+the extra length bits, the longest distance code, the extra distance
+bits). With at least 8 input bytes left, one word refill leaves at least
+56 bits buffered, so the lookups always see a whole code and can never
+report that more bits are needed. The longest match is 258 bytes (RFC 1951
+S3.2.5), and an iteration starts only with at least that much output room,
+so a match is always copied whole and never has to stop halfway. The
+input margin is larger than 8 so the loop stays away from the end of the
+input, where the ordinary rules of D-27 apply.
+Exits follow the invariant of D-27 unchanged: the loop only consumes
+whole symbols, keeps the buffer and the positions in locals, writes them
+back on every exit, and leaves any whole buffered bytes for the shared
+exit of `step` to give back, so per-call `consumed`, `produced` and status
+equal the Reference path's. The phase-1 attempt at such a loop (D-22) was
+reverted for a correctness bug in exactly this exit handling; the
+differential traces, the boundary tests at margin minus one, at the margin
+and above, and the fixtures make the class of bug visible where it
+happens.
+Rationale: After bulk refill and total table lookup, most of the time left
+was the outer dispatch and a state clone per symbol (about 31% of samples
+at the M0 profile). Nothing about RFC 1951 needs a state change between
+two symbols of one block, so a tight loop that only leaves for the reasons
+above removes that overhead without changing what is decoded.
+Provenance: general technique; not derived from any specific implementation.
+Measurement: docs/perf/P2-01.json against docs/perf/P2-01-before.json:
+Silesia level 6 one-shot raw 83.1 -> 132.2 MiB/s, zlib 80.2 -> 131.0, gzip
+66.1 -> 92.6; streaming raw 83.8 -> 135.5.
