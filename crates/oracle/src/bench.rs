@@ -9,7 +9,10 @@ use std::time::Instant;
 use cleanflate::{decompress_with, Decompressor, Format, Options, Status};
 
 use crate::bench_json::{format_utc, Aggregate, BenchJson, Machine, ResultRow, StatsEntry};
-use crate::ffi::{deflate_bytes, inflate_bytes, zlib_version, DeflateParams, Framing, Strategy};
+use crate::ffi::{
+    deflate_bytes, inflate_bytes, inflate_streaming_into, zlib_version, DeflateParams, Framing,
+    Strategy,
+};
 use crate::inputs::{canterbury_inputs, silesia_inputs, Input};
 
 /// Minimum duration of one timed sample. A bench-local constant, not a
@@ -51,6 +54,9 @@ pub enum Mode {
     OneShot,
     /// `Decompressor` fed 64 KiB chunks.
     Streaming,
+    /// One long-lived `Decompressor`, `reset()` before every decode, fed
+    /// 64 KiB chunks. Cleanflate only: there is no C zlib reuse row.
+    Reuse,
 }
 
 /// `--kind`.
@@ -183,6 +189,7 @@ pub fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
                 modes = parse_list(flag, value, |s| match s {
                     "oneshot" => Some(Mode::OneShot),
                     "streaming" => Some(Mode::Streaming),
+                    "reuse" => Some(Mode::Reuse),
                     _ => None,
                 })?
             }
@@ -317,6 +324,16 @@ fn decode_streaming_dec(
     out: &mut [u8],
 ) -> Result<(usize, Decompressor), String> {
     let mut d = Decompressor::new(format, Options::default());
+    let n = decode_streaming_with(&mut d, compressed, out)?;
+    Ok((n, d))
+}
+
+/// The 64 KiB streaming loop over an existing decompressor (fresh or reset).
+fn decode_streaming_with(
+    d: &mut Decompressor,
+    compressed: &[u8],
+    out: &mut [u8],
+) -> Result<usize, String> {
     let mut in_pos = 0usize;
     let mut out_pos = 0usize;
     loop {
@@ -338,7 +355,7 @@ fn decode_streaming_dec(
         }
     }
     d.finish().map_err(|e| format!("{e:?}"))?;
-    Ok((out_pos, d))
+    Ok(out_pos)
 }
 
 /// One timed implementation of a decode.
@@ -346,13 +363,26 @@ fn decode_streaming_dec(
 enum Imp {
     CleanflateOneShot,
     CleanflateStreaming,
-    CZlib,
+    CleanflateReuse,
+    CZlibOneShot,
+    CZlibStreaming,
 }
 
 struct Fixture<'a> {
     framing: Framing,
     original: &'a [u8],
     compressed: &'a [u8],
+    /// The long-lived decompressor of the `reuse` mode, built before timing.
+    reuse: std::cell::RefCell<Decompressor>,
+}
+
+impl Fixture<'_> {
+    /// `reset()` the long-lived decompressor and stream the input through it.
+    fn decode_reuse(&self, scratch: &mut [u8]) -> Result<usize, String> {
+        let mut d = self.reuse.borrow_mut();
+        d.reset();
+        decode_streaming_with(&mut d, self.compressed, scratch)
+    }
 }
 
 /// Run one decode with `imp`; returns the output length (or 0 on error).
@@ -366,12 +396,21 @@ fn run_once(imp: Imp, fx: &Fixture, scratch: &mut [u8]) -> usize {
         Imp::CleanflateStreaming => {
             decode_streaming(format_of(fx.framing), fx.compressed, scratch).unwrap_or(0)
         }
-        Imp::CZlib => {
+        Imp::CleanflateReuse => fx.decode_reuse(scratch).unwrap_or(0),
+        Imp::CZlibOneShot => {
             let max = fx.original.len().saturating_add(1024);
             inflate_bytes(fx.compressed, fx.framing, None, max)
                 .output
                 .len()
         }
+        Imp::CZlibStreaming => inflate_streaming_into(
+            fx.compressed,
+            fx.framing,
+            STREAM_CHUNK,
+            scratch,
+            STREAM_CHUNK,
+        )
+        .unwrap_or(0),
     }
 }
 
@@ -388,9 +427,24 @@ fn verify(imp: Imp, fx: &Fixture, scratch: &mut [u8]) -> Result<(), String> {
             let n = decode_streaming(format_of(fx.framing), fx.compressed, scratch)?;
             scratch.get(..n) == Some(fx.original)
         }
-        Imp::CZlib => {
+        Imp::CleanflateReuse => {
+            let n = fx.decode_reuse(scratch)?;
+            scratch.get(..n) == Some(fx.original)
+        }
+        Imp::CZlibOneShot => {
             let max = fx.original.len().saturating_add(1024);
             inflate_bytes(fx.compressed, fx.framing, None, max).output == fx.original
+        }
+        Imp::CZlibStreaming => {
+            let n = inflate_streaming_into(
+                fx.compressed,
+                fx.framing,
+                STREAM_CHUNK,
+                scratch,
+                STREAM_CHUNK,
+            )
+            .map_err(|e| format!("C zlib streaming failed: {e:?}"))?;
+            scratch.get(..n) == Some(fx.original)
         }
     };
     if ok {
@@ -412,8 +466,36 @@ fn imp_names(imp: Imp) -> (&'static str, &'static str) {
     match imp {
         Imp::CleanflateOneShot => ("cleanflate", "oneshot"),
         Imp::CleanflateStreaming => ("cleanflate", "streaming"),
-        Imp::CZlib => ("c_zlib", "oneshot"),
+        Imp::CleanflateReuse => ("cleanflate", "reuse"),
+        Imp::CZlibOneShot => ("c_zlib", "oneshot"),
+        Imp::CZlibStreaming => ("c_zlib", "streaming"),
     }
+}
+
+/// The per-sample run order for the selected modes: cleanflate one-shot,
+/// cleanflate streaming, C zlib one-shot, C zlib streaming. C zlib runs in
+/// exactly the modes selected, so every ratio has a like-for-like denominator.
+fn sample_order(modes: &[Mode]) -> Vec<Imp> {
+    let one = modes.contains(&Mode::OneShot);
+    let stream = modes.contains(&Mode::Streaming);
+    let reuse = modes.contains(&Mode::Reuse);
+    let mut v = Vec::new();
+    if one {
+        v.push(Imp::CleanflateOneShot);
+    }
+    if stream {
+        v.push(Imp::CleanflateStreaming);
+    }
+    if reuse {
+        v.push(Imp::CleanflateReuse);
+    }
+    if one {
+        v.push(Imp::CZlibOneShot);
+    }
+    if stream {
+        v.push(Imp::CZlibStreaming);
+    }
+    v
 }
 
 /// Everything `run` produces.
@@ -432,9 +514,39 @@ pub fn run(args: &BenchArgs, corpora_root: &Path) -> Result<BenchOutcome, String
     let mut results: Vec<ResultRow> = Vec::new();
     #[cfg(feature = "stats")]
     let mut stats_entries: Vec<StatsEntry> = Vec::new();
-    let loadavg = std::fs::read_to_string("/proc/loadavg")
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
+    let read_loadavg = || {
+        std::fs::read_to_string("/proc/loadavg")
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| "unknown".to_string())
+    };
+    let loadavg = read_loadavg();
+    let c_zlib = crate::bench_env::c_zlib_info(zlib_version(), crate::ffi::zlib_compile_flags());
+    let cargo_profile = crate::bench_env::cargo_profile();
+    let git_head = command_output("git", &["rev-parse", "HEAD"]);
+    let git_dirty = !command_output("git", &["status", "--porcelain"]).is_empty();
+    let mut machine = Machine {
+        uname: command_output("uname", &["-srm"]),
+        cpu_model: cpu_model(),
+        governor: std::fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| "unknown".to_string()),
+        loadavg,
+        rustc: command_output("rustc", &["--version"]),
+        cores: crate::bench_env::logical_cpus(),
+        os: crate::bench_env::os_pretty_name(),
+        kernel: command_output("uname", &["-r"]),
+        loadavg_end: String::new(),
+    };
+    print!(
+        "{}",
+        crate::bench_env::render_environment(
+            &machine,
+            &cargo_profile,
+            &c_zlib,
+            &git_head,
+            git_dirty
+        )
+    );
 
     for &corpus in &args.corpora {
         let inputs = inputs_for(corpus, corpora_root, args.subset_quick)?;
@@ -459,6 +571,10 @@ pub fn run(args: &BenchArgs, corpora_root: &Path) -> Result<BenchOutcome, String
                         framing,
                         original: &original,
                         compressed: &compressed,
+                        reuse: std::cell::RefCell::new(Decompressor::new(
+                            format_of(framing),
+                            Options::default(),
+                        )),
                     };
                     let mut scratch = vec![0u8; original.len() + STREAM_CHUNK];
 
@@ -479,14 +595,7 @@ pub fn run(args: &BenchArgs, corpora_root: &Path) -> Result<BenchOutcome, String
                         continue;
                     }
 
-                    let mut imps: Vec<Imp> = Vec::new();
-                    for m in &args.modes {
-                        imps.push(match m {
-                            Mode::OneShot => Imp::CleanflateOneShot,
-                            Mode::Streaming => Imp::CleanflateStreaming,
-                        });
-                    }
-                    imps.push(Imp::CZlib);
+                    let imps = sample_order(&args.modes);
 
                     let mut reps = Vec::new();
                     for &imp in &imps {
@@ -525,7 +634,7 @@ pub fn run(args: &BenchArgs, corpora_root: &Path) -> Result<BenchOutcome, String
                             bytes: original.len(),
                             reps: reps.get(k).copied().unwrap_or(1),
                             median_ns: median(s),
-                            min_ns: minimum(s),
+                            best_ns: minimum(s),
                         });
                     }
                     eprintln!(
@@ -543,25 +652,18 @@ pub fn run(args: &BenchArgs, corpora_root: &Path) -> Result<BenchOutcome, String
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    machine.loadavg_end = read_loadavg();
     let json = BenchJson {
-        schema: 1,
+        schema: crate::bench_json::SCHEMA,
         kind: args.kind.name().to_string(),
         task: args.task.clone(),
-        git_head: command_output("git", &["rev-parse", "HEAD"]),
-        git_dirty: !command_output("git", &["status", "--porcelain"]).is_empty(),
+        git_head,
+        git_dirty,
         timestamp: format_utc(secs),
-        machine: Machine {
-            uname: command_output("uname", &["-srm"]),
-            cpu_model: cpu_model(),
-            governor: std::fs::read_to_string(
-                "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor",
-            )
-            .map(|s| s.trim().to_string())
-            .unwrap_or_else(|_| "unknown".to_string()),
-            loadavg,
-            rustc: command_output("rustc", &["--version"]),
-        },
-        c_zlib_version: zlib_version(),
+        machine,
+        c_zlib_version: c_zlib.version.clone(),
+        cargo_profile,
+        c_zlib,
         iters: args.iters,
         min_sample_ms: MIN_SAMPLE_MS,
         stats_build: cfg!(feature = "stats"),
@@ -653,6 +755,20 @@ fn collect_stats(
                     return Err(format!("{corpus}/{file}: streaming stats output differs"));
                 }
                 ("streaming", d.stats())
+            }
+            Mode::Reuse => {
+                // Counters of a decode after `reset()`: the first decode is
+                // discarded by the reset.
+                let mut d = Decompressor::new(format_of(framing), Options::default());
+                decode_streaming_with(&mut d, fx.compressed, scratch)
+                    .map_err(|e| format!("{corpus}/{file}: {e}"))?;
+                d.reset();
+                let n = decode_streaming_with(&mut d, fx.compressed, scratch)
+                    .map_err(|e| format!("{corpus}/{file}: {e}"))?;
+                if scratch.get(..n) != Some(fx.original) {
+                    return Err(format!("{corpus}/{file}: reuse stats output differs"));
+                }
+                ("reuse", d.stats())
             }
         };
         out.push(StatsEntry {
@@ -779,7 +895,8 @@ pub fn render_stats(t: &StatsEntry) -> String {
     out
 }
 
-/// Aggregates for every (corpus, framing, level, cleanflate mode).
+/// Aggregates for every (corpus, framing, level, cleanflate mode). The C zlib
+/// denominator comes from C zlib rows of the same mode.
 pub fn aggregates_of(results: &[ResultRow]) -> Vec<Aggregate> {
     let mut keys: Vec<(String, String, u8, String)> = Vec::new();
     for r in results.iter().filter(|r| r.implementation == "cleanflate") {
@@ -803,31 +920,46 @@ pub fn aggregates_of(results: &[ResultRow]) -> Vec<Aggregate> {
                 .collect()
         };
         let cf = pick("cleanflate", &mode);
-        let cz = pick("c_zlib", "oneshot");
+        let cz = pick("c_zlib", &mode);
         let total: usize = cf.iter().map(|r| r.bytes).sum();
         let secs = |rows: &[&ResultRow], f: fn(&ResultRow) -> f64| -> Vec<f64> {
             rows.iter().map(|r| f(r) / 1e9).collect()
         };
         let cf_med = aggregate_mib_s(total, &secs(&cf, |r| r.median_ns));
-        let cf_min = aggregate_mib_s(total, &secs(&cf, |r| r.min_ns));
+        let cf_best = aggregate_mib_s(total, &secs(&cf, |r| r.best_ns));
         let cz_med = aggregate_mib_s(total, &secs(&cz, |r| r.median_ns));
-        let cz_min = aggregate_mib_s(total, &secs(&cz, |r| r.min_ns));
+        let cz_best = aggregate_mib_s(total, &secs(&cz, |r| r.best_ns));
+        // `reuse` has no C zlib denominator: no ratio, no C zlib mode.
+        let has_denominator = mode != "reuse";
+        let vs_fresh_streaming = if mode == "reuse" {
+            let st = pick("cleanflate", "streaming");
+            let st_med = aggregate_mib_s(total, &secs(&st, |r| r.median_ns));
+            (st_med > 0.0).then(|| cf_med / st_med)
+        } else {
+            None
+        };
         out.push(Aggregate {
             key: format!("{corpus}/{framing}/l{level}/{mode}"),
             total_bytes: total as u64,
             cleanflate_mib_s_median: cf_med,
-            cleanflate_mib_s_min: cf_min,
+            cleanflate_mib_s_best: cf_best,
             c_zlib_mib_s_median: cz_med,
-            c_zlib_mib_s_min: cz_min,
-            ratio: if cz_med > 0.0 {
-                cf_med / cz_med
-            } else {
-                f64::NAN
-            },
+            c_zlib_mib_s_best: cz_best,
+            c_zlib_mode: has_denominator.then(|| mode.clone()),
+            ratio: (has_denominator && cz_med > 0.0).then(|| cf_med / cz_med),
+            vs_fresh_streaming,
         });
     }
     out
 }
+
+/// `value` with `decimals` places, or `n/a` when there is none.
+pub fn opt_f(value: Option<f64>, decimals: usize) -> String {
+    value.map_or("n/a".to_string(), |v| format!("{v:.decimals$}"))
+}
+
+/// Two-line definition footer printed under the stdout table.
+pub const TABLE_FOOTER: &str = "median: throughput from the median per-decode time of the samples; best: throughput of the fastest sample. Aggregates: total bytes / sum of per-file times.\nratio (like for like): cleanflate median / C zlib median of the same mode (n/a for reuse).\nvs fresh streaming (reuse only): reuse median / streaming median of the same key.\n";
 
 /// A markdown table of the aggregates.
 pub fn render_markdown(json: &BenchJson) -> String {
@@ -836,18 +968,21 @@ pub fn render_markdown(json: &BenchJson) -> String {
         "Bench {} ({}), C zlib {}, iters {}\n\n",
         json.task, json.kind, json.c_zlib_version, json.iters
     ));
-    out.push_str("| key | cleanflate MiB/s (median) | cleanflate MiB/s (min) | C zlib MiB/s (median) | ratio |\n");
-    out.push_str("|---|---:|---:|---:|---:|\n");
+    out.push_str("| key | cleanflate MiB/s (median) | cleanflate MiB/s (best) | C zlib MiB/s (median) | ratio (like for like) | vs fresh streaming |\n");
+    out.push_str("|---|---:|---:|---:|---:|---:|\n");
     for a in &json.aggregates {
         out.push_str(&format!(
-            "| {} | {:.1} | {:.1} | {:.1} | {:.3} |\n",
+            "| {} | {:.1} | {:.1} | {} | {} | {} |\n",
             a.key,
             a.cleanflate_mib_s_median,
-            a.cleanflate_mib_s_min,
-            a.c_zlib_mib_s_median,
-            a.ratio
+            a.cleanflate_mib_s_best,
+            opt_f(a.c_zlib_mode.as_ref().map(|_| a.c_zlib_mib_s_median), 1),
+            opt_f(a.ratio, 3),
+            opt_f(a.vs_fresh_streaming, 3),
         ));
     }
+    out.push('\n');
+    out.push_str(TABLE_FOOTER);
     out
 }
 
@@ -890,7 +1025,7 @@ mod tests {
     }
 
     #[test]
-    fn median_and_min_odd_even() {
+    fn median_and_best_odd_even() {
         assert_eq!(median(&[3.0, 1.0, 2.0]), 2.0);
         assert_eq!(median(&[4.0, 1.0, 3.0, 2.0]), 2.5);
         assert_eq!(median(&[]), 0.0);
@@ -914,7 +1049,7 @@ mod tests {
             bytes,
             reps: 1,
             median_ns: ns,
-            min_ns: ns / 2.0,
+            best_ns: ns / 2.0,
         };
         let rows = vec![
             row("a", "cleanflate", "oneshot", 2 * mib, 1e9),
@@ -926,9 +1061,159 @@ mod tests {
         assert_eq!(aggs.len(), 1);
         assert_eq!(aggs[0].key, "c/raw/l6/oneshot");
         assert!((aggs[0].cleanflate_mib_s_median - 4.0).abs() < 1e-9);
-        assert!((aggs[0].cleanflate_mib_s_min - 8.0).abs() < 1e-9);
+        assert!((aggs[0].cleanflate_mib_s_best - 8.0).abs() < 1e-9);
         assert!((aggs[0].c_zlib_mib_s_median - 8.0).abs() < 1e-9);
-        assert!((aggs[0].ratio - 0.5).abs() < 1e-9);
+        assert!((aggs[0].ratio.expect("ratio") - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn aggregate_ratio_is_like_for_like() {
+        let mib = 1024 * 1024;
+        let row = |imp: &str, mode: &str, ns: f64| ResultRow {
+            corpus: "c".into(),
+            file: "a".into(),
+            framing: "raw".into(),
+            level: 6,
+            mode: mode.into(),
+            implementation: imp.into(),
+            bytes: 4 * mib,
+            reps: 1,
+            median_ns: ns,
+            best_ns: ns,
+        };
+        let rows = vec![
+            row("cleanflate", "oneshot", 1e9),
+            row("cleanflate", "streaming", 2e9),
+            row("c_zlib", "oneshot", 5e8),
+            row("c_zlib", "streaming", 1e9),
+        ];
+        let aggs = aggregates_of(&rows);
+        let get = |k: &str| aggs.iter().find(|a| a.key.ends_with(k)).expect("key");
+        assert!((get("oneshot").ratio.expect("ratio") - 0.5).abs() < 1e-9);
+        assert!(
+            (get("streaming").ratio.expect("ratio") - 0.5).abs() < 1e-9,
+            "divides by C zlib streaming"
+        );
+        assert_eq!(get("streaming").c_zlib_mode.as_deref(), Some("streaming"));
+        assert!((get("streaming").c_zlib_mib_s_median - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn schema1_aggregate_defaults_to_oneshot_denominator() {
+        let text = r#"{"key":"c/raw/l6/streaming","total_bytes":1,"cleanflate_mib_s_median":1.0,
+            "cleanflate_mib_s_min":2.0,"c_zlib_mib_s_median":3.0,"c_zlib_mib_s_min":4.0,"ratio":0.3}"#;
+        let a: Aggregate = serde_json::from_str(text).expect("schema-1 aggregate parses");
+        assert_eq!(a.c_zlib_mode.as_deref(), Some("oneshot"));
+        assert_eq!(a.cleanflate_mib_s_best, 2.0);
+    }
+
+    #[test]
+    fn reuse_mode_parsed() {
+        let a = |v: &[&str]| parse_args(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let p = a(&["--modes", "oneshot,streaming,reuse"]).expect("parses");
+        assert_eq!(p.modes, vec![Mode::OneShot, Mode::Streaming, Mode::Reuse]);
+        assert!(a(&["--modes", "reuse2"]).is_err());
+        // The reuse run sits after streaming and before C zlib.
+        let names: Vec<_> = sample_order(&p.modes).into_iter().map(imp_names).collect();
+        assert_eq!(
+            names,
+            vec![
+                ("cleanflate", "oneshot"),
+                ("cleanflate", "streaming"),
+                ("cleanflate", "reuse"),
+                ("c_zlib", "oneshot"),
+                ("c_zlib", "streaming"),
+            ]
+        );
+    }
+
+    fn reuse_rows() -> Vec<ResultRow> {
+        let mib = 1024 * 1024;
+        let row = |imp: &str, mode: &str, ns: f64| ResultRow {
+            corpus: "c".into(),
+            file: "a".into(),
+            framing: "raw".into(),
+            level: 1,
+            mode: mode.into(),
+            implementation: imp.into(),
+            bytes: 4 * mib,
+            reps: 1,
+            median_ns: ns,
+            best_ns: ns,
+        };
+        vec![
+            row("cleanflate", "streaming", 2e9),
+            row("cleanflate", "reuse", 1e9),
+            row("c_zlib", "streaming", 1e9),
+        ]
+    }
+
+    #[test]
+    fn reuse_aggregate_has_no_c_zlib_ratio() {
+        let aggs = aggregates_of(&reuse_rows());
+        let reuse = aggs
+            .iter()
+            .find(|g| g.key.ends_with("/reuse"))
+            .expect("reuse");
+        assert_eq!(reuse.ratio, None);
+        assert_eq!(reuse.c_zlib_mode, None);
+        let stream = aggs
+            .iter()
+            .find(|g| g.key.ends_with("/streaming"))
+            .expect("streaming");
+        assert!(stream.ratio.is_some());
+        let text = serde_json::to_string(reuse).expect("serializes");
+        assert!(text.contains("\"ratio\":null") && text.contains("\"c_zlib_mode\":null"));
+        let back: Aggregate = serde_json::from_str(&text).expect("null round-trips");
+        assert_eq!(back.ratio, None);
+        assert_eq!(back.c_zlib_mode, None);
+    }
+
+    #[test]
+    fn vs_fresh_streaming_computed() {
+        let aggs = aggregates_of(&reuse_rows());
+        let reuse = aggs
+            .iter()
+            .find(|g| g.key.ends_with("/reuse"))
+            .expect("reuse");
+        let v = reuse.vs_fresh_streaming.expect("both modes ran");
+        assert!((v - 2.0).abs() < 1e-9, "{v}");
+        // Without streaming rows there is nothing to compare against.
+        let only_reuse: Vec<ResultRow> = reuse_rows()
+            .into_iter()
+            .filter(|r| r.mode == "reuse")
+            .collect();
+        let aggs = aggregates_of(&only_reuse);
+        assert_eq!(aggs[0].vs_fresh_streaming, None);
+        let stream = aggregates_of(&reuse_rows())
+            .into_iter()
+            .find(|g| g.key.ends_with("/streaming"))
+            .expect("streaming");
+        assert_eq!(stream.vs_fresh_streaming, None);
+    }
+
+    #[test]
+    fn sample_order_includes_c_zlib_streaming() {
+        let names = |modes: &[Mode]| -> Vec<(&'static str, &'static str)> {
+            sample_order(modes).into_iter().map(imp_names).collect()
+        };
+        assert_eq!(
+            names(&[Mode::Streaming, Mode::OneShot]),
+            vec![
+                ("cleanflate", "oneshot"),
+                ("cleanflate", "streaming"),
+                ("c_zlib", "oneshot"),
+                ("c_zlib", "streaming"),
+            ]
+        );
+        assert_eq!(
+            names(&[Mode::Streaming]),
+            vec![("cleanflate", "streaming"), ("c_zlib", "streaming")]
+        );
+        assert_eq!(
+            names(&[Mode::OneShot]),
+            vec![("cleanflate", "oneshot"), ("c_zlib", "oneshot")]
+        );
     }
 
     #[test]

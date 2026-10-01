@@ -65,6 +65,10 @@
 //! [`Decompressor::trailing_start`] reports where the trailing bytes
 //! began.
 //!
+//! [`Decompressor::reset`] returns a decompressor to its freshly-constructed
+//! state while keeping its allocations, for decoding many streams in a
+//! row.
+//!
 //! ```
 //! use cleanflate::{Decompressor, Format, Options, Status};
 //!
@@ -105,6 +109,7 @@ pub mod gzip;
 mod huffman;
 mod inflate;
 mod options;
+mod sink;
 mod stream;
 mod tables;
 #[cfg(feature = "test-hooks")]

@@ -5,6 +5,7 @@ use crate::checksum::Adler32;
 use crate::decode_path::DecodePath;
 use crate::error::{ChecksumKind, Error, HeaderError};
 use crate::inflate::{InflateStatus, Inflater};
+use crate::sink::OutputSink;
 
 #[derive(Debug, Clone)]
 enum State {
@@ -53,6 +54,17 @@ impl ZlibDecoder {
         }
     }
 
+    /// Return to the freshly-constructed state, keeping the allocations and
+    /// the dictionary offered at construction (it is only applied again if
+    /// the next stream's FDICT bit asks for it).
+    pub(crate) fn reset(&mut self) {
+        self.state = State::Cmf;
+        self.inflater.reset();
+        self.adler = Adler32::new();
+        self.dict_id_buf = [0u8; 4];
+        self.trailer_buf = [0u8; 4];
+    }
+
     /// The decode path of the current inflater.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn inflater_path(&self) -> DecodePath {
@@ -73,10 +85,10 @@ impl ZlibDecoder {
         matches!(self.state, State::Done)
     }
 
-    pub(crate) fn step(
+    pub(crate) fn step_into<S: OutputSink>(
         &mut self,
         input: &[u8],
-        output: &mut [u8],
+        sink: &mut S,
     ) -> Result<(usize, usize, InflateStatus), Error> {
         if let State::Failed(e) = &self.state {
             return Err(e.clone());
@@ -174,16 +186,14 @@ impl ZlibDecoder {
                 }
                 State::Body => {
                     let remaining_input = input.get(pos..).unwrap_or(&[]);
-                    let remaining_output = output.get_mut(out_pos..).unwrap_or(&mut []);
-                    match self.inflater.step(remaining_input, remaining_output) {
+                    let before = sink.written();
+                    match self.inflater.step_into(remaining_input, sink) {
                         Err(e) => {
                             self.state = State::Failed(e.clone());
                             return Err(e);
                         }
                         Ok((consumed, produced, status)) => {
-                            let produced_slice =
-                                output.get(out_pos..out_pos + produced).unwrap_or(&[]);
-                            self.adler.update(produced_slice);
+                            self.adler.update(sink.written_since(before));
                             pos += consumed;
                             out_pos += produced;
                             match status {

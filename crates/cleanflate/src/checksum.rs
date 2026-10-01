@@ -53,16 +53,7 @@ impl Adler32 {
     /// accumulation this does chunk-internally) but the deferred version
     /// does far fewer divisions.
     pub fn update(&mut self, data: &[u8]) {
-        let mut s1 = self.s1;
-        let mut s2 = self.s2;
-        for chunk in data.chunks(ADLER_NMAX) {
-            for &byte in chunk {
-                s1 += byte as u32;
-                s2 += s1;
-            }
-            s1 %= ADLER_MOD;
-            s2 %= ADLER_MOD;
-        }
+        let (s1, s2) = adler_fold(self.s1, self.s2, data);
         self.s1 = s1;
         self.s2 = s2;
     }
@@ -74,6 +65,48 @@ impl Adler32 {
     pub fn finish(&self) -> u32 {
         (self.s2 << 16) | self.s1
     }
+}
+
+/// Fold `data` into the pair `(s1, s2)`, each already reduced mod
+/// `ADLER_MOD`; the result is reduced the same way.
+fn adler_fold(mut s1: u32, mut s2: u32, data: &[u8]) -> (u32, u32) {
+    for chunk in data.chunks(ADLER_NMAX) {
+        for &byte in chunk {
+            s1 += byte as u32;
+            s2 += s1;
+        }
+        s1 %= ADLER_MOD;
+        s2 %= ADLER_MOD;
+    }
+    (s1, s2)
+}
+
+/// Split a finished Adler-32 value back into `(s1, s2)`.
+#[cfg(any(test, feature = "test-hooks"))]
+const fn adler_split(adler: u32) -> (u32, u32) {
+    (adler & 0xFFFF, adler >> 16)
+}
+
+#[cfg(feature = "test-hooks")]
+/// The production update over a finished value: fold `data` into `adler`
+/// (start from 1 for an empty checksum). Same arithmetic as
+/// [`Adler32::update`]; used by the benchmark hooks.
+pub(crate) fn adler32_update_value(adler: u32, data: &[u8]) -> u32 {
+    let (s1, s2) = adler_split(adler);
+    let (s1, s2) = adler_fold(s1, s2, data);
+    (s2 << 16) | s1
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+/// The reference: fold `data` into the finished value `adler`, reducing
+/// modulo `ADLER_MOD` after every byte (RFC 1950 S8.2 as written).
+pub(crate) fn adler32_update_bytewise(adler: u32, data: &[u8]) -> u32 {
+    let (mut s1, mut s2) = adler_split(adler);
+    for &byte in data {
+        s1 = (s1 + byte as u32) % ADLER_MOD;
+        s2 = (s2 + s1) % ADLER_MOD;
+    }
+    (s2 << 16) | s1
 }
 
 impl Default for Adler32 {
@@ -90,6 +123,12 @@ pub fn adler32(data: &[u8]) -> u32 {
 }
 
 use crate::config::CRC32_SLICES;
+
+/// The widest slicing variant the tables support. Table `k` does not depend
+/// on the slice count (it is the register after a byte and `k` zero bytes),
+/// so one set serves every width up to this one; the production width is
+/// `CRC32_SLICES`. A derived capacity, not a tunable.
+pub(crate) const CRC32_MAX_SLICES: usize = 16;
 
 /// Reflected CRC-32 polynomial (RFC 1952 S8): 0xEDB88320.
 const CRC32_POLY: u32 = 0xEDB8_8320;
@@ -143,8 +182,8 @@ const fn crc32_slice_entry(b: u32, k: usize) -> u32 {
 // checker (not a runtime bounds check) is what proves this terminates and
 // never panics. `split_first_mut` is const-stable on the pinned 1.89
 // toolchain.
-const fn crc32_tables() -> [[u32; 256]; CRC32_SLICES] {
-    let mut tables = [[0u32; 256]; CRC32_SLICES];
+const fn crc32_tables() -> [[u32; 256]; CRC32_MAX_SLICES] {
+    let mut tables = [[0u32; 256]; CRC32_MAX_SLICES];
     let mut rest: &mut [[u32; 256]] = &mut tables;
     let mut k = 0usize;
     while let Some((row, tail)) = rest.split_first_mut() {
@@ -161,8 +200,9 @@ const fn crc32_tables() -> [[u32; 256]; CRC32_SLICES] {
     tables
 }
 
-/// The slice tables; table 0 is the classic byte-at-a-time table.
-pub(crate) static CRC32_TABLES: [[u32; 256]; CRC32_SLICES] = crc32_tables();
+/// The slice tables (`CRC32_MAX_SLICES` of them); table 0 is the classic
+/// byte-at-a-time table.
+pub(crate) static CRC32_TABLES: [[u32; 256]; CRC32_MAX_SLICES] = crc32_tables();
 
 /// Fold `data` into the (inverted) register one byte at a time with table
 /// 0. Used for the tail of `update` and as the test reference.
@@ -176,19 +216,38 @@ pub(crate) fn crc32_update_bytewise(mut crc: u32, data: &[u8]) -> u32 {
     crc
 }
 
-/// Fold one `CRC32_SLICES`-byte chunk into the register: the register is
-/// XORed into the chunk's first four bytes, and byte `i` then looks up
-/// table `CRC32_SLICES - 1 - i` (DESIGN.md D-32).
-fn crc32_fold_chunk(crc: u32, chunk: &[u8; CRC32_SLICES]) -> u32 {
+/// Fold one `N`-byte chunk into the register: the register is XORed into
+/// the chunk's first four bytes, and byte `i` then looks up table `N - 1 -
+/// i` (DESIGN.md D-32). `tables` are the first `N` slice tables.
+fn crc32_fold_chunk<const N: usize>(tables: &[[u32; 256]; N], crc: u32, chunk: &[u8; N]) -> u32 {
     let mut bytes = *chunk;
     for (b, c) in bytes.iter_mut().zip(crc.to_le_bytes()) {
         *b ^= c;
     }
     let mut acc = 0u32;
-    for (table, &b) in CRC32_TABLES.iter().rev().zip(bytes.iter()) {
+    for (table, &b) in tables.iter().rev().zip(bytes.iter()) {
         acc ^= table.get(b as usize).copied().unwrap_or(0);
     }
     acc
+}
+
+/// Fold `data` into the (inverted) register `N` bytes at a time, then the
+/// tail bytewise. `N` below 4 cannot fold the register into the chunk and
+/// `N` above `CRC32_MAX_SLICES` has no tables, so both fall back to the
+/// bytewise path (same result, slower).
+pub(crate) fn crc32_update_sliced<const N: usize>(crc: u32, data: &[u8]) -> u32 {
+    if N < 4 {
+        return crc32_update_bytewise(crc, data);
+    }
+    let Some(tables) = CRC32_TABLES.first_chunk::<N>() else {
+        return crc32_update_bytewise(crc, data);
+    };
+    let (chunks, tail) = data.as_chunks::<N>();
+    let mut crc = crc;
+    for chunk in chunks {
+        crc = crc32_fold_chunk(tables, crc, chunk);
+    }
+    crc32_update_bytewise(crc, tail)
 }
 
 /// Incremental CRC-32 (RFC 1952 S2.3.1, S8).
@@ -205,14 +264,17 @@ impl Crc32 {
         Crc32 { crc: 0xFFFF_FFFF }
     }
 
+    /// A checksum resumed from a finished value (`0` for an empty one).
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn from_value(crc: u32) -> Self {
+        Crc32 {
+            crc: crc ^ 0xFFFF_FFFF,
+        }
+    }
+
     /// Fold `data` into the running checksum.
     pub fn update(&mut self, data: &[u8]) {
-        let (chunks, tail) = data.as_chunks::<CRC32_SLICES>();
-        let mut crc = self.crc;
-        for chunk in chunks {
-            crc = crc32_fold_chunk(crc, chunk);
-        }
-        self.crc = crc32_update_bytewise(crc, tail);
+        self.crc = crc32_update_sliced::<CRC32_SLICES>(self.crc, data);
     }
 
     /// The current checksum value.

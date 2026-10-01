@@ -4,7 +4,9 @@
 //! an unprofiled step.
 //!
 //! Usage: `profile_decode --dir DIR --format rfc1951|rfc1950|rfc1952
-//! --iters N [--mode oneshot|streaming]`.
+//! --iters N [--mode oneshot|streaming|reuse]`. The `reuse` mode streams
+//! like `streaming` but through one `Decompressor` per file that is
+//! `reset()` before every iteration.
 
 use std::process::ExitCode;
 use std::time::Instant;
@@ -66,6 +68,12 @@ fn decode_streaming(
     expected: usize,
 ) -> Result<(Vec<u8>, Decompressor), String> {
     let mut d = Decompressor::new(format, Options::default());
+    let out = stream_through(&mut d, input, expected)?;
+    Ok((out, d))
+}
+
+/// The 64 KiB streaming loop over `d` (fresh or just reset).
+fn stream_through(d: &mut Decompressor, input: &[u8], expected: usize) -> Result<Vec<u8>, String> {
     let mut out = vec![0u8; expected + 65_536];
     let (mut in_pos, mut out_pos) = (0usize, 0usize);
     loop {
@@ -88,7 +96,7 @@ fn decode_streaming(
     }
     d.finish().map_err(|e| format!("{e:?}"))?;
     out.truncate(out_pos);
-    Ok((out, d))
+    Ok(out)
 }
 
 fn run() -> Result<(), String> {
@@ -97,6 +105,7 @@ fn run() -> Result<(), String> {
     let mut format = None;
     let mut iters = 3u32;
     let mut streaming = false;
+    let mut reuse = false;
     let mut i = 0;
     while i < args.len() {
         let flag = args.get(i).map(String::as_str).unwrap_or("");
@@ -110,8 +119,18 @@ fn run() -> Result<(), String> {
             }
             "--iters" => iters = value.parse().map_err(|e| format!("--iters: {e}"))?,
             "--mode" => match value.as_str() {
-                "oneshot" => streaming = false,
-                "streaming" => streaming = true,
+                "oneshot" => {
+                    streaming = false;
+                    reuse = false;
+                }
+                "streaming" => {
+                    streaming = true;
+                    reuse = false;
+                }
+                "reuse" => {
+                    streaming = true;
+                    reuse = true;
+                }
                 other => return Err(format!("bad --mode {other}")),
             },
             other => return Err(format!("unknown argument {other}")),
@@ -126,10 +145,30 @@ fn run() -> Result<(), String> {
     let mut decoded_bytes = 0usize;
     #[cfg(feature = "stats")]
     let mut merged = cleanflate::Stats::default();
+    // One long-lived decompressor per file for the reuse mode.
+    let mut reusable: Vec<Decompressor> = if reuse {
+        entries
+            .iter()
+            .map(|_| Decompressor::new(format, Options::default()))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let start = Instant::now();
     for iter in 0..iters {
-        for e in &entries {
-            let out = if streaming {
+        for (idx, e) in entries.iter().enumerate() {
+            let out = if reuse {
+                let d = reusable
+                    .get_mut(idx)
+                    .ok_or_else(|| format!("{}: no decompressor", e.name))?;
+                d.reset();
+                let out = stream_through(d, &e.compressed, e.original_len)?;
+                #[cfg(feature = "stats")]
+                if iter == 0 {
+                    merged.merge(&d.stats());
+                }
+                out
+            } else if streaming {
                 let (out, _d) = decode_streaming(format, &e.compressed, e.original_len)?;
                 #[cfg(feature = "stats")]
                 if iter == 0 {

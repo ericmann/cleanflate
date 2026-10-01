@@ -26,7 +26,10 @@ with open(path, encoding="utf-8") as f:
 heading_re = re.compile(r"^### (D-\S+):")
 perf_re = re.compile(r"^### (D-\S+): \[perf\]")
 PHRASE = "general technique; not derived from any specific implementation"
+# First phase-3 decision number: [perf] blocks from here on need a Profile: line.
+PROFILE_REQUIRED_FROM = 34
 ok = True
+has_profile = False
 current_heading = None
 current_has_rfc = False
 current_perf = False
@@ -42,6 +45,10 @@ def check_close(heading, has_rfc):
         if not has_measurement:
             print(f"FAIL design-check: {heading} [perf] block has no Measurement: line")
             ok = False
+        m = re.match(r"D-(\d+)$", heading)
+        if m and int(m.group(1)) >= PROFILE_REQUIRED_FROM and not has_profile:
+            print(f"FAIL design-check: {heading} [perf] block has no Profile: line")
+            ok = False
         if not has_phrase:
             print(f"FAIL design-check: {heading} [perf] block lacks the phrase '{PHRASE}'")
             ok = False
@@ -55,10 +62,13 @@ for line in lines:
         current_perf = bool(perf_re.match(line))
         has_measurement = False
         has_phrase = False
+        has_profile = False
         continue
     if current_heading is not None:
         if line.startswith("Measurement:"):
             has_measurement = True
+        if line.startswith("Profile:"):
+            has_profile = True
         if PHRASE in line:
             has_phrase = True
     if current_heading is not None and line.startswith("RFC:"):

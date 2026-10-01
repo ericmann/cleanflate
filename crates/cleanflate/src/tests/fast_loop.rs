@@ -434,3 +434,223 @@ fn fast_loop_eob_then_trailer_consumed_exact() {
         }
     }
 }
+
+/// A dynamic block whose code has 13, 14 and two 15-bit codes, so the loop
+/// must go through second-level tables: literals 'a'..='l' take lengths 1 to
+/// 12, length symbol 257 (match length 3) 13 bits, 258 (length 4) 14 bits,
+/// the end-of-block code and the literal 'm' 15 bits each.
+fn long_code_stream() -> (Vec<u8>, Vec<u8>) {
+    let mut litlen = vec![0u8; 259];
+    for (i, b) in (b'a'..=b'l').enumerate() {
+        litlen[b as usize] = (i + 1) as u8;
+    }
+    litlen[257] = 13;
+    litlen[258] = 14;
+    litlen[256] = 15;
+    litlen[b'm' as usize] = 15;
+    let dist = vec![1u8, 1u8];
+    let mut all = litlen.clone();
+    all.extend_from_slice(&dist);
+    let block = DynBlock {
+        bfinal: true,
+        cl_program: literal_cl_program(&all),
+        litlen_lengths: litlen,
+        dist_lengths: dist,
+    };
+    let mut rng = Rng(0x10C0_DE15);
+    let mut payload = Vec::new();
+    let mut expected: Vec<u8> = Vec::new();
+    for _ in 0..600 {
+        if expected.len() < 4 || rng.below(4) != 0 {
+            let b = if rng.below(3) == 0 {
+                b'm'
+            } else {
+                b'a' + rng.below(12) as u8
+            };
+            payload.push(PayloadSym::Literal(b));
+            expected.push(b);
+        } else {
+            let dist = 1 + rng.below(2) as u32;
+            let len = if rng.below(2) == 0 { 3u16 } else { 4 };
+            payload.push(PayloadSym::Match { len, dist });
+            for _ in 0..len {
+                let b = expected[expected.len() - dist as usize];
+                expected.push(b);
+            }
+        }
+    }
+    let mut w = BitWriter::new();
+    emit_dynamic_block(&mut w, &block, &payload);
+    (w.finish(), expected)
+}
+
+#[test]
+fn fast_loop_long_codes_via_subtable() {
+    let (input, expected) = long_code_stream();
+    for (i, o) in [
+        (usize::MAX / 4, usize::MAX / 4),
+        (usize::MAX / 4, 1),
+        (5, 300),
+    ] {
+        let (fast_calls, fast_out, fast) = drive(DecodePath::Fast, &input, i, o);
+        let (ref_calls, ref_out, _) = drive(DecodePath::Reference, &input, i, o);
+        assert_eq!(fast_out, expected, "in {i} out {o}");
+        assert_eq!(ref_out, expected, "in {i} out {o}");
+        assert_eq!(fast_calls, ref_calls, "in {i} out {o}: per-call results");
+        #[cfg(feature = "stats")]
+        if i > 1000 && o > 250 {
+            assert!(entries(&fast) > 0, "the fast loop must run");
+        }
+        #[cfg(not(feature = "stats"))]
+        let _ = fast;
+    }
+}
+
+/// The fast loop's fixed-size lookup must agree with the general table
+/// decode on every code, including second-level codes and invalid prefixes.
+#[test]
+fn fast_table_lookup_matches_decode_table() {
+    use crate::bitreader::BitReader;
+    use crate::huffman::{Decoded, FastDecoded, Huffman, TableKind, DIST_FIRST, LITLEN_FIRST};
+
+    let mut rng = Rng(0xFA57_7AB1_E000_0001);
+    let bytes: Vec<u8> = (0..64).map(|_| rng.next() as u8).collect();
+    let check = |table: &Huffman, first: usize| {
+        for start in 0..40usize {
+            let mut br = BitReader::new();
+            let mut pos = start;
+            assert!(br.fill(&bytes, &mut pos, 48));
+            let general = table.decode_table(&br);
+            let fast = if first == LITLEN_FIRST {
+                table
+                    .fast_table::<LITLEN_FIRST>()
+                    .expect("view")
+                    .lookup(br.bits())
+            } else {
+                table
+                    .fast_table::<DIST_FIRST>()
+                    .expect("view")
+                    .lookup(br.bits())
+            };
+            match (general, fast) {
+                (Decoded::Symbol { symbol, len }, FastDecoded::Symbol { symbol: s, len: l }) => {
+                    assert_eq!((symbol, len), (s, l), "start {start}");
+                }
+                (Decoded::Invalid, FastDecoded::Invalid) => {}
+                (g, f) => panic!("start {start}: general {g:?} vs fast {f:?}"),
+            }
+        }
+    };
+    // A long-code literal/length table (1..=15 and a second 15) and a
+    // balanced one.
+    let mut long: Vec<u8> = (1..=15u8).collect();
+    long.push(15);
+    check(
+        &Huffman::from_lengths(&long, TableKind::LitLen).expect("valid"),
+        LITLEN_FIRST,
+    );
+    check(
+        &Huffman::from_lengths(&[3u8; 8], TableKind::LitLen).expect("valid"),
+        LITLEN_FIRST,
+    );
+    // A single-code distance table is incomplete by the RFC 1951 S3.2.7
+    // exception: half of the prefixes are invalid.
+    check(
+        &Huffman::from_lengths(&[1u8], TableKind::Distance).expect("valid"),
+        DIST_FIRST,
+    );
+    check(
+        &Huffman::from_lengths(&[2u8, 2, 2, 2], TableKind::Distance).expect("valid"),
+        DIST_FIRST,
+    );
+
+    // A view exists only for the first-level size the table was built for.
+    let lit = Huffman::from_lengths(&[2u8, 2, 2, 2], TableKind::LitLen).expect("valid");
+    assert!(lit.fast_table::<LITLEN_FIRST>().is_some());
+    assert!(lit.fast_table::<DIST_FIRST>().is_none());
+    assert!(lit.fast_table::<64>().is_none());
+    assert!(lit.fast_table::<48>().is_none(), "not a power of two");
+}
+
+#[test]
+fn fast_loop_vec_and_slice_sinks_same_trace() {
+    use crate::options::{Format, Options};
+    use crate::stream::{decompress_core, decompress_core_vec};
+
+    let (long, long_out) = long_code_stream();
+    for (input, expected) in [stream("dynamic"), stream("multi"), (long, long_out)] {
+        for path in [DecodePath::Fast, DecodePath::Reference] {
+            let slice = decompress_core(Format::Raw, &input, &Options::default(), path)
+                .expect("slice driver")
+                .decoded;
+            let vec = decompress_core_vec(Format::Raw, &input, &Options::default(), path)
+                .expect("vec driver")
+                .decoded;
+            assert_eq!(slice.data, expected, "{path:?}");
+            assert_eq!(vec, slice, "{path:?}");
+        }
+    }
+}
+
+/// A dynamic block whose seven literals and the end-of-block code all take
+/// 3 bits, so the literal/length table is full of pair entries.
+fn short_literal_stream(literals: usize) -> (Vec<u8>, Vec<u8>) {
+    let mut litlen = vec![0u8; 257];
+    for b in b'a'..=b'g' {
+        litlen[b as usize] = 3;
+    }
+    litlen[256] = 3;
+    let dist = vec![1u8];
+    let mut all = litlen.clone();
+    all.extend_from_slice(&dist);
+    let block = DynBlock {
+        bfinal: true,
+        cl_program: literal_cl_program(&all),
+        litlen_lengths: litlen,
+        dist_lengths: dist,
+    };
+    let mut rng = Rng(0xA11_5EED + literals as u64);
+    let mut payload = Vec::new();
+    let mut expected = Vec::new();
+    for _ in 0..literals {
+        let b = b'a' + rng.below(7) as u8;
+        payload.push(PayloadSym::Literal(b));
+        expected.push(b);
+    }
+    let mut w = BitWriter::new();
+    emit_dynamic_block(&mut w, &block, &payload);
+    (w.finish(), expected)
+}
+
+#[test]
+fn fast_loop_pairs_same_trace_as_reference() {
+    let mut streams = vec![
+        short_literal_stream(1),
+        short_literal_stream(2),
+        short_literal_stream(3),
+    ];
+    for n in [40usize, 333, 2000] {
+        streams.push(short_literal_stream(n));
+    }
+    streams.push(stream("fixed"));
+    streams.push(stream("dynamic"));
+    for (input, expected) in &streams {
+        for (i, o) in [
+            (usize::MAX / 4, usize::MAX / 4),
+            (usize::MAX / 4, 1),
+            (7, 13),
+        ] {
+            let (fast_calls, fast_out, fast) = drive(DecodePath::Fast, input, i, o);
+            let (ref_calls, ref_out, _) = drive(DecodePath::Reference, input, i, o);
+            assert_eq!(&fast_out, expected, "in {i} out {o}");
+            assert_eq!(&ref_out, expected, "in {i} out {o}");
+            assert_eq!(fast_calls, ref_calls, "in {i} out {o}: per-call results");
+            #[cfg(feature = "stats")]
+            if i > 1000 && o > 600 && expected.len() >= 333 {
+                assert!(entries(&fast) > 0, "the fast loop must run");
+            }
+            #[cfg(not(feature = "stats"))]
+            let _ = fast;
+        }
+    }
+}

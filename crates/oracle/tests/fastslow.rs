@@ -12,7 +12,7 @@ use oracle::ffi::{deflate_bytes, DeflateParams};
 
 mod common;
 use common::{
-    chunk_schedule_strategy, data_strategy, describe_diff, dump_candidate, oneshot,
+    chunk_schedule_strategy, compare_sinks, data_strategy, describe_diff, dump_candidate, oneshot,
     params_strategy, to_cleanflate_format, trace,
 };
 
@@ -125,6 +125,71 @@ fn fastslow_conformance_streaming() {
 }
 
 #[test]
+fn sinks_conformance_oneshot() {
+    let entries = selected(|_| true);
+    let report = check_entries(&entries, |entry, bytes| {
+        let options = options_for(entry)?;
+        let shared = compare_sinks(format_of(&entry.framing), &options, bytes)?;
+        shared.map(|(data, _, _)| data)
+    });
+    println!("sinks_conformance_oneshot: {} entries", report.checked);
+    report.assert_ok();
+}
+
+#[test]
+fn sinks_malformed() {
+    let root = repo_root();
+    let tsv = root.join("testdata/malformed/EXPECTED.tsv");
+    let text = std::fs::read_to_string(&tsv).unwrap_or_else(|e| {
+        panic!(
+            "failed to read {}: {e} -- run `make malformed` first",
+            tsv.display()
+        )
+    });
+    let mut rows = 0usize;
+    let mut failures = Vec::new();
+    for line in text.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        let raw = line.split('\t').next().unwrap_or("");
+        if raw.is_empty() {
+            continue;
+        }
+        let path = raw.trim_start_matches("sweep:");
+        rows += 1;
+        let file = root.join("testdata/malformed").join(path);
+        let bytes = std::fs::read(&file).unwrap_or_else(|e| {
+            panic!(
+                "failed to read {}: {e} -- run `make malformed` first",
+                file.display()
+            )
+        });
+        let format = if path.starts_with("rfc1950/") {
+            Format::Zlib
+        } else if path.starts_with("rfc1952/") {
+            Format::Gzip
+        } else {
+            Format::Raw
+        };
+        if let Err(e) = compare_sinks(format, &Options::default(), &bytes) {
+            failures.push(format!("{path}: {e}"));
+        }
+    }
+    assert!(
+        rows > 0,
+        "{} has zero rows -- run `make malformed` first",
+        tsv.display()
+    );
+    assert!(
+        failures.is_empty(),
+        "sink mismatches ({} of {rows} rows):\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+#[test]
 fn fastslow_malformed() {
     let root = repo_root();
     let tsv = root.join("testdata/malformed/EXPECTED.tsv");
@@ -233,6 +298,54 @@ proptest! {
                 );
                 return Err(TestCaseError::fail(format!(
                     "{tag}: {e} (saved {})",
+                    path.display()
+                )));
+            }
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: case_count(), ..ProptestConfig::default() })]
+
+    #[test]
+    fn sinks_proptest(
+        data in data_strategy(),
+        (framing, level, strategy, window_bits, mem_level) in params_strategy(),
+        flip_ratio in 0.0f64..1.0,
+        flip_xor in 1u8..=255,
+        limit_pick in 0usize..6,
+    ) {
+        let params = DeflateParams { level, strategy, window_bits, mem_level, framing };
+        let compressed = match deflate_bytes(&data, &params, None) {
+            Ok(v) => v,
+            Err(_) => return Ok(()),
+        };
+        let format = to_cleanflate_format(framing);
+        let len = data.len() as u64;
+        let max_output = match limit_pick {
+            0 => 0,
+            1 => len / 2,
+            2 => len.saturating_sub(1),
+            3 => len,
+            4 => len + 1,
+            _ => Options::default().max_output,
+        };
+        let options = Options { max_output, ..Options::default() };
+
+        let mut flipped = compressed.clone();
+        if !flipped.is_empty() {
+            let idx = ((flip_ratio * flipped.len() as f64) as usize).min(flipped.len() - 1);
+            if let Some(b) = flipped.get_mut(idx) {
+                *b ^= flip_xor;
+            }
+        }
+
+        for (tag, input) in [("clean", &compressed), ("flipped", &flipped)] {
+            if let Err(e) = compare_sinks(format, &options, input) {
+                let path = dump_candidate(&format!("sinks-{tag}"), format, input, &[input.len().max(1)], &[65_536], &e);
+                return Err(TestCaseError::fail(format!(
+                    "{tag} max_output={max_output}: {e} (saved {})",
                     path.display()
                 )));
             }

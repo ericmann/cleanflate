@@ -32,7 +32,14 @@ impl BitReader {
         BitReader::default()
     }
 
+    /// The bit buffer itself: the buffered bits at the low end, zeros above.
+    #[inline(always)]
+    pub(crate) fn bits(&self) -> u64 {
+        self.buffer
+    }
+
     /// Number of bits currently buffered.
+    #[inline(always)]
     pub(crate) fn available(&self) -> u32 {
         self.count
     }
@@ -70,6 +77,7 @@ impl BitReader {
     /// whole bytes as fit above the buffered bits; with fewer, single bytes
     /// are loaded while at most 55 bits are buffered. The count never
     /// exceeds 63, so no shift reaches 64.
+    #[inline]
     pub(crate) fn refill_bulk(&mut self, input: &[u8], pos: &mut usize) {
         #[cfg(feature = "stats")]
         let start = *pos;
@@ -139,6 +147,7 @@ impl BitReader {
 
     /// Peek at the low `n` bits (n <= 32) without consuming them.
     /// Unavailable high bits (beyond what has been buffered) read as 0.
+    #[inline(always)]
     pub(crate) fn peek(&self, n: u32) -> u32 {
         if n == 0 {
             return 0;
@@ -152,6 +161,7 @@ impl BitReader {
     }
 
     /// Drop the low `n` bits from the buffer.
+    #[inline(always)]
     pub(crate) fn consume(&mut self, n: u32) {
         let n = n.min(self.count);
         self.buffer >>= n;

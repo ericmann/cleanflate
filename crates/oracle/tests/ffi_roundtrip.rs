@@ -235,3 +235,65 @@ fn gzip_multi_member_1f_trailer_is_trailing() {
 fn zlib_version_is_nonempty() {
     assert!(!zlib_version().is_empty());
 }
+
+fn mixed_data(len: usize) -> Vec<u8> {
+    let mut v = text_like(len / 2);
+    v.extend(xorshift_bytes(0xfeed_beef, len - len / 2));
+    v
+}
+
+#[test]
+fn compile_flags_stable() {
+    let a = oracle::ffi::zlib_compile_flags();
+    let b = oracle::ffi::zlib_compile_flags();
+    assert_eq!(a, b);
+    assert!(!format!("{a:#x}").is_empty());
+}
+
+#[test]
+fn streaming_equals_oneshot_all_framings() {
+    let input = mixed_data(256 * 1024);
+    for &framing in &[Framing::Raw, Framing::Zlib, Framing::Gzip] {
+        for &level in &[1u8, 6, 9] {
+            let compressed = deflate_bytes(&input, &default_params(level, framing), None)
+                .expect("deflate should succeed");
+            let oneshot = inflate_bytes(&compressed, framing, None, 1 << 22);
+            assert_eq!(oneshot.status, OracleStatus::StreamEnd);
+            for &(ic, oc) in &[(1usize, 1usize), (7, 13), (65536, 65536)] {
+                let mut out = vec![0u8; input.len()];
+                let n = oracle::ffi::inflate_streaming_into(&compressed, framing, ic, &mut out, oc)
+                    .unwrap_or_else(|e| panic!("{framing:?} l{level} ({ic},{oc}): {e:?}"));
+                assert_eq!(n, input.len());
+                assert_eq!(out, input);
+                assert_eq!(out, oneshot.output);
+            }
+        }
+    }
+}
+
+#[test]
+fn streaming_truncated_is_error() {
+    let input = mixed_data(4096);
+    let c = deflate_bytes(&input, &default_params(6, Framing::Zlib), None).unwrap();
+    let cut = &c[..c.len() / 2];
+    let mut out = vec![0u8; 8192];
+    let r = oracle::ffi::inflate_streaming_into(cut, Framing::Zlib, 64, &mut out, 64);
+    assert_eq!(r, Err(OracleStatus::Truncated));
+}
+
+#[test]
+fn streaming_output_too_small_is_error() {
+    let input = mixed_data(4096);
+    let c = deflate_bytes(&input, &default_params(6, Framing::Raw), None).unwrap();
+    let mut out = vec![0u8; 100];
+    let r = oracle::ffi::inflate_streaming_into(&c, Framing::Raw, 64, &mut out, 64);
+    assert_eq!(r, Err(OracleStatus::OutputLimit));
+}
+
+#[test]
+fn streaming_zero_chunk_is_error() {
+    let c = deflate_bytes(b"abc", &default_params(6, Framing::Raw), None).unwrap();
+    let mut out = vec![0u8; 16];
+    assert!(oracle::ffi::inflate_streaming_into(&c, Framing::Raw, 0, &mut out, 4).is_err());
+    assert!(oracle::ffi::inflate_streaming_into(&c, Framing::Raw, 4, &mut out, 0).is_err());
+}

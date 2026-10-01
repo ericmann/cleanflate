@@ -23,6 +23,11 @@ needs a `Measurement:` line and the exact phrase "general technique; not
 derived from any specific implementation"; `make design-check` fails a
 `[perf]` block missing either.
 
+Phase-3 `[perf]` entries (D-34 onward) add a `Profile:` line naming the
+hotspot key, the frames and their share before and after, citing
+`docs/perf/phase3-profile.md` or a committed flamegraph; `make
+design-check` fails such a block without it.
+
 ## Decisions
 
 ### D-01: Error model
@@ -1005,3 +1010,98 @@ to 18 * 1032 = 18,576 bytes up front, while any stream large enough to
 really produce 64 MiB still gets the full hint. Output, limits and errors
 are unchanged: the hint only sizes the first allocation (D-31), and
 growth on `OutputFull` covers any hint that is too small.
+
+### D-34: Output sinks for the decoder core
+
+RFC: RFC 1951 S3.2.5
+Decision: Every output write of the decoder core, and every look-back at
+the bytes written in the current call, goes through a crate-private
+`OutputSink` trait (`written`, `room`, `push`, `extend_from_slice`,
+`copy_within_back`, `get_back`, `written_since`). The state machine, the
+fast loop, the window copy and the zlib and gzip wrappers are generic over
+the sink and monomorphised, and `Decompressor::decompress` wraps its
+allowance-trimmed output slice in a `SliceSink`, which behaves exactly as
+writing into that slice did. History semantics are unchanged: a match reaches
+back into the window (as it stood when the call began) followed by the bytes
+the sink received since the decoder's own output began, so a gzip member that
+starts in the middle of a call still sees only its own bytes. The window is
+refreshed once per call from `written_since` (D-30), the D-27 bit-reader exits
+are untouched, and the fast and reference paths differ only in how a match is
+copied (slices against byte by byte).
+Rationale: One decoder core has to serve a caller-supplied slice today and a
+growable buffer later (the one-shot path), without a second copy of the
+state machine that would have to be kept in step with it. A trait with
+generic, inlined methods gives that with no dynamic dispatch, and funnelling
+every write and back-reference through five small operations is what makes the
+second sink a separate, testable addition. This step is a pure refactor with
+only the slice sink: decoded output, errors, `consumed` and `produced`, the
+streaming contract and `size_of::<Decompressor>()` are unchanged. Test-only
+slice-shaped wrappers (`step`, `copy_match`) keep the existing unit tests
+meaningful without widening the production API.
+
+### D-35: `Decompressor::reset`
+
+RFC: n/a (API) -- SPEC S6 M3
+Decision: `Decompressor::reset(&mut self)` returns a decompressor to the
+state `Decompressor::new(format, options)` would have, for the same format,
+options and decode path, while keeping its allocations. After it, every
+observable is what a fresh decompressor would show for any later call
+sequence: `decompress` results, `finish`, `total_in`, `total_out`,
+`trailing_start`, the gzip headers and member count, and (feature `stats`)
+the counters. The sticky error is cleared. `Options::dictionary` is applied
+again to a raw stream, and a zlib stream applies it when its FDICT bit asks
+for it, as before. Each layer has its own `reset`: the inflater returns its
+state machine, bit reader and counters to their initial values and forgets the
+window's history (the 32 KiB ring stays allocated, unreachable until refilled
+because every read is bounded by the bytes appended since); the zlib wrapper
+returns to reading CMF with a fresh Adler-32; the gzip wrapper returns to its
+first member header with its header list cleared. There is no `reset_with`
+(a new format or options): every caller that decodes many streams through one
+object keeps the format and the options, and an API that changes them can be
+added later without breaking this one.
+Rationale: Decoding many small streams pays to set up a decompressor each
+time: the window, the two fixed tables and the gzip header parser. Keeping
+the allocations and clearing only the state makes that cost once per
+object. The contract is stated as equivalence with a fresh decompressor, not
+as a list of fields, so a field added later cannot be forgotten silently: the
+reset differential (`crates/oracle/tests/reset.rs`) decodes a stream on a
+decompressor that was driven to each interesting state (untouched, one call
+in, finished, errored, truncated, at the output limit) and then reset, and
+requires the same calls, output, `finish` result and counters as a fresh
+decompressor, across formats, options, dictionaries and both decode paths.
+
+### D-36: [perf] Fast-loop lookup in the loop, on fixed-size table views
+
+RFC: RFC 1951 S3.2.2, S3.2.5, S3.2.6
+Decision: On the Fast path the decode loop no longer calls the general table
+decode (`Huffman::decode_table`) for each symbol. It looks the next code up
+itself in a fixed-size view of the table's first level (`FastTable`, built
+once per loop entry from `LITLEN_TABLE_BITS`/`DIST_TABLE_BITS`'s table sizes):
+the first-level index is the low bits of the bit buffer masked to the table's
+power-of-two length, a second-level entry is followed by the same masked-index
+rule, and the result is a symbol and its code length, or "invalid". The lookup
+relies on what each loop iteration already guarantees, that at least 48 bits
+are buffered (a code is at most 15 bits), so it has no "need more bits" case,
+and the loop keeps its bit buffer, input position and the two views in locals
+for the whole run (the loop and its lookups are one function, so the
+compiler holds them in registers). A table with no lookup level of exactly
+that size makes the loop hand over to the state machine instead. The general
+decode and the bit-serial walk are unchanged and remain the Reference path
+and the state machine's decoder; a unit test checks the loop's lookup against
+the general decode on literal/length and distance tables with second-level
+codes and invalid prefixes.
+Rationale: The profile of the level-1 streams showed the loop spending 42% of
+its samples in the loop body and another 29% in `decode_table`, a separate
+function called once or twice per symbol that takes the bit reader by
+reference and returns a three-way result the caller immediately takes apart.
+A call per symbol forces the buffered bits through memory and adds the
+argument and result handling, and the "enough bits?" comparisons it repeats
+were already settled by the loop's margin. Doing the lookup in the loop, with
+indices the compiler can see are in range, removes the call, the repeated
+checks and the memory traffic. The assembly evidence (`make asm-count`) shows
+no bounds-check panic sites in the loop before or after, so the gain is not
+from elided panics but from fewer instructions per symbol (`instructions:u`
+36.4 G to 25.8 G, cycles 12.9 G to 10.2 G on Silesia level 1 one-shot).
+Provenance: general technique; not derived from any specific implementation.
+Profile: `silesia/rfc1951/l1/oneshot`: `fast_loop::run` 41.79% + `Huffman::decode_table` 28.53% + `Window::copy_match` 12.75% = 83.07% of samples before (docs/perf/phase3-profile.md); `fast_loop::run` 78.56% after (the lookup and the match copy are inlined into it), and the whole decode 3,810 -> 3,150 ms of task-clock.
+Measurement: docs/perf/phase3/P4-03.json against docs/perf/phase3/P4-03-before.json (bench-quick): every one-shot and streaming key at levels 1 and 6 is a WIN on both throughput and the like-for-like ratio, +18% to +31% (Silesia raw level 1 streaming 129.3 -> 170.1 MiB/s, +31.5%; Silesia raw level 1 one-shot 132.2 -> 164.1, +24.1%; Silesia raw level 6 one-shot 156.1 -> 194.7, +24.7%); interleaved old/new binaries agree (Silesia level 1 one-shot 161.4 -> 189.4 MiB/s). Assembly: docs/perf/phase3/P4-03-asm.json.

@@ -9,6 +9,7 @@ use crate::decode_path::DecodePath;
 use crate::error::{ChecksumKind, Error, HeaderError};
 use crate::inflate::{InflateStatus, Inflater};
 use crate::options::TrailingData;
+use crate::sink::OutputSink;
 
 /// A parsed gzip member header (RFC 1952 S2.3.1). `Zlib`/`Gzip` and
 /// member-body/trailer handling arrive in P3-03.
@@ -473,6 +474,26 @@ impl GzipDecoder {
         }
     }
 
+    /// Return to the freshly-constructed state, keeping the allocations
+    /// (the inflater's window and tables, the header list's capacity).
+    pub(crate) fn reset(&mut self) {
+        self.state = GState::MemberHeader(GzipHeaderParser::new(self.max_gzip_field));
+        self.inflater.reset();
+        self.member_crc = Crc32::new();
+        self.member_len = 0;
+        self.headers.clear();
+        self.member_count = 0;
+        self.total_in = 0;
+        self.total_out = 0;
+        self.trailing_start = None;
+        self.boundary_pending.clear();
+        self.boundary_start = 0;
+        #[cfg(feature = "stats")]
+        {
+            *self.stats_done = crate::stats::Stats::default();
+        }
+    }
+
     pub(crate) fn total_out(&self) -> u64 {
         self.total_out
     }
@@ -499,10 +520,10 @@ impl GzipDecoder {
         Err(e)
     }
 
-    pub(crate) fn step(
+    pub(crate) fn step_into<S: OutputSink>(
         &mut self,
         input: &[u8],
-        output: &mut [u8],
+        sink: &mut S,
     ) -> Result<(usize, usize, InflateStatus), Error> {
         if let GState::Failed(e) = &self.state {
             return Err(e.clone());
@@ -549,13 +570,11 @@ impl GzipDecoder {
                 }
                 GState::Body => {
                     let remaining_input = input.get(pos..).unwrap_or(&[]);
-                    let remaining_output = output.get_mut(out_pos..).unwrap_or(&mut []);
-                    match self.inflater.step(remaining_input, remaining_output) {
+                    let before = sink.written();
+                    match self.inflater.step_into(remaining_input, sink) {
                         Err(e) => return self.fail(e),
                         Ok((consumed, produced, status)) => {
-                            let produced_slice =
-                                output.get(out_pos..out_pos + produced).unwrap_or(&[]);
-                            self.member_crc.update(produced_slice);
+                            self.member_crc.update(sink.written_since(before));
                             self.member_len += produced as u64;
                             pos += consumed;
                             self.total_in += consumed as u64;

@@ -8,8 +8,10 @@ use std::path::PathBuf;
 
 use proptest::prelude::*;
 
-use cleanflate::test_hooks::{decompress_with_path, decompressor_with_path, DecodePath};
-use cleanflate::{Format, Options, Status};
+use cleanflate::test_hooks::{
+    decompress_with_path, decompress_with_sink, decompressor_with_path, DecodePath, OneShotSink,
+};
+use cleanflate::{Decompressor, Format, Options, Status};
 use oracle::ffi::{Framing, Strategy as ZlibStrategy};
 use oracle::manifest::sha256_hex;
 
@@ -51,11 +53,21 @@ pub fn trace(
     in_sched: &[usize],
     out_sched: &[usize],
 ) -> Trace {
+    let mut d = decompressor_with_path(format, options.clone(), path);
+    trace_with(&mut d, input, in_sched, out_sched)
+}
+
+/// [`trace`] over an existing decompressor, from whatever state it is in.
+pub fn trace_with(
+    d: &mut Decompressor,
+    input: &[u8],
+    in_sched: &[usize],
+    out_sched: &[usize],
+) -> Trace {
     assert!(
         !in_sched.is_empty() && !out_sched.is_empty(),
         "empty schedule"
     );
-    let mut d = decompressor_with_path(format, options.clone(), path);
     let mut calls = Vec::new();
     let mut output = Vec::new();
     let mut pos = 0usize;
@@ -133,6 +145,54 @@ pub fn oneshot(
     decompress_with_path(format, input, options, path)
         .map(|d| (d.data, d.consumed, format!("{:?}", d.gzip_members)))
         .map_err(|e| format!("{e:?}"))
+}
+
+/// A one-shot decode result: data, consumed and gzip headers' Debug string,
+/// or the error's Debug string.
+pub type OneShotResult = Result<(Vec<u8>, usize, String), String>;
+
+/// One-shot decode through an explicit output sink and path: data,
+/// consumed, and the gzip headers' Debug string, or the error's Debug
+/// string.
+pub fn oneshot_sink(
+    format: Format,
+    options: &Options,
+    path: DecodePath,
+    sink: OneShotSink,
+    input: &[u8],
+) -> OneShotResult {
+    decompress_with_sink(format, input, options, path, sink)
+        .map(|d| (d.data, d.consumed, format!("{:?}", d.gzip_members)))
+        .map_err(|e| format!("{e:?}"))
+}
+
+/// Decode one-shot through all four combinations of output sink (slice
+/// or Vec) and decode path (Fast or Reference). `Err` describes the first
+/// combination that disagrees with the slice sink on the Fast path; `Ok`
+/// carries the shared result.
+pub fn compare_sinks(
+    format: Format,
+    options: &Options,
+    input: &[u8],
+) -> Result<OneShotResult, String> {
+    let baseline = oneshot_sink(format, options, DecodePath::Fast, OneShotSink::Slice, input);
+    for sink in [OneShotSink::Slice, OneShotSink::Vec] {
+        for path in [DecodePath::Fast, DecodePath::Reference] {
+            let got = oneshot_sink(format, options, path, sink, input);
+            if got != baseline {
+                let short = |r: &OneShotResult| match r {
+                    Ok((d, c, h)) => format!("Ok(len={}, consumed={c}, headers={h})", d.len()),
+                    Err(e) => format!("Err({e})"),
+                };
+                return Err(format!(
+                    "{sink:?}/{path:?} differs from Slice/Fast: {} vs {}",
+                    short(&got),
+                    short(&baseline)
+                ));
+            }
+        }
+    }
+    Ok(baseline)
 }
 
 /// Describe the first difference between two traces, or `None`.

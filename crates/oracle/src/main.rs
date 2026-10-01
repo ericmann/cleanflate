@@ -45,6 +45,7 @@ fn main() -> ExitCode {
             }
         },
         Some("perf-prep") => report(run_perf_prep(&args[2..]), "perf-prep"),
+        Some("bench-targets") => report(run_bench_targets(&args[2..]), "bench-targets"),
         Some("bench-md") => report(run_bench_md(&args[2..]), "bench-md"),
         Some("regress-add") => match oracle::regress::run_add(&args[2..]) {
             Ok(()) => ExitCode::SUCCESS,
@@ -254,12 +255,17 @@ fn run_bench_noise(args: &[String]) -> Result<(), String> {
 fn run_bench_compare(args: &[String]) -> Result<u8, String> {
     let mut paths = Vec::new();
     let mut noise_path = None;
+    let mut baseline_path = None;
     let mut fail = false;
     let mut i = 0;
     while i < args.len() {
         match args.get(i).map(String::as_str) {
             Some("--noise") => {
                 noise_path = args.get(i + 1).cloned();
+                i += 2;
+            }
+            Some("--baseline") => {
+                baseline_path = args.get(i + 1).cloned();
                 i += 2;
             }
             Some("--fail-on-regression") => {
@@ -275,31 +281,99 @@ fn run_bench_compare(args: &[String]) -> Result<u8, String> {
     }
     let [a, b] = paths.as_slice() else {
         return Err(
-            "usage: oracle bench-compare A B [--noise PATH] [--fail-on-regression]".to_string(),
+            "usage: oracle bench-compare A B [--noise PATH] [--baseline PATH] [--fail-on-regression]"
+                .to_string(),
         );
     };
     let (ja, jb) = (
         bench_compare::load_json(Path::new(a))?,
         bench_compare::load_json(Path::new(b))?,
     );
-    let noise_path =
-        noise_path.or_else(|| bench_compare::default_noise_path(&ja, &jb).map(String::from));
+    let noise_path = noise_path.or_else(|| {
+        bench_compare::default_noise_path(Path::new("."), &ja, &jb).map(|(p, phase2)| {
+            if phase2 {
+                println!("using phase-2 noise ({p})");
+            }
+            p
+        })
+    });
     let noise = match &noise_path {
         Some(p) => bench_compare::load_noise(Path::new(p))?,
         None => None,
     };
-    let comparison = bench_compare::compare(&ja, &jb, noise.as_ref())?;
+    let baseline = load_baseline(baseline_path.as_deref())?;
+    let comparison =
+        bench_compare::compare_with_baseline(&ja, &jb, noise.as_ref(), baseline.as_ref())?;
     print!("{}", bench_compare::render_comparison(&comparison));
     Ok(bench_compare::exit_code(&comparison, fail) as u8)
+}
+
+/// Load the baseline file (default: the phase-2 numbers of record). A missing
+/// file prints `baseline missing: <path>` and yields `None`; a present but
+/// unreadable one is an error.
+fn load_baseline(path: Option<&str>) -> Result<Option<oracle::bench_json::BenchJson>, String> {
+    let path = path.unwrap_or("docs/perf/baselines/phase2.json");
+    if !Path::new(path).exists() {
+        println!("baseline missing: {path}");
+        return Ok(None);
+    }
+    bench_compare::load_json(Path::new(path)).map(Some)
+}
+
+fn run_bench_targets(args: &[String]) -> Result<(), String> {
+    let mut path = None;
+    let mut baseline_path = None;
+    let mut noise_path = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args.get(i).map(String::as_str) {
+            Some("--baseline") => {
+                baseline_path = args.get(i + 1).cloned();
+                i += 2;
+            }
+            Some("--noise") => {
+                noise_path = args.get(i + 1).cloned();
+                i += 2;
+            }
+            Some(p) => {
+                path = Some(p.to_string());
+                i += 1;
+            }
+            None => break,
+        }
+    }
+    let path = path.ok_or("usage: oracle bench-targets JSON [--baseline PATH] [--noise PATH]")?;
+    let json = bench_compare::load_json(Path::new(&path))?;
+    let baseline = load_baseline(baseline_path.as_deref())?;
+    let noise_path = noise_path.or_else(|| {
+        bench_compare::default_noise_path(Path::new("."), &json, &json).map(|(p, phase2)| {
+            if phase2 {
+                println!("using phase-2 noise ({p})");
+            }
+            p
+        })
+    });
+    let noise = match &noise_path {
+        Some(p) => bench_compare::load_noise(Path::new(p))?,
+        None => None,
+    };
+    let reports = oracle::bench_targets::evaluate(&json, baseline.as_ref(), noise.as_ref());
+    print!("{}", oracle::bench_targets::render(&reports));
+    Ok(())
 }
 
 fn run_bench_md(args: &[String]) -> Result<(), String> {
     let mut path = None;
     let mut files = false;
     let mut filter = None;
+    let mut baseline_path = None;
     let mut i = 0;
     while i < args.len() {
         match args.get(i).map(String::as_str) {
+            Some("--baseline") => {
+                baseline_path = args.get(i + 1).cloned();
+                i += 2;
+            }
             Some("--files") => {
                 files = true;
                 i += 1;
@@ -315,11 +389,13 @@ fn run_bench_md(args: &[String]) -> Result<(), String> {
             None => break,
         }
     }
-    let path = path.ok_or("usage: oracle bench-md JSON [--files] [--filter PREFIX]")?;
+    let path =
+        path.ok_or("usage: oracle bench-md JSON [--files] [--filter PREFIX] [--baseline PATH]")?;
     let json = bench_compare::load_json(Path::new(&path))?;
+    let baseline = load_baseline(baseline_path.as_deref())?;
     print!(
         "{}",
-        bench_compare::render_md(&json, files, filter.as_deref())
+        bench_compare::render_md_with_baseline(&json, files, filter.as_deref(), baseline.as_ref())
     );
     Ok(())
 }

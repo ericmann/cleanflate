@@ -1,13 +1,14 @@
 //! The 32 KiB DEFLATE history (RFC 1951 S2: "distance is drawn from
 //! (1..32,768)"), including overlapping-copy semantics.
 //!
-//! Within one `step` call the caller's output slice is the match history:
-//! history is the window as it stood at call entry followed by
-//! `output[..out_pos]`. The window itself only keeps what must survive
+//! Within one `step` call the output sink is the match history: history is
+//! the window as it stood at call entry followed by the bytes the sink
+//! received since then. The window itself only keeps what must survive
 //! across calls, and is refreshed from the output at every exit (DESIGN.md
 //! D-30).
 
 use crate::decode_path::DecodePath;
+use crate::sink::OutputSink;
 use crate::tables::WINDOW_SIZE;
 
 /// A ring buffer of the last `WINDOW_SIZE` bytes of history, used to
@@ -35,6 +36,17 @@ impl Window {
             total: 0,
             #[cfg(feature = "stats")]
             written: 0,
+        }
+    }
+
+    /// Forget all history, keeping the storage. The ring's old bytes stay
+    /// in place but are unreachable: every read is bounded by
+    /// [`Self::available`], which is 0 again.
+    pub(crate) fn reset(&mut self) {
+        self.total = 0;
+        #[cfg(feature = "stats")]
+        {
+            self.written = 0;
         }
     }
 
@@ -86,6 +98,7 @@ impl Window {
         self.buf.get(idx as usize).copied()
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     /// Copy `dst.len()` bytes that start `back` bytes before the end of
     /// the window, in at most two slice copies. Requires
     /// `dst.len() <= back <= available()`; returns `false` and leaves `dst`
@@ -122,77 +135,106 @@ impl Window {
         }
     }
 
-    /// Copy a length/distance match into `output[cur..]`: up to `n` bytes,
-    /// bounded by the room left in `output`, returning how many were
-    /// written (0 if `dist` is 0 or reaches beyond the history
-    /// available). The history is the window followed by `output[..cur]`,
-    /// and an overlapping match (`dist` smaller than the length) repeats
-    /// the pattern it has just written, as RFC 1951 S3.2.3 describes.
+    /// The two contiguous pieces of the ring that hold the `n` bytes that
+    /// start `back` bytes before the end of the window, in order (the
+    /// second is empty unless the span wraps). Requires `n <= back <=
+    /// available()`; `None` otherwise.
+    pub(crate) fn back_parts(&self, back: usize, n: usize) -> Option<(&[u8], &[u8])> {
+        if back < n || back > self.available() {
+            return None;
+        }
+        let start = ((self.total - back as u64) % WINDOW_SIZE as u64) as usize;
+        let first = n.min(WINDOW_SIZE - start);
+        let a = self.buf.get(start..start + first)?;
+        let b = self.buf.get(..n - first)?;
+        Some((a, b))
+    }
+
+    /// Copy a length/distance match into the sink: up to `n` bytes,
+    /// bounded by the sink's room, returning how many were written (0 if
+    /// `dist` is 0 or reaches beyond the history available). The history
+    /// is the window followed by the sink's bytes since offset `base` (the
+    /// caller's own part of the output), and an overlapping match (`dist`
+    /// smaller than the length) repeats the pattern it has just written,
+    /// as RFC 1951 S3.2.3 describes.
     ///
     /// `Fast` copies in slices: bytes that reach into the window come from
-    /// [`Self::read_back`], the rest from an earlier part of `output` with
-    /// `copy_within`, at most `dist` bytes at a time so that source and
-    /// destination never overlap. `Reference` copies byte by byte.
-    pub(crate) fn copy_match(
+    /// [`Self::back_parts`], the rest from earlier in the sink's output with
+    /// `copy_within_back`, at most `dist` bytes at a time so that source
+    /// and destination never overlap. `Reference` copies byte by byte.
+    #[inline]
+    pub(crate) fn copy_match_sink<S: OutputSink>(
         &self,
         path: DecodePath,
-        output: &mut [u8],
-        cur: usize,
+        sink: &mut S,
+        base: usize,
         dist: usize,
         n: usize,
     ) -> usize {
-        let n = n.min(output.len().saturating_sub(cur));
+        let cur = sink.written().saturating_sub(base);
+        let n = n.min(sink.room());
         if n == 0 || dist == 0 || dist > self.history_available(cur) {
             return 0;
         }
         match path {
-            DecodePath::Fast => self.copy_match_slices(output, cur, dist, n),
-            DecodePath::Reference => self.copy_match_bytewise(output, cur, dist, n),
+            DecodePath::Fast => self.copy_match_slices(sink, cur, dist, n),
+            DecodePath::Reference => self.copy_match_bytewise(sink, cur, dist, n),
         }
     }
 
-    fn copy_match_slices(&self, output: &mut [u8], cur: usize, dist: usize, n: usize) -> usize {
+    #[inline]
+    fn copy_match_slices<S: OutputSink>(
+        &self,
+        sink: &mut S,
+        cur: usize,
+        dist: usize,
+        n: usize,
+    ) -> usize {
         let mut c = cur;
         let mut left = n;
         while left > 0 {
             if dist > c {
                 // Reaches into the window: `dist - c` bytes before its end.
                 let chunk = left.min(dist - c);
-                let ok = output
-                    .get_mut(c..c + chunk)
-                    .is_some_and(|dst| self.read_back(dist - c, dst));
-                if !ok {
+                let Some((a, b)) = self.back_parts(dist - c, chunk) else {
+                    break;
+                };
+                let wrote = sink.extend_from_slice(a) + sink.extend_from_slice(b);
+                c += wrote;
+                left -= wrote;
+                if wrote < chunk {
                     break;
                 }
-                c += chunk;
-                left -= chunk;
             } else {
-                let chunk = left.min(dist);
-                let src = c - dist;
-                if src + chunk > output.len() || c + chunk > output.len() {
+                let wrote = sink.copy_within_back(dist, left.min(dist));
+                if wrote == 0 {
                     break;
                 }
-                output.copy_within(src..src + chunk, c);
-                c += chunk;
-                left -= chunk;
+                c += wrote;
+                left -= wrote;
             }
         }
         c - cur
     }
 
-    fn copy_match_bytewise(&self, output: &mut [u8], cur: usize, dist: usize, n: usize) -> usize {
+    fn copy_match_bytewise<S: OutputSink>(
+        &self,
+        sink: &mut S,
+        cur: usize,
+        dist: usize,
+        n: usize,
+    ) -> usize {
         let mut written = 0;
         for i in 0..n {
             let c = cur + i;
             let byte = if dist <= c {
-                output.get(c - dist).copied()
+                sink.get_back(dist)
             } else {
                 self.get_back(dist - c)
             };
             let Some(byte) = byte else { break };
-            match output.get_mut(c) {
-                Some(slot) => *slot = byte,
-                None => break,
+            if !sink.push(byte) {
+                break;
             }
             written += 1;
         }

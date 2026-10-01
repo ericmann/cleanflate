@@ -1,9 +1,12 @@
 use crate::config::{
     MAX_DEFLATE_EXPANSION, ONESHOT_GROWTH_FLOOR, ONESHOT_INITIAL_RATIO, ONESHOT_MAX_PREALLOC,
 };
+use crate::decode_path::DecodePath;
 use crate::error::Error;
-use crate::options::{Format, Options};
-use crate::stream::{decompress_with, initial_len, next_len};
+use crate::options::{Format, Options, TrailingData};
+use crate::stream::{
+    decompress_core, decompress_core_vec, decompress_with, initial_len, next_len, Decoded,
+};
 
 #[test]
 fn initial_len_gzip_uses_isize() {
@@ -153,4 +156,135 @@ fn gzip_multi_member_hint_too_small_still_correct() {
         decompress_with(Format::Gzip, &input, &limited),
         Err(Error::OutputLimitExceeded { limit: 100 })
     );
+}
+
+fn stored_raw(data: &[u8]) -> Vec<u8> {
+    let mut v = vec![0x01u8];
+    v.extend_from_slice(&(data.len() as u16).to_le_bytes());
+    v.extend_from_slice(&(!(data.len() as u16)).to_le_bytes());
+    v.extend_from_slice(data);
+    v
+}
+
+fn both(
+    format: Format,
+    input: &[u8],
+    options: &Options,
+    path: DecodePath,
+) -> (Result<Decoded, Error>, Result<Decoded, Error>) {
+    (
+        decompress_core(format, input, options, path).map(|c| c.decoded),
+        decompress_core_vec(format, input, options, path).map(|c| c.decoded),
+    )
+}
+
+#[test]
+fn oneshot_vec_and_slice_drivers_agree() {
+    let mut fixed = crate::tests::bitwriter::BitWriter::new();
+    crate::tests::inflate_fixed::emit_block_header(&mut fixed, true, 0b01);
+    for &b in b"abcab" {
+        crate::tests::inflate_fixed::emit_literal(&mut fixed, b as u16);
+    }
+    crate::tests::inflate_fixed::emit_match(&mut fixed, 30, 3);
+    crate::tests::inflate_fixed::emit_end_of_block(&mut fixed);
+    let fixed = fixed.finish();
+
+    let mut two = member(b'a', 40_000, 0xf3dd_b8f7);
+    two.extend_from_slice(&member(b'b', 5_000, 0xd091_08fc));
+    let cases = [
+        (Format::Raw, stored_raw(&[7u8; 300])),
+        (Format::Raw, fixed),
+        (Format::Gzip, two),
+        (Format::Raw, vec![0x07u8]),
+        (Format::Raw, stored_raw(&[1u8; 50])[..20].to_vec()),
+    ];
+    for (format, input) in &cases {
+        for path in [DecodePath::Fast, DecodePath::Reference] {
+            let (slice, vec) = both(*format, input, &Options::default(), path);
+            assert_eq!(slice, vec, "{format:?} {path:?}");
+        }
+    }
+}
+
+#[test]
+fn oneshot_limit_semantics_unchanged() {
+    let data = vec![0x5Au8; 1000];
+    let input = stored_raw(&data);
+    let exact = Options {
+        max_output: 1000,
+        ..Options::default()
+    };
+    let under = Options {
+        max_output: 999,
+        ..Options::default()
+    };
+    assert_eq!(
+        decompress_with(Format::Raw, &input, &exact)
+            .expect("exact")
+            .data,
+        data
+    );
+    assert_eq!(
+        decompress_with(Format::Raw, &input, &under),
+        Err(Error::OutputLimitExceeded { limit: 999 })
+    );
+    assert_eq!(
+        decompress_with(Format::Raw, b"", &exact),
+        Err(Error::Truncated)
+    );
+
+    // Trailing data after a gzip member: the error offset and the allowed
+    // consumed count are both the member's end, for a long and a lone byte.
+    let mut gz = super_member();
+    let stream_len = gz.len();
+    for trailer in [&b"XYZ"[..], &[0x1f][..], &[0x1f, b'Z'][..]] {
+        gz.truncate(stream_len);
+        gz.extend_from_slice(trailer);
+        assert_eq!(
+            decompress_with(Format::Gzip, &gz, &Options::default()),
+            Err(Error::TrailingData {
+                offset: stream_len as u64
+            }),
+            "trailer {trailer:?}"
+        );
+        let allow = Options {
+            trailing: TrailingData::Allow,
+            ..Options::default()
+        };
+        let decoded = decompress_with(Format::Gzip, &gz, &allow).expect("allowed");
+        assert_eq!(decoded.data, b"hi");
+        assert_eq!(decoded.consumed, stream_len, "trailer {trailer:?}");
+        // The slice driver reports exactly the same.
+        let (slice, vec) = both(Format::Gzip, &gz, &allow, DecodePath::Fast);
+        assert_eq!(slice, vec);
+    }
+}
+
+/// One gzip member holding "hi" (CRC-32 0xD8932AAC, a literal computed
+/// with `oracle::ffi::crc32`, C16).
+fn super_member() -> Vec<u8> {
+    let mut v = vec![0x1f, 0x8b, 0x08, 0x00, 0, 0, 0, 0, 0x00, 0x03];
+    v.extend_from_slice(&stored_raw(b"hi"));
+    v.extend_from_slice(&0xD893_2AACu32.to_le_bytes());
+    v.extend_from_slice(&2u32.to_le_bytes());
+    v
+}
+
+#[test]
+fn oneshot_capacity_bounded_by_limit() {
+    let data = vec![0x33u8; 5000];
+    let input = stored_raw(&data);
+    for limit in [5000u64, 5001, 6000, 70_000, 1 << 20] {
+        let options = Options {
+            max_output: limit,
+            ..Options::default()
+        };
+        let decoded = decompress_with(Format::Raw, &input, &options).expect("decodes");
+        assert_eq!(decoded.data.len(), 5000);
+        assert!(
+            decoded.data.capacity() as u64 <= limit,
+            "capacity {} past limit {limit}",
+            decoded.data.capacity()
+        );
+    }
 }

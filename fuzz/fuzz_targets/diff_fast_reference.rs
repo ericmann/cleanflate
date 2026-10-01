@@ -1,5 +1,6 @@
-//! Differential fuzz target: the Fast and Reference decode paths must agree
-//! on arbitrary bytes (SPEC S5). Both decode the input one-shot and under
+//! Differential fuzz target: the Fast and Reference decode paths, and the
+//! slice and Vec one-shot output sinks, must agree on arbitrary bytes
+//! (SPEC S5). Both decode the input one-shot and under
 //! an input-derived chunk schedule, and any difference in output, error,
 //! per-call consumed/produced/status, or `finish()` is a panic.
 //!
@@ -10,7 +11,9 @@
 
 use libfuzzer_sys::fuzz_target;
 
-use cleanflate::test_hooks::{decompress_with_path, decompressor_with_path, DecodePath};
+use cleanflate::test_hooks::{
+    decompress_with_path, decompress_with_sink, decompressor_with_path, DecodePath, OneShotSink,
+};
 use cleanflate::{Error, Format, Options, Status};
 
 /// Target-local cap on decoded output, as in the other fuzz targets.
@@ -114,6 +117,23 @@ fuzz_target!(|data: &[u8]| {
             short(&fast),
             short(&reference)
         );
+    }
+
+    // The Vec sink must agree with the slice sink on both paths.
+    for (path, slice) in [(DecodePath::Fast, &fast), (DecodePath::Reference, &reference)] {
+        let vec = decompress_with_sink(format, body, &options, path, OneShotSink::Vec);
+        let same = match (slice, &vec) {
+            (Ok(a), Ok(b)) => a == b,
+            (Err(a), Err(b)) => a == b,
+            _ => false,
+        };
+        if !same {
+            panic!(
+                "sink mismatch ({format:?}, {path:?}): slice {:?} vs vec {:?}",
+                slice.as_ref().map(|d| (d.data.len(), d.consumed)),
+                vec.as_ref().map(|d| (d.data.len(), d.consumed))
+            );
+        }
     }
 
     let a = trace(format, &options, DecodePath::Fast, body, in_chunk, out_chunk);
